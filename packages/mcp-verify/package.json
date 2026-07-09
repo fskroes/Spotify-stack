@@ -1,0 +1,14 @@
+{
+  "name": "@fleet/mcp-verify",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Auto-detected deterministic verifiers exposed as an MCP tool, a Stop hook core, and a CLI",
+  "type": "module",
+  "exports": {
+    ".": "./src/verify.js",
+    "./summarize": "./src/summarize.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.13.0"
+  }
+}

@@ -1,0 +1,110 @@
+name: agent-plan
+run-name: "plan: issue #${{ github.event.issue.number }}"
+
+# Part 4-style ad-hoc entry: label an issue `agent-task` and a planning agent
+# turns it into a version-controlled task file, delivered as a PR. A human
+# reviews and merges the *task*, then dispatches it — planning output gets the
+# same co-sign treatment as code. The issue body is untrusted input, so the
+# planner is fenced like the coding agent (read/write only, no Bash, no
+# network) and everything it writes is checked mechanically below.
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  plan:
+    if: github.event.label.name == 'agent-task'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      # The issue reaches the planner as a file, never via shell or prompt
+      # interpolation — printf of an env var cannot execute anything.
+      - name: Stage the issue as planning input
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          mkdir -p /tmp/agent-plan
+          printf '# %s\n\n%s\n' "$ISSUE_TITLE" "$ISSUE_BODY" > /tmp/agent-plan/issue.md
+
+      - name: Run the planning agent
+        run: |
+          claude -p "Issue number: ${ISSUE_NUMBER}. $(cat .github/prompts/plan-issue.md)" \
+            --allowedTools "Read,Glob,Grep,Write" \
+            --output-format json > /tmp/agent-plan/result.json
+          jq -r '.result' /tmp/agent-plan/result.json
+
+      # The write contract, enforced mechanically: either no change at all with
+      # an explicit NOT_A_TASK declaration, or exactly one new task file named
+      # for this issue. Anything else kills the run before a PR exists.
+      - name: Enforce the write contract
+        id: contract
+        run: |
+          changes=$(git status --porcelain)
+          if [ -z "$changes" ]; then
+            if jq -r '.result' /tmp/agent-plan/result.json | grep -q '^NOT_A_TASK$'; then
+              reason=$(jq -r '.result' /tmp/agent-plan/result.json | sed -n '/^NOT_A_TASK$/{n;p;}')
+              gh issue comment "$ISSUE_NUMBER" --body "The planning agent declined to turn this issue into a fleet task: ${reason:-no reason given}"
+              echo "declined=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "planner made no changes and did not declare NOT_A_TASK" >&2
+            exit 1
+          fi
+          if [ "$(printf '%s\n' "$changes" | wc -l)" -ne 1 ] \
+            || ! printf '%s\n' "$changes" | grep -qE "^\?\? tasks/issue-${ISSUE_NUMBER}-[a-z0-9-]+\.md$"; then
+            echo "planner violated the write contract:" >&2
+            printf '%s\n' "$changes" >&2
+            exit 1
+          fi
+          echo "file=$(printf '%s\n' "$changes" | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Validate the task file mechanically
+        if: steps.contract.outputs.declined != 'true'
+        run: pnpm exec tsx scripts/validate-task.ts "${{ steps.contract.outputs.file }}"
+
+      - name: Open the task PR and link it on the issue
+        if: steps.contract.outputs.declined != 'true'
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          TASK_FILE: ${{ steps.contract.outputs.file }}
+        run: |
+          branch="task/issue-${ISSUE_NUMBER}"
+          git config user.name "Honk Fleet Runner"
+          git config user.email "fleet@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add "$TASK_FILE"
+          git commit -m "plan: issue #${ISSUE_NUMBER} → ${TASK_FILE}"
+          git push --force -u origin "$branch"
+          task_id=$(basename "$TASK_FILE" .md)
+          body=$(printf 'Planned from #%s by the planning agent. Review the task the way you would review code — end state, preconditions, scope, examples — then merge and dispatch:\n\n```sh\npnpm fleet dispatch %s\n```' "$ISSUE_NUMBER" "$task_id")
+          url=$(gh pr create --title "[plan] ${ISSUE_TITLE}" --body "$body" --head "$branch" --base main \
+            || gh pr view "$branch" --json url --jq .url)
+          gh issue comment "$ISSUE_NUMBER" --body "Planned as \`${TASK_FILE}\` — review and merge ${url}, then dispatch with \`pnpm fleet dispatch ${task_id}\`."

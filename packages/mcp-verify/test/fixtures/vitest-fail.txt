@@ -1,0 +1,39 @@
+
+[1m[46m RUN [49m[22m [36mv3.2.6 [39m[90m/Users/dev/dev/spotify-stack/.tmp/broken-ts[39m
+
+ [32m✓[39m test/http.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [31m❯[39m test/userService.test.ts [2m([22m[2m2 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 5[2mms[22m[39m
+[31m   [31m×[31m getUser[2m > [22mresolves with the user returned by the API[39m[32m 4[2mms[22m[39m
+[31m     → expected { id: '42', name: 'Ada' } to deeply equal { id: '42', name: 'WRONG' }[39m
+   [32m✓[39m getUser[2m > [22mrejects when the API returns an error status[32m 1[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m test/userService.test.ts[2m > [22mgetUser[2m > [22mresolves with the user returned by the API
+[31m[1mAssertionError[22m: expected { id: '42', name: 'Ada' } to deeply equal { id: '42', name: 'WRONG' }[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[2m  {[22m
+[2m    "id": "42",[22m
+[32m-   "name": "WRONG",[39m
+[31m+   "name": "Ada",[39m
+[2m  }[22m
+
+[36m [2m❯[22m test/userService.test.ts:[2m16:18[22m[39m
+    [90m 14| [39m      [34mfakeFetch[39m([34m200[39m[33m,[39m { id[33m:[39m [32m"42"[39m[33m,[39m name[33m:[39m [32m"Ada"[39m })[33m,[39m
+    [90m 15| [39m    )[33m;[39m
+    [90m 16| [39m    [34mexpect[39m(user)[33m.[39m[34mtoEqual[39m({ id[33m:[39m [32m"42"[39m[33m,[39m name[33m:[39m [32m"WRONG"[39m })[33m;[39m
+    [90m   | [39m                 [31m^[39m
+    [90m 17| [39m  })[33m;[39m
+    [90m 18| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m1 passed[39m[22m[90m (2)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m3 passed[39m[22m[90m (4)[39m
+[2m   Start at [22m 10:47:38
+[2m   Duration [22m 217ms[2m (transform 33ms, setup 0ms, collect 32ms, tests 8ms, environment 0ms, prepare 81ms)[22m
+

@@ -1,0 +1,51 @@
+TAP version 13
+# Subtest: fetchItems retries once after a transient network failure
+ok 1 - fetchItems retries once after a transient network failure
+  ---
+  duration_ms: 0.2875
+  type: 'test'
+  ...
+# Subtest: resolveItems falls back to original items for degraded entries
+not ok 2 - resolveItems falls back to original items for degraded entries
+  ---
+  duration_ms: 0.773042
+  type: 'test'
+  location: '/private/tmp/claude-501/-Users-dev-spotify-stack/e0a3336a-934d-494e-a027-000285032a33/scratchpad/tapgen/sample.test.js:8:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+
+      {
+    +   rank: 2,
+    -   rank: 1,
+        page: 5
+      }
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    rank: 1
+    page: 5
+  actual:
+    rank: 2
+    page: 5
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///private/tmp/claude-501/-Users-dev-spotify-stack/e0a3336a-934d-494e-a027-000285032a33/scratchpad/tapgen/sample.test.js:9:10)
+    Test.runInAsyncScope (node:async_hooks:227:14)
+    Test.run (node:internal/test_runner/test:1325:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:911:18)
+    Test.postRun (node:internal/test_runner/test:1465:19)
+    Test.run (node:internal/test_runner/test:1390:12)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3)
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 1
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 36.830875

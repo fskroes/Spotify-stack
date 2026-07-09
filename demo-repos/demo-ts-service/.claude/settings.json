@@ -1,0 +1,6 @@
+{
+  "$comment": "Target repos may commit their own Claude config. The fleet overwrites this file in agent workspaces; the overwrite must never appear in run diffs or PRs (see stagedDiff).",
+  "permissions": {
+    "allow": ["Bash(npm test:*)"]
+  }
+}

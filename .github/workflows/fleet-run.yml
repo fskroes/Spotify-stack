@@ -1,0 +1,46 @@
+name: fleet-run
+run-name: "fleet: ${{ inputs.task_id }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: "Task id (file under tasks/, without .md)"
+        required: true
+        type: string
+
+# contents: write is required by the called agent-task.yml workflow, which
+# pushes each run's fleet/ledger.jsonl line back to main.
+permissions:
+  contents: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      repos: ${{ steps.matrix.outputs.repos }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Compute target matrix from fleet/repos.yaml + task targets
+        id: matrix
+        run: echo "repos=$(pnpm exec tsx scripts/task-matrix.ts '${{ inputs.task_id }}')" >> "$GITHUB_OUTPUT"
+
+  run:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: ${{ fromJSON(needs.plan.outputs.repos) }}
+    uses: ./.github/workflows/agent-task.yml
+    with:
+      task_id: ${{ inputs.task_id }}
+      target_repo: ${{ matrix.repo }}
+    secrets: inherit

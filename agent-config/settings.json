@@ -1,0 +1,41 @@
+{
+  "$comment": "Injected into each agent workspace as .claude/settings.json. Spotify part 2: deliberately constrained toolkit — file edits, read/search, ripgrep, direct test runs, and the verify MCP tool. The agent never touches git or the network; the runner owns branch/commit/push/PR.",
+  "permissions": {
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Edit",
+      "Write",
+      "mcp__verify__verify",
+      "Bash(rg:*)",
+      "Bash(ls:*)",
+      "Bash(node --test:*)",
+      "Bash(npm test:*)",
+      "Bash(rm:*)",
+      "Bash(rmdir:*)"
+    ],
+    "deny": [
+      "WebFetch",
+      "WebSearch",
+      "Bash(git:*)",
+      "Bash(gh:*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(npm publish:*)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop-verify.mjs\"",
+            "timeout": 600
+          }
+        ]
+      }
+    ]
+  }
+}

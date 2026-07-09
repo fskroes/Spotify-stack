@@ -1,0 +1,30 @@
+# Fleet registry — the equivalent of Spotify's Fleet Management target list.
+# `url` supports ${GH_OWNER} which is resolved from the GH_OWNER env var
+# (set by scripts/bootstrap-github.sh output, or your shell).
+#
+# `local_path` (optional): source directory for `--local` runs. When set, local
+# mode copies from here instead of demo-repos/<name>, so you can point the fleet
+# at your own working tree — no rsync into demo-repos/ needed. Supports a leading
+# ~ and any ${ENV_VAR} (e.g. ~/dev/my-repo or ${DEV_ROOT}/my-repo); relative
+# paths resolve against this control repo. Ignored in cloud mode (always clones).
+#
+# Private targets: keep them out of this shared file — add them to a git-ignored
+# `fleet/repos.local.yaml` instead (same schema; entries there override by name).
+# It's merged on load, the parallel of tasks/private/ for task prompts.
+repos:
+  # The demo-* entries are backed by demo-repos/<name> in this repo: local
+  # (--local) runs copy from there, and the hermetic e2e tests do too. Their
+  # GitHub copies are created by scripts/bootstrap-github.sh — run it before
+  # dispatching cloud tasks or using --pr against them.
+  - name: demo-ts-service
+    url: https://github.com/${GH_OWNER}/demo-ts-service
+    language: typescript
+    default_branch: main
+  - name: demo-swift-package
+    url: https://github.com/${GH_OWNER}/demo-swift-package
+    language: swift
+    default_branch: main
+  - name: demo-feed-service
+    url: https://github.com/${GH_OWNER}/demo-feed-service
+    language: javascript
+    default_branch: main

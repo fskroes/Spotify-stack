@@ -1,0 +1,11 @@
+{
+  "name": "@fleet/cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "fleet CLI: run tasks locally, dispatch them to GitHub Actions, and report status",
+  "type": "module",
+  "dependencies": {
+    "@fleet/runner": "workspace:*",
+    "commander": "^14.0.0"
+  }
+}

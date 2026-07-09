@@ -1,0 +1,30 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test -project DemoApp.xcodeproj -scheme DemoApp -destination platform=macOS CODE_SIGNING_ALLOWED=NO
+
+note: Using new build system
+Prepare packages
+Computing target dependency graph and provisioning inputs
+Create build description
+Build description signature: 3f1a2b9c4d5e6f708192a3b4c5d6e7f8
+ClangCompile DemoApp/FeedService.swift (in target 'DemoApp' from project 'DemoApp')
+CompileSwiftSources normal arm64 (in target 'DemoAppTests' from project 'DemoApp')
+Build succeeded
+
+Test Suite 'All tests' started at 2026-07-09 11:04:22.318.
+Test Suite 'DemoAppTests.xctest' started at 2026-07-09 11:04:22.319.
+Test Suite 'FeedServiceTests' started at 2026-07-09 11:04:22.319.
+Test Case '-[DemoAppTests.FeedServiceTests testParseFeedDateWithFractionalSeconds]' started.
+/Users/dev/dev/demo-app/DemoAppTests/FeedServiceTests.swift:41: error: -[DemoAppTests.FeedServiceTests testParseFeedDateWithFractionalSeconds] : XCTAssertEqual failed: ("2026-07-09 11:00:00 +0000") is not equal to ("nil")
+Test Case '-[DemoAppTests.FeedServiceTests testParseFeedDateWithFractionalSeconds]' failed (0.014 seconds).
+Test Case '-[DemoAppTests.FeedServiceTests testParseFeedDatePlainISO]' started.
+Test Case '-[DemoAppTests.FeedServiceTests testParseFeedDatePlainISO]' passed (0.001 seconds).
+Test Suite 'FeedServiceTests' failed at 2026-07-09 11:04:22.334.
+	 Executed 2 tests, with 1 failure (0 unexpected) in 0.015 (0.015) seconds
+Test Suite 'DemoAppTests.xctest' failed at 2026-07-09 11:04:22.334.
+	 Executed 2 tests, with 1 failure (0 unexpected) in 0.015 (0.015) seconds
+Test Suite 'All tests' failed at 2026-07-09 11:04:22.334.
+	 Executed 2 tests, with 1 failure (0 unexpected) in 0.015 (0.016) seconds
+
+Testing failed:
+	FeedServiceTests.testParseFeedDateWithFractionalSeconds : XCTAssertEqual failed: ("2026-07-09 11:00:00 +0000") is not equal to ("nil")
+** TEST FAILED **

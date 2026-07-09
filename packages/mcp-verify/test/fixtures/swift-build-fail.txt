@@ -1,0 +1,14 @@
+Building for debugging...
+[0/2] Write sources
+[1/2] Write swift-version--58304C5D6DBC2206.txt
+[3/6] Emitting module DemoKit
+[4/6] Compiling DemoKit Formatter.swift
+[5/6] Compiling DemoKit LegacyFormatter.swift
+[6/6] Compiling DemoKit Greeting.swift
+/Users/dev/dev/spotify-stack/.tmp/broken-swift/Sources/DemoKit/Greeting.swift:7:32: error: cannot assign value of type 'String' to type 'Bool'
+ 5 |     public static func banner(for name: String) -> String {
+ 6 |         var formatter = LegacyFormatter()
+ 7 |         formatter.uppercased = "yes"
+   |                                `- error: cannot assign value of type 'String' to type 'Bool'
+ 8 |         formatter.trimmed = true
+ 9 |         let formatted = formatter.format(name)

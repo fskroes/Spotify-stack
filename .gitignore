@@ -1,0 +1,20 @@
+node_modules/
+dist/
+artifacts/
+*.log
+.DS_Store
+demo-repos/*/node_modules/
+demo-repos/*/.build/
+.tmp/
+
+# secrets
+.env
+.env.*
+*.swp
+
+# private fleet overlay (targets kept local, not committed)
+fleet/repos.local.yaml
+
+# local Claude Code session config (personal/machine-local; the fleet injects its
+# own .claude/ into sandboxes from agent-config/ at run time)
+.claude/

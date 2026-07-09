@@ -1,0 +1,12 @@
+{
+  "$comment": "MCP config template. The runner replaces __CONTROL_REPO__ and __WORKSPACE__ with absolute paths when injecting this into a workspace.",
+  "mcpServers": {
+    "verify": {
+      "command": "node",
+      "args": ["__CONTROL_REPO__/packages/mcp-verify/src/server.js"],
+      "env": {
+        "VERIFY_CWD": "__WORKSPACE__"
+      }
+    }
+  }
+}

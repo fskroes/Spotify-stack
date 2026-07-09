@@ -1,0 +1,110 @@
+name: agent-task
+run-name: "agent: ${{ inputs.task_id }} on ${{ inputs.target_repo }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: "Task id (file under tasks/, without .md)"
+        required: true
+        type: string
+      target_repo:
+        description: "Repo name from fleet/repos.yaml"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      task_id:
+        required: true
+        type: string
+      target_repo:
+        required: true
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      FLEET_GH_TOKEN:
+        required: true
+
+# contents: write so the final step can push the run's fleet/ledger.jsonl
+# line back to main — the committed shipped/killed record.
+permissions:
+  contents: write
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_OWNER: ${{ github.repository_owner }}
+      # Fine-grained PAT with contents+PR write on the target repos — the
+      # runner uses it to clone, push the agent branch, and open the PR.
+      GH_TOKEN: ${{ secrets.FLEET_GH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+
+      - name: Detect target language
+        id: lang
+        run: echo "language=$(pnpm exec tsx scripts/repo-language.ts '${{ inputs.target_repo }}')" >> "$GITHUB_OUTPUT"
+
+      - name: Install Swift
+        if: steps.lang.outputs.language == 'swift'
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "5.10"
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Authenticate git for pushes
+        run: gh auth setup-git
+
+      - name: Run agent
+        run: >
+          pnpm fleet run '${{ inputs.task_id }}'
+          --repo '${{ inputs.target_repo }}'
+          --pr
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "${{ inputs.task_id }}-${{ inputs.target_repo }}"
+          path: artifacts/
+          if-no-files-found: ignore
+
+      # Runs even when the fleet run failed — kills matter most in the record.
+      # git push uses the credentials persisted by actions/checkout
+      # (GITHUB_TOKEN), which the contents: write permission covers.
+      - name: Commit the run's ledger line to main
+        if: always()
+        run: |
+          if git diff --quiet -- fleet/ledger.jsonl; then
+            echo "no ledger change to record"
+            exit 0
+          fi
+          git config user.name "Honk Fleet Runner"
+          git config user.email "fleet@users.noreply.github.com"
+          git add fleet/ledger.jsonl
+          git commit -m "ledger: ${{ inputs.task_id }} on ${{ inputs.target_repo }}"
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            git pull --rebase origin main
+          done
+          echo "failed to push the ledger line after 5 attempts" >&2
+          exit 1

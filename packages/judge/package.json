@@ -1,0 +1,14 @@
+{
+  "name": "@fleet/judge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LLM-as-judge: evaluates an agent's diff against the original task prompt",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
+    "zod": "^4.0.0"
+  }
+}

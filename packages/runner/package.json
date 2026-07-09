@@ -1,0 +1,24 @@
+{
+  "name": "@fleet/runner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Per-repo agent runner: workspace → constrained Claude Code run → verify → judge loop → PR",
+  "type": "module",
+  "exports": {
+    ".": "./src/run.ts",
+    "./fleet": "./src/fleet.ts",
+    "./task": "./src/task.ts",
+    "./ledger": "./src/ledger.ts",
+    "./ledger-html": "./src/ledger-html.ts",
+    "./ledger-serve": "./src/ledger-serve.ts"
+  },
+  "dependencies": {
+    "@fleet/judge": "workspace:*",
+    "@fleet/mcp-verify": "workspace:*",
+    "picomatch": "^4.0.2",
+    "yaml": "^2.8.0"
+  },
+  "devDependencies": {
+    "@types/picomatch": "^4.0.0"
+  }
+}

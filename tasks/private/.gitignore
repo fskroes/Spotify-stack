@@ -1,0 +1,9 @@
+# Project-specific task prompts live here and stay LOCAL — never committed, so
+# they don't ship in a public clone of this control repo. The reference tasks
+# under tasks/, tasks/examples/, and tasks/onramp/ are the public ones.
+#
+# Ignore everything in this folder except this file and the README, so the
+# folder (and its purpose) still exist in the repo while its contents don't.
+*
+!.gitignore
+!README.md

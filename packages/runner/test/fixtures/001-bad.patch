@@ -1,0 +1,67 @@
+diff --git a/src/legacy/httpClient.ts b/src/legacy/httpClient.ts
+deleted file mode 100644
+index fd1a3da..0000000
+--- a/src/legacy/httpClient.ts
++++ /dev/null
+@@ -1,25 +0,0 @@
+-/**
+- * @deprecated Use `fetchJson` from `../http.js` instead. This callback-based
+- * client is scheduled for removal.
+- */
+-export type JsonCallback<T> = (err: Error | null, data: T | null) => void;
+-
+-/**
+- * @deprecated Use `fetchJson` from `../http.js` instead.
+- */
+-export function getJson<T>(
+-  url: string,
+-  callback: JsonCallback<T>,
+-  fetchImpl: typeof fetch = fetch,
+-): void {
+-  fetchImpl(url)
+-    .then(async (res) => {
+-      if (!res.ok) {
+-        throw new Error(`HTTP ${res.status} for ${url}`);
+-      }
+-      callback(null, (await res.json()) as T);
+-    })
+-    .catch((err: unknown) => {
+-      callback(err instanceof Error ? err : new Error(String(err)), null);
+-    });
+-}
+diff --git a/src/userService.ts b/src/userService.ts
+index 9cbde5e..297f082 100644
+--- a/src/userService.ts
++++ b/src/userService.ts
+@@ -1,29 +1,14 @@
+-import { getJson } from "./legacy/httpClient.js";
++import { fetchJson } from "./http.js";
+ 
+ export interface User {
+   id: string;
+   name: string;
+ }
+ 
+-/**
+- * Look up a user by id from the users API.
+- */
+ export function getUser(
+   baseUrl: string,
+   id: string,
+   fetchImpl: typeof fetch = fetch,
+ ): Promise<User> {
+-  return new Promise((resolve, reject) => {
+-    getJson<User>(
+-      `${baseUrl}/users/${id}`,
+-      (err, data) => {
+-        if (err) {
+-          reject(err);
+-        } else {
+-          resolve(data as User);
+-        }
+-      },
+-      fetchImpl,
+-    );
+-  });
++  return fetchJson<User>(`${baseUrl}/users/${id}`, 123);
+ }

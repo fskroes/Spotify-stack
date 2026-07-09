@@ -1,0 +1,23 @@
+{
+  "name": "spotify-stack",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reference implementation of a Spotify Honk-style background coding agent fleet",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "fleet": "tsx packages/cli/src/index.ts",
+    "scrub": "bash scripts/check-scrub.sh --all",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@fleet/runner": "workspace:*",
+    "@types/node": "^22.15.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

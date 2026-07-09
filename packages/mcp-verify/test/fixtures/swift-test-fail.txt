@@ -1,0 +1,42 @@
+[0/1] Planning build
+Building for debugging...
+[0/6] Write sources
+[1/7] /Users/dev/dev/spotify-stack/.tmp/broken-swift/.build/arm64-apple-macosx/debug/DemoKitPackageTests.derived/runner.swift
+[2/7] Write sources
+[4/7] Write swift-version--58304C5D6DBC2206.txt
+[6/9] Emitting module DemoKit
+[7/9] Compiling DemoKit Greeting.swift
+[8/11] Compiling DemoKitTests DemoKitTests.swift
+[9/11] Emitting module DemoKitTests
+[10/13] Compiling DemoKitPackageTests runner.swift
+[11/13] Emitting module DemoKitPackageTests
+[11/13] Write Objects.LinkFileList
+[12/13] Linking DemoKitPackageTests
+Build complete! (6.83s)
+Test Suite 'All tests' started at 2026-07-03 10:48:11.919.
+Test Suite 'DemoKitPackageTests.xctest' started at 2026-07-03 10:48:11.920.
+Test Suite 'FormatterTests' started at 2026-07-03 10:48:11.920.
+Test Case '-[DemoKitTests.FormatterTests testFormatTrimmedAndUppercased]' started.
+Test Case '-[DemoKitTests.FormatterTests testFormatTrimmedAndUppercased]' passed (0.001 seconds).
+Test Case '-[DemoKitTests.FormatterTests testFormatUppercased]' started.
+Test Case '-[DemoKitTests.FormatterTests testFormatUppercased]' passed (0.000 seconds).
+Test Case '-[DemoKitTests.FormatterTests testFormatWithNoOptionsReturnsInput]' started.
+Test Case '-[DemoKitTests.FormatterTests testFormatWithNoOptionsReturnsInput]' passed (0.000 seconds).
+Test Suite 'FormatterTests' passed at 2026-07-03 10:48:11.921.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+Test Suite 'GreetingTests' started at 2026-07-03 10:48:11.921.
+Test Case '-[DemoKitTests.GreetingTests testBannerTrimsAndUppercases]' started.
+/Users/dev/dev/spotify-stack/.tmp/broken-swift/Tests/DemoKitTests/DemoKitTests.swift:23: error: -[DemoKitTests.GreetingTests testBannerTrimsAndUppercases] : XCTAssertEqual failed: ("HELLO, ADA!") is not equal to ("HELLO, WRONG!")
+Test Case '-[DemoKitTests.GreetingTests testBannerTrimsAndUppercases]' failed (0.127 seconds).
+Test Case '-[DemoKitTests.GreetingTests testBannerWithCleanInput]' started.
+Test Case '-[DemoKitTests.GreetingTests testBannerWithCleanInput]' passed (0.000 seconds).
+Test Suite 'GreetingTests' failed at 2026-07-03 10:48:12.048.
+	 Executed 2 tests, with 1 failure (0 unexpected) in 0.127 (0.127) seconds
+Test Suite 'DemoKitPackageTests.xctest' failed at 2026-07-03 10:48:12.048.
+	 Executed 5 tests, with 1 failure (0 unexpected) in 0.128 (0.128) seconds
+Test Suite 'All tests' failed at 2026-07-03 10:48:12.048.
+	 Executed 5 tests, with 1 failure (0 unexpected) in 0.128 (0.130) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

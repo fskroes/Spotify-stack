@@ -1,0 +1,38 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # This repo is public and deliberately scrubbed of its owner's name, of every
+  # private fleet target, and of the problem domain it was ported away from.
+  # The local pre-commit hook (.githooks/pre-commit) is opt-in and no clone
+  # inherits it, so the scrub is only actually enforced here. See
+  # scripts/check-scrub.sh for the banned terms.
+  scrub:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/check-scrub.sh --all
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The hermetic runner e2e installs the demo repo's own deps and runs
+      # real eslint/tsc/vitest inside temp workspaces.
+      - run: pnpm test
