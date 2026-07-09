@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import picomatch from "picomatch";
@@ -6,6 +7,7 @@ import { runVerify } from "@fleet/mcp-verify";
 import { createCliJudgeClient, judge, type JudgeClient, type Verdict } from "@fleet/judge";
 import { claudeEngine, mockEngine, type Engine } from "./engine.js";
 import { findRepo, type FleetRepo } from "./fleet.js";
+import { beginInflight } from "./inflight.js";
 import { appendLedger, defaultLedgerPath, fleetRecord, readLedger } from "./ledger.js";
 import { defaultLedgerHtmlPath, writeLedgerHtml } from "./ledger-html.js";
 import { buildPrBody, type VerifyCheck } from "./pr.js";
@@ -266,6 +268,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
   const maxRetries = opts.maxJudgeRetries ?? 2;
   const ledgerPath = opts.ledgerPath ?? defaultLedgerPath(opts.controlRepo);
   const vetoes: Verdict[] = [];
+  const runId = randomUUID();
 
   // Phase timings, accumulated across the (possibly repeated) agent→verify→judge
   // loop. `finish` reads these by reference after the phases have run.
@@ -287,6 +290,19 @@ export async function run(opts: RunOptions): Promise<RunResult> {
   const artifact = (name: string, content: string) =>
     writeFileSync(path.join(artifactsDir, name), content);
 
+  // Claim a live slot before the workspace exists: a run is worth showing while
+  // it clones its target, which on a cold cache is the longest it will ever sit
+  // still without an explanation.
+  const inflight = beginInflight({
+    ledgerPath,
+    runId,
+    startedAt: new Date(startedAt),
+    task: task.id,
+    repo: repo.name,
+    title: task.title,
+    log,
+  });
+
   log(`▶ task ${task.id} on ${repo.name} (${opts.local ? "local" : repo.url})`);
   const workspace = prepareWorkspace({
     controlRepo: opts.controlRepo,
@@ -303,6 +319,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     artifact("result.json", JSON.stringify({ ...full, task: task.id, repo: repo.name }, null, 2));
     appendLedger(ledgerPath, {
       ts: new Date().toISOString(),
+      runId,
       task: task.id,
       repo: repo.name,
       status: full.status,
@@ -316,6 +333,11 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       timings: { ...timings },
       evidence: evidenceFor(full, scopeOffenders),
     });
+    // Strictly after the append: the run is now durable in the ledger, so
+    // dropping the live claim can only ever lose a row that has a replacement.
+    // A reader that catches the gap sees the run twice — once live, once
+    // decided — and reconciles on runId.
+    inflight.clear();
     // Keep the rendered report current: re-render from the whole ledger after
     // every run so artifacts/ledger.html never lags the data. Only for the real
     // committed ledger — a caller pointing at a custom ledger (tests) opts out,
@@ -360,6 +382,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
   }
 
   const enforceScope = (): string[] => {
+    inflight.enter("scope");
     const offenders = scopeOffenders();
     if (offenders.length > 0) {
       artifact("diff.patch", diff);
@@ -380,6 +403,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
   // Belt-and-braces deterministic verification (the Stop hook already ran it
   // inside the session for the real engine, but nothing green goes unproven).
   log("· verifying…");
+  inflight.enter("verify");
   let verify = (await timed("verifyMs", () => runVerify(workspace))) as VerifyResult;
   artifact("verify.log", verify.summary);
   if (!verify.ok) {
@@ -388,6 +412,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
   }
 
   // Judge loop — veto feeds guidance back into the same session (part 3).
+  inflight.enter("judge");
   let verdict = await timed("judgeMs", () => judgeOnce({ taskMarkdown: task.raw, diff, verifySummary: verify.summary }));
   let retries = 0;
   while (verdict.verdict === "veto" && retries < maxRetries) {
@@ -395,6 +420,9 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     vetoes.push(verdict);
     log(`· judge vetoed (attempt ${retries}/${maxRetries}) — resuming agent with guidance`);
     artifact(`verdict.veto-${retries}.json`, JSON.stringify(verdict, null, 2));
+    // Back to the agent, on a later pass: stage alone cannot tell a second trip
+    // through Agent from a run that never left it.
+    inflight.enter("agent", retries + 1);
     try {
       engineResult = await timed("agentMs", () =>
         engine.resume(
@@ -419,12 +447,14 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     if (offenders.length > 0) {
       return finish({ ...base, diff, status: "scope-violation" }, offenders);
     }
+    inflight.enter("verify");
     verify = (await timed("verifyMs", () => runVerify(workspace))) as VerifyResult;
     artifact("verify.log", verify.summary);
     if (!verify.ok) {
       artifact("diff.patch", diff);
       return finish({ ...base, diff, verify, status: "verify-failed" });
     }
+    inflight.enter("judge");
     verdict = await timed("judgeMs", () => judgeOnce({ taskMarkdown: task.raw, diff, verifySummary: verify.summary }));
   }
 
@@ -463,6 +493,8 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     artifact("pr-preview.md", buildPrBody(bodyInput));
   } else {
     log("· opening pull request…");
+    // Push + `gh pr create` takes seconds and has always rendered as "judge".
+    inflight.enter("shipping");
     ({ url: prUrl, sha } = openPullRequest({
       workspace,
       repo,
