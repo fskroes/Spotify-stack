@@ -15,6 +15,10 @@ demo-repos/*/.build/
 # private fleet overlay (targets kept local, not committed)
 fleet/repos.local.yaml
 
+# live state of currently-running tasks: one file per process, deleted when the
+# run appends its ledger line. Machine-local and worthless a second later.
+fleet/inflight/
+
 # local Claude Code session config (personal/machine-local; the fleet injects its
 # own .claude/ into sandboxes from agent-config/ at run time)
 .claude/

@@ -10,6 +10,8 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { JudgeClient, Verdict } from "@fleet/judge";
+import { inflightDir, readInflight, type InflightRecord } from "../src/inflight.js";
 import { readLedger } from "../src/ledger.js";
 import { run } from "../src/run.js";
 
@@ -113,6 +115,70 @@ describe("runner e2e (mock engine, hermetic)", () => {
     expect(entries[0].timings).toBeDefined();
     expect(entries[0].timings!.verifyMs).toBeGreaterThanOrEqual(0);
     expect(entries[0].evidence?.length).toBeGreaterThan(0);
+    // The live claim is dropped once the run is durable in the ledger — but the
+    // fleet-wide store itself survives, since concurrent runs live in it.
+    expect(readInflight(ledgerPath)).toEqual([]);
+    expect(existsSync(inflightDir(ledgerPath))).toBe(true);
+  });
+
+  it("live state: the run publishes its stage as it goes, and clears it when it lands", async () => {
+    const ledgerPath = tmpLedger();
+    // The judge is the one place a stub gets to look at the world mid-run.
+    const seen: InflightRecord[] = [];
+    const veto: Verdict = {
+      verdict: "veto",
+      violations: ["stub: first attempt rejected"],
+      guidance: "try again",
+      rationale: "stub",
+    };
+    const approve: Verdict = { verdict: "approve", violations: [], guidance: "", rationale: "stub" };
+    let calls = 0;
+    const judgeClient: JudgeClient = {
+      messages: {
+        parse: async () => {
+          calls += 1;
+          seen.push(...readInflight(ledgerPath));
+          return { parsed_output: calls === 1 ? veto : approve };
+        },
+      },
+    };
+
+    const result = await run({
+      controlRepo: CONTROL_REPO,
+      taskPath: TASK_001,
+      repoName: "demo-ts-service",
+      local: true,
+      dryRun: true,
+      engine: "mock",
+      mockPatch: GOOD_PATCH,
+      judgeMode: "claude", // stubbed client: no network, no API key
+      judgeClient,
+      ledgerPath,
+      log: quiet,
+    });
+
+    expect(result.status).toBe("approved");
+    // Both times the judge looked, exactly one record was in flight — this
+    // process's — and it said "judge". The second says which pass through the
+    // agent→verify→judge loop it was on, which the stage alone cannot.
+    expect(seen).toHaveLength(2);
+    expect(seen.map((r) => [r.stage, r.attempt])).toEqual([
+      ["judge", 1],
+      ["judge", 2],
+    ]);
+    expect(seen[0]).toMatchObject({
+      v: 1,
+      pid: process.pid,
+      task: "001-ts-migrate-http-client",
+      repo: "demo-ts-service",
+    });
+    expect(seen[0].title).toBeTruthy();
+    expect(Date.parse(seen[0].stageSince)).toBeGreaterThanOrEqual(Date.parse(seen[0].startedAt));
+
+    // runId is the reconcile key: the same run, live and then decided.
+    const [entry] = readLedger(ledgerPath);
+    expect(entry.runId).toBe(seen[0].runId);
+    expect(readInflight(ledgerPath)).toEqual([]);
   });
 
   it("scope gate: out-of-scope diff dies before verify/judge, recorded as a kill", async () => {
@@ -148,6 +214,9 @@ describe("runner e2e (mock engine, hermetic)", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].status).toBe("scope-violation");
     expect(entries[0].reason).toContain("out-of-scope files: src/");
+    // A kill is a terminal path like any other: it must not leave a ghost in
+    // the lane, claiming to be running forever.
+    expect(readInflight(ledgerPath)).toEqual([]);
   });
 
   it("negative path: broken change → verify red → no PR, no verdict", async () => {

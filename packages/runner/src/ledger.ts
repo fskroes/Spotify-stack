@@ -35,6 +35,11 @@ export interface LedgerEntry {
   // computed so the ledger can be read on its own — no artifacts/ lookup, which
   // is gitignored and latest-run-wins. ---
 
+  /** Ties this line to the run's in-flight record (`fleet/inflight/<pid>.json`).
+   *  A run's line is appended *before* its live record is unlinked, so a reader
+   *  scanning both drops any live row whose runId already reached the ledger —
+   *  otherwise a run finishing mid-read renders twice. */
+  runId?: string;
   /** Human-readable task title, so ledger views need not resolve the task file. */
   title?: string;
   /** Short commit sha — present only when the run actually committed a change. */
