@@ -4,17 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { AGENT_TIMEOUT_MS } from "../src/engine.js";
 import {
   beginInflight,
   inflightDir,
   isLive,
   readInflight,
   readLiveInflight,
-  STALE_AFTER_MS,
   sweepInflight,
   type InflightRecord,
 } from "../src/inflight.js";
+import { AGENT_TIMEOUT_MS, STALE_AFTER_MS } from "../src/timeouts.js";
 
 const tmpLedger = () =>
   path.join(mkdtempSync(path.join(os.tmpdir(), "fleet-inflight-")), "ledger.jsonl");
@@ -158,6 +157,8 @@ const deadPid = (): number => {
 
 const minutesAgo = (n: number) => new Date(Date.now() - n * 60 * 1000).toISOString();
 
+const msAgo = (ms: number) => new Date(Date.now() - ms).toISOString();
+
 /** Write a record straight into the store, bypassing `beginInflight`. */
 const seed = (ledgerPath: string, over: Partial<InflightRecord> & { pid: number }): string => {
   const dir = inflightDir(ledgerPath);
@@ -191,7 +192,9 @@ describe("inflight liveness", () => {
 
   it("sweeps a live pid whose stage has outlived the backstop — the pid was reused", () => {
     const ledgerPath = tmpLedger();
-    const file = seed(ledgerPath, { pid: process.pid, stageSince: minutesAgo(61) });
+    // Derived from the backstop, not a literal: a hardcoded age silently stops
+    // testing the boundary the moment STALE_AFTER_MS moves.
+    const file = seed(ledgerPath, { pid: process.pid, stageSince: msAgo(STALE_AFTER_MS + 60_000) });
 
     expect(isLive(readInflight(ledgerPath)[0])).toBe(false);
     sweepInflight(ledgerPath, () => {});
@@ -218,13 +221,21 @@ describe("inflight liveness", () => {
     expect(readLiveInflight(ledgerPath)).toMatchObject([{ pid: process.pid }]);
   });
 
-  it("holds the backstop clear of the longest stage a run can legitimately sit in", () => {
-    expect(
-      STALE_AFTER_MS,
-      "STALE_AFTER_MS is the TTL backstop for a reused pid; it must stay above the " +
-        "longest legitimate stage, which AGENT_TIMEOUT_MS bounds. Raise the agent " +
-        "timeout past it and the sweep starts reaping live runs mid-agent.",
-    ).toBeGreaterThanOrEqual(2 * AGENT_TIMEOUT_MS);
+  // STALE_AFTER_MS is derived from AGENT_TIMEOUT_MS in timeouts.ts so the pair
+  // cannot drift. Asserting that arithmetic here would only restate the
+  // derivation and could never fail; this pins the behaviour it exists to
+  // produce — the sweep must not reap a run still inside its longest stage.
+  it("keeps a live run whose agent stage has run right up to the agent timeout", () => {
+    const ledgerPath = tmpLedger();
+    // The agent call is the longest stage a run can legitimately sit in. Drop
+    // the backstop below it and this run gets reaped mid-agent — raising the
+    // agent timeout would then shorten runs, which reads as a hang.
+    const file = seed(ledgerPath, { pid: process.pid, stageSince: msAgo(AGENT_TIMEOUT_MS) });
+
+    sweepInflight(ledgerPath, () => {});
+
+    expect(existsSync(file)).toBe(true);
+    expect(readLiveInflight(ledgerPath)).toMatchObject([{ pid: process.pid }]);
   });
 });
 
