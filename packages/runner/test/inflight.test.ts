@@ -1,8 +1,20 @@
-import { chmodSync, existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { beginInflight, inflightDir, readInflight, type InflightRecord } from "../src/inflight.js";
+import { AGENT_TIMEOUT_MS } from "../src/engine.js";
+import {
+  beginInflight,
+  inflightDir,
+  isLive,
+  readInflight,
+  readLiveInflight,
+  STALE_AFTER_MS,
+  sweepInflight,
+  type InflightRecord,
+} from "../src/inflight.js";
 
 const tmpLedger = () =>
   path.join(mkdtempSync(path.join(os.tmpdir(), "fleet-inflight-")), "ledger.jsonl");
@@ -114,4 +126,146 @@ describe("inflight store", () => {
     chmodSync(dir, 0o700);
     expect(existsSync(path.join(dir, "4242.json"))).toBe(true);
   });
+
+  it("clears twice in silence, because finish() and run()'s finally both call it", () => {
+    const ledgerPath = tmpLedger();
+    const warnings: string[] = [];
+    const inflight = beginInflight({
+      ledgerPath,
+      runId: "run-1",
+      startedAt: new Date(),
+      task: "t",
+      repo: "r",
+      title: "T",
+      pid: 4242,
+      log: (line) => warnings.push(line),
+    });
+
+    inflight.clear();
+    expect(() => inflight.clear()).not.toThrow();
+
+    expect(warnings).toEqual([]); // an ENOENT warning on every green run
+    expect(readInflight(ledgerPath)).toEqual([]);
+  });
+});
+
+/** A pid that is certainly dead: a child we waited for. */
+const deadPid = (): number => {
+  const { pid } = spawnSync(process.execPath, ["-e", ""]);
+  if (pid === undefined) throw new Error("no pid from spawnSync");
+  return pid;
+};
+
+const minutesAgo = (n: number) => new Date(Date.now() - n * 60 * 1000).toISOString();
+
+/** Write a record straight into the store, bypassing `beginInflight`. */
+const seed = (ledgerPath: string, over: Partial<InflightRecord> & { pid: number }): string => {
+  const dir = inflightDir(ledgerPath);
+  mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${over.pid}.json`);
+  const record: InflightRecord = {
+    v: 1,
+    runId: `run-${over.pid}`,
+    startedAt: minutesAgo(5),
+    task: "001-ts-migrate-http-client",
+    repo: "demo-ts-service",
+    title: "Migrate the HTTP client",
+    stage: "agent",
+    attempt: 1,
+    stageSince: minutesAgo(5),
+    ...over,
+  };
+  writeFileSync(file, `${JSON.stringify(record)}\n`);
+  return file;
+};
+
+describe("inflight liveness", () => {
+  it("sweeps a record whose process is gone, however fresh the stage looks", () => {
+    const ledgerPath = tmpLedger();
+    const file = seed(ledgerPath, { pid: deadPid(), stageSince: new Date().toISOString() });
+
+    sweepInflight(ledgerPath, () => {});
+
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it("sweeps a live pid whose stage has outlived the backstop — the pid was reused", () => {
+    const ledgerPath = tmpLedger();
+    const file = seed(ledgerPath, { pid: process.pid, stageSince: minutesAgo(61) });
+
+    expect(isLive(readInflight(ledgerPath)[0])).toBe(false);
+    sweepInflight(ledgerPath, () => {});
+
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it("never sweeps a concurrent runner's live claim", () => {
+    const ledgerPath = tmpLedger();
+    const file = seed(ledgerPath, { pid: process.pid, stageSince: minutesAgo(1) });
+
+    sweepInflight(ledgerPath, () => {});
+
+    expect(existsSync(file)).toBe(true);
+    expect(readLiveInflight(ledgerPath)).toMatchObject([{ pid: process.pid }]);
+  });
+
+  it("filters dead records out of the live view while leaving the raw read alone", () => {
+    const ledgerPath = tmpLedger();
+    seed(ledgerPath, { pid: deadPid() });
+    seed(ledgerPath, { pid: process.pid });
+
+    expect(readInflight(ledgerPath)).toHaveLength(2); // #6 renders from the live view
+    expect(readLiveInflight(ledgerPath)).toMatchObject([{ pid: process.pid }]);
+  });
+
+  it("holds the backstop clear of the longest stage a run can legitimately sit in", () => {
+    expect(
+      STALE_AFTER_MS,
+      "STALE_AFTER_MS is the TTL backstop for a reused pid; it must stay above the " +
+        "longest legitimate stage, which AGENT_TIMEOUT_MS bounds. Raise the agent " +
+        "timeout past it and the sweep starts reaping live runs mid-agent.",
+    ).toBeGreaterThanOrEqual(2 * AGENT_TIMEOUT_MS);
+  });
+});
+
+describe("inflight signal handling", () => {
+  it("clears the claim on SIGINT and still exits 130", async () => {
+    const ledgerPath = tmpLedger();
+    const dir = inflightDir(ledgerPath);
+    const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
+    const inflightModule = fileURLToPath(new URL("../src/inflight.ts", import.meta.url));
+    // .mts, not .ts: the fixture's tmpdir has no package.json, so tsx would
+    // read a bare .ts as CJS and reject its top-level await.
+    const fixture = path.join(path.dirname(ledgerPath), "run.mts");
+    writeFileSync(
+      fixture,
+      `const { beginInflight } = await import(${JSON.stringify(inflightModule)});\n` +
+        `beginInflight({ ledgerPath: ${JSON.stringify(ledgerPath)}, runId: "sig", ` +
+        `startedAt: new Date(), task: "t", repo: "r", title: "T", log: () => {} });\n` +
+        `console.log("claimed");\n` +
+        `setInterval(() => {}, 1000);\n`,
+    );
+
+    // node --import tsx, not the tsx shim: the shim re-spawns node, so the pid
+    // we signal would not be the pid that staked the claim, and the exit code
+    // we assert would be the shim's.
+    const child = spawn(process.execPath, ["--import", "tsx", fixture], {
+      cwd: repoRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const claimed = new Promise<void>((resolve, reject) => {
+      child.stdout.on("data", (b: Buffer) => b.toString().includes("claimed") && resolve());
+      child.on("exit", (code) => reject(new Error(`fixture exited early (${code})`)));
+    });
+    await claimed;
+    expect(readdirSync(dir)).toEqual([`${child.pid}.json`]);
+
+    const exited = new Promise<number | null>((resolve) => child.on("exit", resolve));
+    child.kill("SIGINT");
+
+    // 128 + SIGINT(2). Installing a listener replaces Node's default, so a
+    // handler that forgets to re-exit makes a Ctrl-C'd run report success.
+    expect(await exited).toBe(130);
+    expect(readdirSync(dir)).toEqual([]);
+  }, 20_000);
 });
