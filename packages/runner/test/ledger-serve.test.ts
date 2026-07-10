@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { appendLedger, type LedgerEntry } from "../src/ledger.js";
+import { beginInflight } from "../src/inflight.js";
 import { serveLedger, type ServeLedgerHandle } from "../src/ledger-serve.js";
 
 function entry(overrides: Partial<LedgerEntry>): LedgerEntry {
@@ -81,6 +82,50 @@ describe("serveLedger", () => {
     appendLedger(ledgerPath, entry({ status: "vetoed", reason: "a new kill landed" }));
 
     await expect(reloaded).resolves.toBeUndefined();
+  });
+
+  it("renders the Live lane from the in-flight store", async () => {
+    const ledgerPath = tmpLedger();
+    const claim = beginInflight({
+      ledgerPath,
+      runId: "run-live",
+      startedAt: new Date(),
+      task: "002-dedupe-feed-items",
+      repo: "demo-feed-service",
+      title: "Dedupe feed items on ingest",
+      log: () => {},
+    });
+    claim.enter("verify");
+
+    handle = await serveLedger({ ledgerPath, port: 0 });
+    const html = await (await fetch(handle.url)).text();
+    claim.clear();
+
+    expect(html).toContain("In flight · 1");
+    expect(html).toContain("Dedupe feed items on ingest");
+  });
+
+  it("pushes a reload event when a run changes stage", async () => {
+    const ledgerPath = tmpLedger();
+    // `fs.watch` is non-recursive, so this only fires if the server watches
+    // `inflight/` itself and not just the ledger's directory.
+    const claim = beginInflight({
+      ledgerPath,
+      runId: "run-live",
+      startedAt: new Date(),
+      task: "002-dedupe-feed-items",
+      repo: "demo-feed-service",
+      title: "Dedupe feed items on ingest",
+      log: () => {},
+    });
+
+    handle = await serveLedger({ ledgerPath, port: 0 });
+    const reloaded = waitForReload(handle.url, 3000);
+    await new Promise((r) => setTimeout(r, 100));
+    claim.enter("judge");
+
+    await expect(reloaded).resolves.toBeUndefined();
+    claim.clear();
   });
 
   it("closes cleanly", async () => {
