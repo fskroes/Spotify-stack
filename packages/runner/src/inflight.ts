@@ -16,7 +16,22 @@
  * directory too — the write path runs under test instead of being skipped.
  */
 import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { constants } from "node:os";
 import path from "node:path";
+
+/**
+ * How long a record may sit in one stage before it is presumed orphaned.
+ *
+ * This is a backstop, not the detector: `process.kill(pid, 0)` catches an
+ * orphan in microseconds, where a TTL lags by up to its own bound. It exists
+ * for the one case liveness cannot see — a dead run whose pid has been reused.
+ *
+ * The bound is over `stageSince`, not `startedAt`. A *run* is unbounded (the
+ * agent→verify→judge loop repeats), but a *stage* is not: the agent call is
+ * capped by `AGENT_TIMEOUT_MS` and every other stage is shorter, and each pass
+ * through the loop rewrites `stageSince`.
+ */
+export const STALE_AFTER_MS = 60 * 60 * 1000;
 
 /**
  * Where a run currently is. Deliberately *not* the Funnel's bar list: `scope`
@@ -71,6 +86,55 @@ export function readInflight(ledgerPath: string): InflightRecord[] {
     }
   }
   return records;
+}
+
+/**
+ * Is this record's run still running? `EPERM` means the process exists but is
+ * owned by someone else — alive. `ESRCH` means it is gone.
+ */
+export function isLive(record: InflightRecord, now: number = Date.now()): boolean {
+  let running: boolean;
+  try {
+    process.kill(record.pid, 0);
+    running = true;
+  } catch (err) {
+    running = (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+  return running && now - Date.parse(record.stageSince) <= STALE_AFTER_MS;
+}
+
+/** The door the report renders from: claims whose runs are still alive. */
+export function readLiveInflight(ledgerPath: string): InflightRecord[] {
+  return readInflight(ledgerPath).filter((record) => isLive(record));
+}
+
+/**
+ * Unlink the records `readLiveInflight` filters out. Disk hygiene only — a
+ * filtered record is already invisible — so this is the runner's job, called
+ * once at the top of a run. The report server never unlinks: a `GET` stays
+ * side-effect-free and cannot race a runner staking its claim.
+ */
+export function sweepInflight(ledgerPath: string, log?: (line: string) => void): void {
+  const dir = inflightDir(ledgerPath);
+  for (const record of readInflight(ledgerPath)) {
+    if (isLive(record)) continue;
+    dropClaim(path.join(dir, `${record.pid}.json`), log ?? ((line) => console.log(line)));
+  }
+}
+
+/**
+ * Idempotent unlink. `ENOENT` is the expected steady state, not a failure: a
+ * successful run clears once in `finish()` and again in `run()`'s `finally`,
+ * and a swept record may be cleared by its own process moments later. Genuine
+ * failures (`EACCES`) still surface.
+ */
+function dropClaim(file: string, log: (line: string) => void): void {
+  try {
+    unlinkSync(file);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    log(`⚠ in-flight state not cleared: ${(err as Error).message}`);
+  }
 }
 
 export interface InflightHandle {
@@ -145,6 +209,33 @@ export function beginInflight(opts: BeginInflightOptions): InflightHandle {
 
   write();
 
+  /**
+   * The claim's lifecycle is owned here rather than by the caller, because the
+   * caller cannot see every way it dies: a plain Ctrl-C orphans the record, and
+   * so does any throw before `finish()`. Removing the listeners in `clear()` is
+   * not optional — `e2e.test.ts` calls `run()` eight times in one process, so
+   * listeners that outlive their run trip Node's MaxListeners warning at 11.
+   */
+  const listeners = new Map<NodeJS.Signals, () => void>();
+
+  const clear = (): void => {
+    for (const [signal, onSignal] of listeners) process.removeListener(signal, onSignal);
+    listeners.clear();
+    dropClaim(file, log);
+  };
+
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    const onSignal = (): void => {
+      clear();
+      // Installing a listener replaces Node's default disposition for the
+      // signal, which exits 128 + signo. Re-exit the same way, or Ctrl-C on a
+      // fleet run reports success.
+      process.exit(128 + constants.signals[signal]);
+    };
+    listeners.set(signal, onSignal);
+    process.on(signal, onSignal);
+  }
+
   return {
     enter(stage, attempt) {
       record.stage = stage;
@@ -152,9 +243,6 @@ export function beginInflight(opts: BeginInflightOptions): InflightHandle {
       if (attempt !== undefined) record.attempt = attempt;
       write();
     },
-    clear() {
-      // The record is created before every terminal path, so no existence check.
-      guard("cleared", () => unlinkSync(file));
-    },
+    clear,
   };
 }
