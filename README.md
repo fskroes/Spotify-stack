@@ -262,6 +262,64 @@ its own. Other flags: `--days <n>` (window, default 30), `--out <path>`
 default 4173). The report regenerated after each run stays offline — co-sign
 polling only happens when you ask for it.
 
+### Optional desktop operator
+
+`apps/operator-desktop` is a macOS-first Tauri shell over the same CLI and
+ledger server. It does not directly clone repos, write artifacts, make git
+changes, or open pull requests; a dispatched CI run may still open a PR through
+the runner. One managed SSH process starts `fleet report --serve` on the runner
+and forwards its loopback port to an available local port; dispatch actions run
+separately as fixed `fleet dispatch` or `fleet run --local` commands over SSH.
+
+The runner machine must already have this control repo installed and be able to
+run `pnpm fleet`. The Mac uses its existing OpenSSH agent/keychain; the app does
+not read or store SSH private keys or GitHub tokens.
+
+Connections are non-interactive (`ssh -o BatchMode=yes` with no stdin). Before
+using a profile, accept the host key once, load the key into the operator Mac's
+agent/keychain, and verify:
+
+```sh
+ssh -o BatchMode=yes <target> true
+ssh <target> 'command -v node && command -v pnpm'
+ssh <target> 'cd /absolute/path/to/control-repo && pnpm fleet report --days 1'
+```
+
+```sh
+# Rust is only required for the optional desktop shell.
+pnpm install
+pnpm operator
+```
+
+Create a host profile with an SSH target (`user@host` or an SSH config alias),
+the absolute path to the remote control repo, and the remote ledger port
+(default `4173`). The command prefix is derived as
+`cd -- <remote-repo> && exec pnpm fleet`; it is displayed but cannot be replaced
+with arbitrary shell. Profiles contain no secrets and are stored in Tauri's
+application-data directory.
+
+The live server continues to bind to `127.0.0.1`. In addition to the existing
+dashboard and `/events` stream, it exposes read-only operator data under:
+
+| Endpoint | Data |
+|---|---|
+| `/api/catalog` | task and target-repo selectors |
+| `/api/ledger` | completed ledger entries |
+| `/api/inflight` | live runner state |
+| `/api/runs/:runId` | one completed or in-flight run plus artifact metadata |
+| `/api/artifacts/:task/:repo` | allowlisted artifact metadata |
+| `/api/artifacts/:task/:repo/:file` | safe review artifacts only |
+
+Artifact reads are limited to `diff.patch`, `verify.log`, `verdict.json`,
+`result.json`, and `pr-preview.md` beneath the configured `artifacts/` root.
+Traversal, symlink escapes, transcripts, and unknown files are rejected.
+
+Cloud synchronization is not automatic in v1. Actions commits ledger lines to
+`origin/main` and stores artifacts in Actions, while the server reads the runner
+machine's local checkout and `artifacts/`. Until a runner-owned sync command is
+added, refresh the runner checkout/cache separately; dispatched cloud
+completions and artifacts will not appear merely because dispatch was accepted.
+
 ## Cloud runbook (GitHub Actions)
 
 1. `./scripts/bootstrap-github.sh` — creates + pushes the three demo repos,
