@@ -16,6 +16,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fleetRecord, KILL_STATUSES, readLedger, type LedgerEntry } from "./ledger.js";
+// Aliased: this module already has a `Stage` — the drawer timeline's row.
+import type { InflightRecord, Stage as LiveStage } from "./inflight.js";
 
 /** Nord palette — the design's colours, kept as named constants. */
 const C = {
@@ -158,6 +160,120 @@ function renderFunnel(stages: FunnelStage[], entered: number, note: string): str
   return `<div style="max-width:1080px">${rows}
       <div style="font-family:var(--mono);font-size:11px;color:${C.gray};margin-top:22px">${esc(note)}</div>
     </div>`;
+}
+
+/**
+ * The Live lane — the runs that are still moving.
+ *
+ * A surface of its own, deliberately *not* ghost markers inside the Funnel bars.
+ * A bar's width is the count of runs a gate let through; an in-flight run has
+ * passed no gate, so a marker for it can only hang in the bar's gutter — at
+ * which point it is already a separate surface, drawn in the Funnel's
+ * whitespace. The lane also has room for the two things the Funnel has nowhere
+ * to put: elapsed time, and the attempt counter that tells a run on its second
+ * pass through Agent apart from one that has never left it (`run.ts`'s
+ * agent→verify→judge loop is not monotonic, so stage position alone lies).
+ *
+ * It sits above the tab views rather than inside one, so live state costs no
+ * click from wherever you happen to be reading.
+ */
+const LIVE_STAGES: { id: LiveStage; label: string }[] = [
+  { id: "agent", label: "agent" },
+  { id: "scope", label: "scope" },
+  { id: "verify", label: "verify" },
+  { id: "judge", label: "judge" },
+  { id: "shipping", label: "shipping" },
+];
+
+/**
+ * Elapsed, in the lane's format. Mirrored exactly by the lane's ticker script —
+ * the two must agree, or every row jumps one second after the page loads.
+ */
+function fmtElapsed(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+}
+
+/** Pips for the five stages: walked ones filled, the current one lit and pulsing. */
+function stageTrack(stage: LiveStage): string {
+  const at = LIVE_STAGES.findIndex((s) => s.id === stage);
+  const pips = LIVE_STAGES.map((s, i) => {
+    const done = i < at;
+    const current = i === at;
+    const border = current ? C.frost : done ? "rgba(216,222,233,0.5)" : C.gray;
+    const fill = current ? C.frost : done ? "rgba(216,222,233,0.5)" : "transparent";
+    const lit = current ? `;box-shadow:0 0 0 3px ${hexA(C.frost, 0.16)}` : "";
+    const bar = i > 0 ? `<span style="width:11px;height:1px;background:${done || current ? "rgba(216,222,233,0.35)" : C.gray}"></span>` : "";
+    return `${bar}<span title="${esc(s.label)}" style="width:7px;height:7px;flex:none;border-radius:50%;background:${fill};border:1px solid ${border}${lit}"></span>`;
+  }).join("");
+  return `<div style="display:flex;align-items:center">${pips}</div>`;
+}
+
+function renderLiveLane(live: InflightRecord[], now: Date): string {
+  const rows = live
+    .map((r) => {
+      const attempt =
+        r.attempt > 1
+          ? `<span style="font-family:var(--mono);font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px;color:${C.yellow};background:${hexA(C.yellow, 0.13)};border:1px solid ${hexA(C.yellow, 0.4)}">↺ attempt ${r.attempt}</span>`
+          : "";
+      const elapsed = now.getTime() - Date.parse(r.startedAt);
+      const inStage = now.getTime() - Date.parse(r.stageSince);
+      // Two clocks, and they must not be confusable: the one under the stage name
+      // is time *in that stage*, the right-hand one is the run's total.
+      return `<div style="display:flex;align-items:center;gap:18px;padding:11px 22px;border-top:1px solid rgba(236,239,244,0.05)">
+          <div style="width:118px;flex:none">${stageTrack(r.stage)}</div>
+          <div style="width:86px;flex:none;font-family:var(--mono)">
+            <div style="font-size:11px;color:${C.frost}">${esc(r.stage)}</div>
+            <div style="font-size:10px;color:rgba(216,222,233,0.45)" data-live-since="${esc(r.stageSince)}">${fmtElapsed(inStage)}</div>
+          </div>
+          <div style="flex:1;min-width:0">
+            <div style="color:${C.muted};font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.title)}</div>
+            <div style="font-family:var(--mono);font-size:10.5px;color:${C.gray};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.task)} · ${esc(r.repo)}</div>
+          </div>
+          ${attempt}
+          <div style="width:78px;flex:none;text-align:right;font-family:var(--mono)">
+            <div style="font-size:12px;color:${C.text}" data-live-since="${esc(r.startedAt)}">${fmtElapsed(elapsed)}</div>
+            <div style="font-size:9.5px;letter-spacing:0.08em;text-transform:uppercase;color:${C.gray}">elapsed</div>
+          </div>
+        </div>`;
+    })
+    .join("");
+
+  // The lane's own style + ticker. Both live here rather than in the page's
+  // shared blocks so that a report rendered without live rows is byte-identical
+  // to the static one.
+  return `
+  <div style="background:${C.panel2};border-bottom:1px solid ${C.line}">
+    <div style="display:flex;align-items:center;gap:10px;padding:11px 22px 9px">
+      <span style="width:7px;height:7px;border-radius:50%;background:${C.frost};animation:livePulse 1.8s ease-in-out infinite"></span>
+      <span style="font-size:10.5px;letter-spacing:0.09em;text-transform:uppercase;color:${C.dim}">In flight · ${live.length}</span>
+      <span style="font-size:11.5px;color:${C.gray}">still moving — undecided, and so not in the funnel</span>
+    </div>
+    ${rows}
+  </div>
+  <style>@keyframes livePulse{0%,100%{opacity:1}50%{opacity:0.25}}</style>
+  <script>
+    (function(){
+      function fmt(ms){
+        var s = Math.max(0, Math.round(ms / 1000));
+        if (s < 60) return s + 's';
+        var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+        if (h > 0) return h + 'h ' + String(m).padStart(2, '0') + 'm';
+        return m + 'm ' + String(s % 60).padStart(2, '0') + 's';
+      }
+      // The page only re-renders when the ledger or the in-flight store changes;
+      // elapsed has to keep counting between those.
+      setInterval(function(){
+        document.querySelectorAll('[data-live-since]').forEach(function(el){
+          el.textContent = fmt(Date.now() - Date.parse(el.dataset.liveSince));
+        });
+      }, 1000);
+    })();
+  </script>`;
 }
 
 /** Most common reason among windowed kills of a given raw status. */
@@ -932,6 +1048,18 @@ export interface RenderOptions {
    * `fleet report --html` path and the after-run regenerate never carry it.
    */
   liveReload?: boolean;
+  /**
+   * Runs currently in flight, for the Live lane. Read from `fleet/inflight/` by
+   * the live server; **ignored unless `liveReload` is set**, because a static
+   * report is a snapshot — a frozen file claiming a run is "in flight, 3m 20s"
+   * is a lie the moment it is written, and it is the file that gets committed
+   * and attached to PRs.
+   *
+   * These never reach `fleetRecord`, the funnel, the trend, or the patterns tab:
+   * those aggregate *decided* runs, and an in-flight run has been decided by
+   * nothing.
+   */
+  inflight?: InflightRecord[];
 }
 
 export function renderLedgerHtml(entries: LedgerEntry[], opts: RenderOptions = {}): string {
@@ -987,6 +1115,22 @@ export function renderLedgerHtml(entries: LedgerEntry[], opts: RenderOptions = {
   stages.push({ label: "Shipped for review", sub: "opened as a PR", color: C.green, passed: record.shipped, killCount: 0 });
   const funnelNote = `${record.infra} infra (engine failures — not a verdict) · ${record.neutral} no-change (preconditions correctly not met) — excluded from the funnel.`;
   const funnel = renderFunnel(stages, decided, funnelNote);
+
+  // The Live lane. `finish()` appends the ledger line *before* it unlinks the
+  // in-flight record, so for a sub-millisecond window a run is both live and
+  // decided; `runId` is on both sides precisely so the reader can drop the live
+  // row instead of drawing the run twice. Matched against the whole ledger, not
+  // the window: a run finishing right now is always inside it anyway, and a
+  // narrow `--days` must not resurrect a ghost.
+  const decidedRunIds = new Set(entries.map((e) => e.runId).filter(Boolean));
+  const live = (opts.liveReload ? (opts.inflight ?? []) : [])
+    .filter((r) => !decidedRunIds.has(r.runId))
+    .sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+  const liveLane = live.length > 0 ? renderLiveLane(live, now) : "";
+  const liveChip =
+    live.length > 0
+      ? `<span style="display:flex;align-items:center;gap:7px;color:${C.frost}"><span style="width:7px;height:7px;border-radius:50%;background:${C.frost};animation:livePulse 1.8s ease-in-out infinite"></span>${live.length} in flight</span>`
+      : "";
 
   // Trend tab — the last 14 UTC days, plus the co-sign fraction over the 14-day
   // window when live state was fetched (mirrors the header chip's discipline).
@@ -1155,7 +1299,7 @@ export function renderLedgerHtml(entries: LedgerEntry[], opts: RenderOptions = {
       </div>
       <span style="font-size:12px;color:${C.dim}">the kill log — every shipped PR is a survivor of this filter</span>
     </div>
-    <div style="display:flex;align-items:center;gap:16px;font-family:var(--mono);font-size:11.5px;color:rgba(216,222,233,0.6)">
+    <div style="display:flex;align-items:center;gap:16px;font-family:var(--mono);font-size:11.5px;color:rgba(216,222,233,0.6)">${liveChip}
       <span>last ${days} days</span>
       <span style="color:${C.text}">${dispatched} runs · in window</span>
       <span title="generated">gen ${stamp}Z</span>
@@ -1173,7 +1317,7 @@ export function renderLedgerHtml(entries: LedgerEntry[], opts: RenderOptions = {
       <button class="tab" data-view="trend">Trend</button>
     </div>
   </div>
-
+${liveLane}
   ${scrubber}
 
   <div id="view-ledger" class="view active">

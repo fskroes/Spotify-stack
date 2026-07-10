@@ -1,10 +1,11 @@
 /**
  * The live Fleet Ledger server (`fleet report --serve`).
  *
- * A tiny local HTTP endpoint that re-renders `fleet/ledger.jsonl` on every
- * request and pushes a reload signal to open browser pages over SSE whenever the
- * ledger changes — so the report updates as runs land, with no manual
- * regenerate. Node builtins only (no deps).
+ * A tiny local HTTP endpoint that re-renders `fleet/ledger.jsonl` and the
+ * in-flight store on every request, and pushes a reload signal to open browser
+ * pages over SSE whenever either changes — so the report updates as runs move
+ * through the pipeline and land, with no manual regenerate. Node builtins only
+ * (no deps).
  *
  * Discipline mirrors the rest of the codebase: rendering stays pure (it calls
  * the runner's `renderLedgerHtml`), and network (`gh`) never leaks in here — the
@@ -14,6 +15,7 @@ import { type IncomingMessage, type ServerResponse, createServer, type Server } 
 import { type FSWatcher, mkdirSync, watch } from "node:fs";
 import path from "node:path";
 import { readLedger } from "./ledger.js";
+import { inflightDir, readLiveInflight } from "./inflight.js";
 import {
   type Cosign,
   type RenderOptions,
@@ -69,7 +71,10 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
     const url = req.url ?? "/";
     if (req.method === "GET" && (url === "/" || url.startsWith("/?"))) {
       const entries = readLedger(opts.ledgerPath);
-      const html = renderLedgerHtml(entries, { ...renderOpts, liveReload: true, cosigns });
+      // Read, never sweep: a GET stays side-effect-free and so cannot race a
+      // runner staking its claim. Orphan files are the runner's to reap.
+      const inflight = readLiveInflight(opts.ledgerPath);
+      const html = renderLedgerHtml(entries, { ...renderOpts, liveReload: true, cosigns, inflight });
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(html);
       return;
@@ -99,23 +104,41 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
   }, 25_000);
   heartbeat.unref();
 
+  let debounce: NodeJS.Timeout | undefined;
+  const scheduleReload = (): void => {
+    if (debounce) clearTimeout(debounce);
+    debounce = setTimeout(broadcastReload, 150);
+  };
+
+  const watchers: FSWatcher[] = [];
+  /** Some platforms/filesystems can't watch; the page still serves and refreshes
+   *  manually. Don't take the server down over it. */
+  const tryWatch = (dir: string, onChange: (filename: string | null) => void): void => {
+    try {
+      watchers.push(watch(dir, (_event, filename) => onChange(filename)));
+    } catch {
+      /* unwatchable */
+    }
+  };
+
   // Watch the ledger's directory (atomic writes replace the inode, so watching
   // the file directly can miss updates), filtered to the ledger basename.
   const dir = path.dirname(opts.ledgerPath);
   const base = path.basename(opts.ledgerPath);
   mkdirSync(dir, { recursive: true });
-  let watcher: FSWatcher | undefined;
-  let debounce: NodeJS.Timeout | undefined;
-  try {
-    watcher = watch(dir, (_event, filename) => {
-      if (filename && filename !== base) return;
-      if (debounce) clearTimeout(debounce);
-      debounce = setTimeout(broadcastReload, 150);
-    });
-  } catch {
-    // Some platforms/filesystems can't watch; the page still serves and
-    // refreshes manually. Don't take the server down over it.
-  }
+  tryWatch(dir, (filename) => {
+    if (filename && filename !== base) return;
+    scheduleReload();
+  });
+
+  // And the in-flight store, for the Live lane. A second watcher is not optional:
+  // `fs.watch` is non-recursive, so the ledger's watcher never sees a write
+  // inside the `inflight/` subdirectory. The 150ms debounce also absorbs the
+  // window in which `finish()` has appended the ledger line but not yet unlinked
+  // the record — both events collapse into one reload.
+  const liveDir = inflightDir(opts.ledgerPath);
+  mkdirSync(liveDir, { recursive: true });
+  tryWatch(liveDir, scheduleReload);
 
   // Co-sign poll — only when the CLI supplied a fetcher. A `gh` hiccup must
   // never kill the server, so every call is guarded.
@@ -150,7 +173,7 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
         clearInterval(heartbeat);
         if (cosignTimer) clearInterval(cosignTimer);
         if (debounce) clearTimeout(debounce);
-        watcher?.close();
+        for (const w of watchers) w.close();
         for (const res of clients) res.end();
         clients.clear();
         return new Promise((res) => server.close(() => res()));
