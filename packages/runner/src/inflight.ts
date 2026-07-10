@@ -18,6 +18,7 @@
 import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { constants } from "node:os";
 import path from "node:path";
+import { STALE_AFTER_MS } from "./timeouts.js";
 
 /**
  * How long a record may sit in one stage before it is presumed orphaned.
@@ -31,7 +32,7 @@ import path from "node:path";
  * capped by `AGENT_TIMEOUT_MS` and every other stage is shorter, and each pass
  * through the loop rewrites `stageSince`.
  */
-export const STALE_AFTER_MS = 60 * 60 * 1000;
+export { STALE_AFTER_MS };
 
 /**
  * Where a run currently is. Deliberately *not* the Funnel's bar list: `scope`

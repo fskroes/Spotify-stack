@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { AGENT_TIMEOUT_MS } from "./timeouts.js";
 import { git } from "./workspace.js";
 
 export interface EngineResult {
@@ -17,10 +18,6 @@ export interface Engine {
   run(prompt: string): EngineResult;
   resume(sessionId: string, guidance: string): EngineResult;
 }
-
-/** Exported only so a test can hold `inflight.ts`'s `STALE_AFTER_MS` above it:
- *  raise this past that backstop and the sweep starts reaping live runs. */
-export const AGENT_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * Claude Code only honors a project's .claude/settings.json (our allowlist
