@@ -27,6 +27,51 @@ PATTERN="${IDENTIFIERS}|${DOMAIN}"
 # itself. Nothing else is exempt.
 SELF='scripts/check-scrub.sh'
 
+LEDGER='fleet/ledger.jsonl'
+
+# The ledger is the one tracked file whose worktree copy is allowed to diverge
+# from HEAD: HEAD carries the scrubbed public rows, the worktree carries the real
+# run history. Only the `skip-worktree` bit keeps those apart, and it is a local,
+# uninherited bit that nothing restores. Lose it and both failure modes are
+# silent: `git checkout`/`git restore`/`git stash` overwrites the private history
+# with the public blob (this is how three runs were lost on 2026-07-08), and
+# `git commit -a` leaks the private names the rest of this script exists to catch.
+#
+# So: whenever the worktree ledger actually holds something HEAD does not, demand
+# the bit. When the two match there is no private history to protect and no bit to
+# require — which is what keeps a fresh CI clone passing.
+check_ledger_held_back() {
+  git ls-files --error-unmatch "$LEDGER" >/dev/null 2>&1 || return 0
+  [ -f "$LEDGER" ] || return 0
+  git show "HEAD:$LEDGER" 2>/dev/null | cmp -s - "$LEDGER" && return 0
+
+  case "$(git ls-files -v "$LEDGER")" in
+    S*) return 0 ;;  # skip-worktree set — diverging on purpose, held back
+  esac
+
+  cat >&2 <<MSG
+
+✗ scrub check failed — $LEDGER differs from HEAD but is not held back.
+
+Its worktree copy carries private run history that HEAD does not. Without the
+skip-worktree bit that history is one \`git checkout\` from being overwritten by
+the public blob, and one \`git commit -a\` from being published.
+
+Restore the bit before doing anything else:
+
+  git update-index --skip-worktree $LEDGER
+
+If it is already staged, unstage it too:
+
+  git restore --staged $LEDGER
+MSG
+  return 1
+}
+
+if ! check_ledger_held_back; then
+  exit 1
+fi
+
 # macOS ships bash 3.2, so no `mapfile` and no process-substitution-into-array.
 if [ "${1:-}" = "--all" ]; then
   list_files() { git ls-files; }
