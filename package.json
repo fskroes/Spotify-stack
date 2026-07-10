@@ -9,6 +9,8 @@
   },
   "scripts": {
     "fleet": "tsx packages/cli/src/index.ts",
+    "operator": "pnpm --filter @fleet/operator-desktop tauri:dev",
+    "operator:build": "pnpm --filter @fleet/operator-desktop tauri:build",
     "scrub": "bash scripts/check-scrub.sh --all",
     "test": "vitest run",
     "test:watch": "vitest"
