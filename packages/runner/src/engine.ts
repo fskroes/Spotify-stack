@@ -42,6 +42,67 @@ function trustWorkspace(workspace: string): void {
   writeFileSync(configPath, JSON.stringify(config, null, 2));
 }
 
+/** The subset of `execFileSync`'s thrown error the failure message reads. */
+export interface ExecFailure {
+  status?: number | null;
+  signal?: string | null;
+  code?: string | null;
+  stderr?: unknown;
+  stdout?: unknown;
+}
+
+/**
+ * The agent CLI reports "the model quit" and "the process was killed" through
+ * the same non-zero exit, and the two demand opposite responses. `claude` exits
+ * 0 on an API refusal, writing the reason into its JSON — so a session limit
+ * arrives as `status: 1` with the explanation buried in stdout.
+ */
+function describeApiError(stdout: unknown): string | undefined {
+  try {
+    const raw = String(stdout ?? "");
+    const parsed = JSON.parse(raw.slice(raw.indexOf("{"))) as {
+      is_error?: boolean;
+      api_error_status?: number;
+      result?: string;
+    };
+    if (!parsed.is_error && parsed.api_error_status === undefined) return undefined;
+    const status = parsed.api_error_status ? ` (HTTP ${parsed.api_error_status})` : "";
+    return `the model API rejected the run${status}: ${parsed.result ?? "no reason given"}`;
+  } catch {
+    return undefined; // not JSON, or truncated — fall through to the exit-code reading
+  }
+}
+
+/**
+ * Name the cause, because the raw fields invite exactly the wrong fix.
+ *
+ * Node's own `timeout` kills with `code: "ETIMEDOUT"` and a *null* status. A
+ * bare `status: 143` is therefore **not** our timeout — it is the agent exiting
+ * after something outside this process sent it SIGTERM. Reading 143 as "the
+ * timeout fired" leads to raising AGENT_TIMEOUT_MS, which fixes nothing and
+ * lets the next external kill waste even more time.
+ */
+export function describeFailure(e: ExecFailure): string {
+  if (e.code === "ETIMEDOUT") {
+    return `the agent ran longer than AGENT_TIMEOUT_MS (${Math.round(AGENT_TIMEOUT_MS / 60_000)}m) and was killed`;
+  }
+  if (e.code === "ENOBUFS") {
+    return "the agent wrote more output than maxBuffer allows";
+  }
+  const apiError = describeApiError(e.stdout);
+  if (apiError) return apiError;
+  if (e.signal === "SIGTERM" || e.status === 143) {
+    return (
+      "the agent was terminated from outside this process (SIGTERM) — not the " +
+      "agent timeout, which would report code=ETIMEDOUT with a null status"
+    );
+  }
+  if (e.status === null || e.status === undefined) {
+    return `the agent was killed by ${e.signal ?? "an unknown signal"} before it could exit`;
+  }
+  return `the agent exited ${e.status}`;
+}
+
 /**
  * Headless Claude Code — the same engine Spotify converged on for Honk.
  * The workspace's .claude/settings.json (allowlist + Stop hook) constrains
@@ -75,11 +136,11 @@ export function claudeEngine(opts: { workspace: string; mcpConfigPath: string })
     } catch (error) {
       // execFileSync's default message is just the command line — surface the
       // exit status and output tails or the failure is undiagnosable in CI.
-      const e = error as { status?: number | null; signal?: string | null; stderr?: unknown; stdout?: unknown };
+      const e = error as ExecFailure;
       const tail = (s: unknown) => String(s ?? "").slice(-2000).trim();
       throw new Error(
-        `claude ${args[0] === "--resume" ? "resume" : "run"} failed ` +
-          `(status=${e.status ?? "?"}, signal=${e.signal ?? "none"})\n` +
+        `claude ${args[0] === "--resume" ? "resume" : "run"} failed: ${describeFailure(e)}\n` +
+          `(status=${e.status ?? "?"}, signal=${e.signal ?? "none"}, code=${e.code ?? "none"})\n` +
           `stderr: ${tail(e.stderr) || "(empty)"}\nstdout tail: ${tail(e.stdout) || "(empty)"}`,
       );
     }
