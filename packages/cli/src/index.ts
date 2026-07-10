@@ -222,6 +222,7 @@ program
     if (options.serve) {
       const { url } = await serveLedger({
         ledgerPath,
+        controlRepo,
         port: Number.parseInt(options.port, 10),
         renderOpts: { days },
         // Re-read the ledger each poll so newly shipped PRs are picked up.

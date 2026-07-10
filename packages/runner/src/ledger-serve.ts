@@ -16,6 +16,7 @@ import { type FSWatcher, mkdirSync, watch } from "node:fs";
 import path from "node:path";
 import { readLedger } from "./ledger.js";
 import { inflightDir, readLiveInflight } from "./inflight.js";
+import { handleOperatorApi } from "./operator-api.js";
 import {
   type Cosign,
   type RenderOptions,
@@ -26,6 +27,10 @@ import {
 export interface ServeLedgerOptions {
   /** Path to the watched ledger (fleet/ledger.jsonl). */
   ledgerPath: string;
+  /** Control repository root. Inferred from `<repo>/fleet/ledger.jsonl`. */
+  controlRepo?: string;
+  /** Artifact root exposed by the read-only operator API. */
+  artifactsRoot?: string;
   /** Port to listen on; 0 lets the OS pick a free one (used in tests). */
   port: number;
   /** Bind address; defaults to loopback. */
@@ -57,6 +62,7 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
   const host = opts.host ?? "127.0.0.1";
   const renderOpts = opts.renderOpts ?? {};
   const cosignPollMs = opts.cosignPollMs ?? 60_000;
+  const controlRepo = opts.controlRepo ?? path.dirname(path.dirname(opts.ledgerPath));
 
   // Open SSE responses. A reload is broadcast to all of them on ledger change.
   const clients = new Set<ServerResponse>();
@@ -69,6 +75,9 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
 
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? "/";
+    if (handleOperatorApi(req, res, { ledgerPath: opts.ledgerPath, controlRepo, artifactsRoot: opts.artifactsRoot })) {
+      return;
+    }
     if (req.method === "GET" && (url === "/" || url.startsWith("/?"))) {
       const entries = readLedger(opts.ledgerPath);
       // Read, never sweep: a GET stays side-effect-free and so cannot race a
