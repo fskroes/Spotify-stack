@@ -31,6 +31,7 @@ import {
   X,
   XCircle,
 } from "lucide";
+import { fleetRevision, ledgerRefreshDecision, refreshedLedgerUrl } from "./ledger-refresh";
 import "./styles.css";
 
 interface HostProfile {
@@ -289,6 +290,7 @@ let results: RemoteCommandResult[] = [];
 let selectedKey = "";
 let artifactPreview: { runKey: string; name: string } | null = null;
 let artifactRequest = 0;
+let ledgerRevision = "";
 let queueFilter: QueueFilter = "all";
 let workspaceView: WorkspaceView = "run";
 let lastUpdated: Date | null = null;
@@ -733,6 +735,13 @@ async function operatorGet<T>(path: string): Promise<T> {
   return invoke<T>("operator_get", { path });
 }
 
+function refreshLedgerFrame(): void {
+  if (!status.url) return;
+  ledgerFrame.src = refreshedLedgerUrl(status.url, Date.now());
+  ledgerFrame.hidden = false;
+  $("#ledger-empty").hidden = true;
+}
+
 async function refreshFleetData(): Promise<void> {
   if (previewMode) return loadPreviewData();
   const [ledger, inflight] = await Promise.all([
@@ -741,10 +750,14 @@ async function refreshFleetData(): Promise<void> {
   ]);
   const completed: FleetRun[] = ledger.entries.map((entry, index) => ({ kind: "completed", key: entry.runId ?? `ledger-${entry.ts}-${entry.task}-${entry.repo}-${index}`, sortAt: entry.ts, data: entry }));
   const live: FleetRun[] = inflight.runs.map((entry) => ({ kind: "inflight", key: entry.runId, sortAt: entry.startedAt, data: entry }));
+  const nextRevision = fleetRevision(ledger.entries, inflight.runs);
+  const ledgerChanged = ledgerRefreshDecision(ledgerRevision, nextRevision);
+  ledgerRevision = nextRevision;
   runs = [...live, ...completed].sort((a, b) => Date.parse(b.sortAt) - Date.parse(a.sortAt));
   lastUpdated = new Date(ledger.generatedAt);
   if (!selectedKey || !runs.some((run) => run.key === selectedKey)) selectedKey = runs[0]?.key ?? "";
   await loadArtifactsForSelected();
+  if (ledgerChanged) refreshLedgerFrame();
   renderAll();
 }
 
@@ -811,6 +824,7 @@ async function connect(): Promise<void> {
     status = await invoke<ConnectionStatus>("connect_profile", { profile });
     if (status.state !== "connected" || !status.url) throw new Error(status.outputTail || "SSH connection stopped");
     catalog = await waitForCatalog();
+    ledgerRevision = "";
     ledgerFrame.src = status.url;
     ledgerFrame.hidden = false;
     $("#ledger-empty").hidden = true;
@@ -912,6 +926,7 @@ $("#disconnect").addEventListener("click", async () => {
     runs = [];
     selectedKey = "";
     artifacts = [];
+    ledgerRevision = "";
     ledgerFrame.src = "about:blank";
     ledgerFrame.hidden = true;
     $("#ledger-empty").hidden = false;
