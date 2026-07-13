@@ -283,10 +283,14 @@ source of truth for co-sign state, which `--cosign` polling picks up.
 
 `apps/operator-desktop` is a macOS-first Tauri shell over the same CLI and
 ledger server. It does not directly clone repos, write artifacts, make git
-changes, or open pull requests; a dispatched CI run may still open a PR through
-the runner. One managed SSH process starts `fleet report --serve` on the runner
-and forwards its loopback port to an available local port; dispatch actions run
-separately as fixed `fleet dispatch` or `fleet run --local` commands over SSH.
+changes, or open pull requests; a dispatched CI run or a runner-side local run
+may still open a PR through the runner. One managed SSH process starts
+`fleet report --serve` on the runner and forwards its loopback port to an
+available local port; dispatch actions run separately as fixed `fleet dispatch`
+or `fleet run --local` commands over SSH. The launch form's PR toggle (default
+on) adds the fixed `--pr` flag to the local-run command, so runs launched from
+the app produce reviewable PRs by default; unticking it keeps the
+artifacts-only dry run.
 
 The runner machine must already have this control repo installed and be able to
 run `pnpm fleet`. The Mac uses its existing OpenSSH agent/keychain; the app does
