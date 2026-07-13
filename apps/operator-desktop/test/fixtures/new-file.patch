@@ -1,0 +1,67 @@
+diff --git a/tests/feed.test.js b/tests/feed.test.js
+new file mode 100644
+index 0000000..fd87402
+--- /dev/null
++++ b/tests/feed.test.js
+@@ -0,0 +1,61 @@
++import test from "node:test";
++import assert from "node:assert/strict";
++import { buildFeed } from "../src/lib/feed.js";
++
++test("buildFeed emits one entry per item with matching id and link", () => {
++  const feed = buildFeed({
++    title: "News",
++    items: [
++      { id: "1", url: "https://example.com/1", title: "First" },
++      { id: "2", url: "https://example.com/2", title: "Second" },
++    ],
++  });
++
++  const entryCount = feed.match(/<entry>/g)?.length ?? 0;
++  assert.equal(entryCount, 2);
++
++  assert.ok(feed.includes("<id>1</id>"));
++  assert.ok(feed.includes("<id>2</id>"));
++  assert.ok(feed.includes('<link href="https://example.com/1"/>'));
++  assert.ok(feed.includes('<link href="https://example.com/2"/>'));
++});
++
++test("buildFeed escapes XML special characters in the feed title", () => {
++  const feed = buildFeed({
++    title: 'News & <Updates> "daily"',
++    items: [{ id: "1", url: "https://example.com/1", title: "First" }],
++  });
++
++  assert.ok(feed.includes("News &amp; &lt;Updates&gt; &quot;daily&quot;"));
++  assert.ok(!feed.includes('<title>News & <Updates>'));
++});
++
++test("buildFeed escapes XML special characters in entry titles", () => {
++  const feed = buildFeed({
++    title: "News",
++    items: [
++      { id: "1", url: "https://example.com/1", title: 'Cats & <Dogs> "news"' },
++    ],
++  });
++
++  assert.ok(feed.includes("Cats &amp; &lt;Dogs&gt; &quot;news&quot;"));
++  assert.ok(!feed.includes('Cats & <Dogs> "news"'));
++});
++
++test("buildFeed produces a well-formed Atom document", () => {
++  const feed = buildFeed({
++    title: "News",
++    items: [{ id: "1", url: "https://example.com/1", title: "First" }],
++  });
++
++  assert.ok(feed.startsWith('<?xml version="1.0" encoding="utf-8"?>'));
++  assert.ok(feed.includes('xmlns="http://www.w3.org/2005/Atom"'));
++  assert.ok(feed.includes("<updated>"));
++});
++
++test("buildFeed produces a feed with no entries for an empty item list", () => {
++  const feed = buildFeed({ title: "Empty", items: [] });
++
++  assert.ok(feed.includes("<feed"));
++  assert.ok(!feed.includes("<entry>"));
++});

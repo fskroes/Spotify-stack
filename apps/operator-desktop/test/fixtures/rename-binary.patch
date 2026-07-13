@@ -1,0 +1,23 @@
+diff --git a/icons/sprite.bin b/icons/sprite.bin
+index 0c0200f..4cd2f0f 100644
+Binary files a/icons/sprite.bin and b/icons/sprite.bin differ
+diff --git a/dates.js b/src/lib/dates.js
+similarity index 75%
+rename from dates.js
+rename to src/lib/dates.js
+index 28b13ab..e0de311 100644
+--- a/dates.js
++++ b/src/lib/dates.js
+@@ -3,5 +3,5 @@ export function formatDate(value) {
+ }
+ 
+ export function parseDate(value) {
+-  return Date.parse(value);
+-}
++  return new Date(value).getTime();
++}
+\ No newline at end of file
+diff --git a/version.js b/src/version.js
+similarity index 100%
+rename from version.js
+rename to src/version.js
