@@ -42,7 +42,11 @@ export function parsePatch(patch: string): ParsedDiff {
   let file: DiffFile | null = null;
   let hunk: DiffHunk | null = null;
 
-  for (const line of patch.split("\n")) {
+  // A newline-terminated patch splits into a trailing "" that is not a line.
+  const lines = patch.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+
+  for (const line of lines) {
     const header = line.match(/^diff --git a\/.* b\/(.*)$/);
     if (header) {
       file = { path: header[1], status: "modified", binary: false, additions: 0, deletions: 0, hunks: [] };

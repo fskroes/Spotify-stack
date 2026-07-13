@@ -54,6 +54,8 @@ describe("parsePatch", () => {
     expect(diff.files[0].deletions).toBe(0);
     expect(diff.files[0].hunks).toHaveLength(1);
     expect(diff.files[0].hunks[0].header).toBe("@@ -0,0 +1,61 @@");
+    // the patch's terminating newline is not a 62nd hunk line
+    expect(diff.files[0].hunks[0].lines).toHaveLength(61);
   });
 
   it("handles binary markers, renames with edits, and pure renames", () => {

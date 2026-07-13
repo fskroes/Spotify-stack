@@ -809,6 +809,15 @@ function reviewNotice(icon: string, title: string, detail: string): HTMLElement 
   return empty;
 }
 
+function diffCounts(additions: number, deletions: number): HTMLElement {
+  const counts = document.createElement("span");
+  counts.className = "diff-counts";
+  counts.innerHTML = `<b class="add"></b><b class="del"></b>`;
+  counts.querySelector(".add")!.textContent = `+${additions}`;
+  counts.querySelector(".del")!.textContent = `−${deletions}`;
+  return counts;
+}
+
 function diffFileTags(file: DiffFile): string[] {
   const tags: string[] = [];
   if (file.status !== "modified") tags.push(file.status === "added" ? "new" : file.status);
@@ -821,7 +830,7 @@ function renderDiffFile(file: DiffFile): HTMLElement {
   details.className = "diff-file";
   details.open = file.hunks.length > 0;
   const summary = document.createElement("summary");
-  summary.innerHTML = `<i data-lucide="chevron-right"></i><span class="diff-path"></span><span class="diff-tags"></span><span class="diff-counts"><b class="add"></b><b class="del"></b></span>`;
+  summary.innerHTML = `<i data-lucide="chevron-right"></i><span class="diff-path"></span><span class="diff-tags"></span>`;
   summary.querySelector(".diff-path")!.textContent = file.oldPath ? `${file.oldPath} → ${file.path}` : file.path;
   const tagList = summary.querySelector(".diff-tags")!;
   for (const tag of diffFileTags(file)) {
@@ -829,8 +838,7 @@ function renderDiffFile(file: DiffFile): HTMLElement {
     chip.textContent = tag;
     tagList.append(chip);
   }
-  summary.querySelector(".add")!.textContent = `+${file.additions}`;
-  summary.querySelector(".del")!.textContent = `−${file.deletions}`;
+  summary.append(diffCounts(file.additions, file.deletions));
   details.append(summary);
 
   const body = document.createElement("div");
@@ -899,10 +907,9 @@ function renderReview(): void {
     const { files, additions, deletions } = review.diff;
     const summary = document.createElement("div");
     summary.className = "review-summary";
-    summary.innerHTML = `<strong></strong><span class="diff-counts"><b class="add"></b><b class="del"></b></span>`;
-    summary.querySelector("strong")!.textContent = `${files.length} ${files.length === 1 ? "file" : "files"} changed`;
-    summary.querySelector(".add")!.textContent = `+${additions}`;
-    summary.querySelector(".del")!.textContent = `−${deletions}`;
+    const heading = document.createElement("strong");
+    heading.textContent = `${files.length} ${files.length === 1 ? "file" : "files"} changed`;
+    summary.append(heading, diffCounts(additions, deletions));
     container.append(summary);
     for (const file of files) container.append(renderDiffFile(file));
   }
@@ -983,7 +990,9 @@ async function loadArtifactsForSelected(): Promise<void> {
   const run = selectedRun();
   const runKey = selectedKey;
   const request = ++artifactRequest;
-  let next: ArtifactMetadata[] = [];
+  // null = fetch failed: the list is unknown, not known-empty — the Review tab
+  // must keep saying "fetching" (and let the poll retry), never "recorded nothing".
+  let next: ArtifactMetadata[] | null = [];
   if (run && run.kind === "completed") {
     if (previewMode) {
       next = previewArtifacts();
@@ -992,13 +1001,13 @@ async function loadArtifactsForSelected(): Promise<void> {
         const detail = await operatorGet<{ artifacts: ArtifactMetadata[] }>(`/api/runs/${encodeURIComponent(run.data.runId)}`);
         next = detail.artifacts;
       } catch {
-        next = [];
+        next = null;
       }
     }
   }
   if (request === artifactRequest && runKey === selectedKey) {
-    artifacts = next;
-    artifactsLoadedFor = runKey;
+    artifacts = next ?? [];
+    artifactsLoadedFor = next ? runKey : "";
   }
 }
 
