@@ -34,6 +34,7 @@ import {
   XCircle,
 } from "lucide";
 import { fleetRevision, ledgerRefreshDecision, refreshedLedgerUrl } from "./ledger-refresh";
+import { parsePatch, type DiffFile, type ParsedDiff } from "./diff-parser";
 import "./styles.css";
 
 interface HostProfile {
@@ -118,7 +119,13 @@ type FleetRun =
   | { kind: "inflight"; key: string; sortAt: string; data: InflightRecord };
 
 type QueueFilter = "all" | "attention";
-type WorkspaceView = "run" | "ledger";
+type WorkspaceView = "run" | "review" | "ledger";
+
+/** Review-tab diff, cached per run so polling never refetches a parsed patch. */
+type ReviewState =
+  | { runKey: string; state: "loading" }
+  | { runKey: string; state: "ready"; diff: ParsedDiff }
+  | { runKey: string; state: "error"; message: string };
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
@@ -176,6 +183,7 @@ app.innerHTML = `
 
       <nav class="workspace-tabs" aria-label="Workspace views">
         <button class="workspace-tab active" data-view="run"><i data-lucide="activity"></i>Run</button>
+        <button class="workspace-tab" data-view="review"><i data-lucide="file-diff"></i>Review</button>
         <button class="workspace-tab" data-view="ledger"><i data-lucide="file-code-2"></i>Fleet Ledger</button>
       </nav>
 
@@ -202,6 +210,10 @@ app.innerHTML = `
           <header><button id="close-artifact" class="icon-button" title="Back to run" aria-label="Back to run"><i data-lucide="x"></i></button><div><strong id="artifact-title"></strong><span id="artifact-subtitle"></span></div></header>
           <iframe id="artifact-frame" title="Run artifact"></iframe>
         </div>
+      </section>
+
+      <section id="review-view" class="workspace-view" hidden>
+        <div id="review-content" class="review-content"></div>
       </section>
 
       <section id="ledger-view" class="workspace-view" hidden>
@@ -300,6 +312,10 @@ let cosigns: Record<string, Cosign> = {};
 let artifacts: ArtifactMetadata[] = [];
 let results: RemoteCommandResult[] = [];
 let selectedKey = "";
+let review: ReviewState | null = null;
+/** Run key whose artifact list has actually loaded — before that, an empty
+ *  `artifacts` means "still fetching", not "the run recorded nothing". */
+let artifactsLoadedFor = "";
 let artifactPreview: { runKey: string; name: string } | null = null;
 let artifactRequest = 0;
 let ledgerRevision = "";
@@ -732,7 +748,165 @@ function renderActivity(): void {
 function renderView(): void {
   document.querySelectorAll<HTMLElement>(".workspace-tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === workspaceView));
   $("#run-view").toggleAttribute("hidden", workspaceView !== "run");
+  $("#review-view").toggleAttribute("hidden", workspaceView !== "review");
   $("#ledger-view").toggleAttribute("hidden", workspaceView !== "ledger");
+  renderReview();
+}
+
+const PREVIEW_PATCH = [
+  "diff --git a/src/lib/feed.js b/src/lib/feed.js",
+  "index 2f1c4aa..9be01c3 100644",
+  "--- a/src/lib/feed.js",
+  "+++ b/src/lib/feed.js",
+  "@@ -12,7 +12,8 @@ export function buildFeed(source) {",
+  "   const entries = source.items",
+  "-    .map((item) => renderEntry(item));",
+  "+    .filter((item) => item.id)",
+  "+    .map((item) => renderEntry(item));",
+  "   return wrap(entries);",
+  " }",
+  "diff --git a/tests/feed.test.js b/tests/feed.test.js",
+  "new file mode 100644",
+  "index 0000000..fd87402",
+  "--- /dev/null",
+  "+++ b/tests/feed.test.js",
+  "@@ -0,0 +1,4 @@",
+  '+import test from "node:test";',
+  "+",
+  '+test("buildFeed skips items without an id", () => {',
+  "+});",
+].join("\n");
+
+/** Fetch and parse the selected run's diff.patch once per run; every state the
+ *  tab can show (loading, parsed, honest refusals) renders from `review`. */
+async function ensureReviewLoaded(): Promise<void> {
+  const run = selectedRun();
+  if (!run || run.kind !== "completed" || run.data.mode !== "local") return;
+  const diffArtifact = artifacts.find((artifact) => artifact.name === "diff.patch");
+  if (!diffArtifact) return;
+  if (review?.runKey === run.key && review.state !== "error") return;
+  review = { runKey: run.key, state: "loading" };
+  renderReview();
+  try {
+    const text = previewMode
+      ? PREVIEW_PATCH
+      : await invoke<string>("operator_get_text", { path: diffArtifact.url });
+    if (review?.runKey !== run.key) return;
+    review = { runKey: run.key, state: "ready", diff: parsePatch(text) };
+  } catch (error) {
+    if (review?.runKey !== run.key) return;
+    review = { runKey: run.key, state: "error", message: String(error) };
+  }
+  renderReview();
+}
+
+function reviewNotice(icon: string, title: string, detail: string): HTMLElement {
+  const empty = document.createElement("div");
+  empty.className = "review-empty";
+  empty.innerHTML = `<div class="empty-glyph"><i data-lucide="${icon}"></i></div><h2></h2><p></p>`;
+  empty.querySelector("h2")!.textContent = title;
+  empty.querySelector("p")!.textContent = detail;
+  return empty;
+}
+
+function diffFileTags(file: DiffFile): string[] {
+  const tags: string[] = [];
+  if (file.status !== "modified") tags.push(file.status === "added" ? "new" : file.status);
+  if (file.binary) tags.push("binary");
+  return tags;
+}
+
+function renderDiffFile(file: DiffFile): HTMLElement {
+  const details = document.createElement("details");
+  details.className = "diff-file";
+  details.open = file.hunks.length > 0;
+  const summary = document.createElement("summary");
+  summary.innerHTML = `<i data-lucide="chevron-right"></i><span class="diff-path"></span><span class="diff-tags"></span><span class="diff-counts"><b class="add"></b><b class="del"></b></span>`;
+  summary.querySelector(".diff-path")!.textContent = file.oldPath ? `${file.oldPath} → ${file.path}` : file.path;
+  const tagList = summary.querySelector(".diff-tags")!;
+  for (const tag of diffFileTags(file)) {
+    const chip = document.createElement("i");
+    chip.textContent = tag;
+    tagList.append(chip);
+  }
+  summary.querySelector(".add")!.textContent = `+${file.additions}`;
+  summary.querySelector(".del")!.textContent = `−${file.deletions}`;
+  details.append(summary);
+
+  const body = document.createElement("div");
+  body.className = "diff-file-body";
+  if (file.binary || file.hunks.length === 0) {
+    const note = document.createElement("div");
+    note.className = "diff-note";
+    note.textContent = file.binary
+      ? "Binary file — no text diff."
+      : file.status === "renamed"
+        ? "Renamed with no content changes."
+        : "No content changes.";
+    body.append(note);
+  }
+  for (const hunk of file.hunks) {
+    const header = document.createElement("div");
+    header.className = "diff-hunk-header";
+    header.textContent = hunk.header;
+    body.append(header);
+    for (const line of hunk.lines) {
+      const row = document.createElement("div");
+      row.className = `diff-line ${line.kind}`;
+      const sign = document.createElement("span");
+      sign.textContent = line.kind === "add" ? "+" : line.kind === "del" ? "−" : " ";
+      const text = document.createElement("code");
+      text.textContent = line.text;
+      row.append(sign, text);
+      body.append(row);
+    }
+  }
+  details.append(body);
+  return details;
+}
+
+function renderReview(): void {
+  if (workspaceView !== "review") return;
+  const container = $("#review-content");
+  container.replaceChildren();
+  const run = selectedRun();
+
+  if (!run) {
+    container.append(reviewNotice("file-diff", "No run selected", "Choose a run from the queue to review its change."));
+  } else if (run.kind === "inflight") {
+    container.append(reviewNotice("loader-circle", "Run in progress", "The diff is captured when the run completes — nothing to review yet."));
+  } else if (run.data.mode === "cloud") {
+    const notice = reviewNotice("git-pull-request", "Review on GitHub", "Cloud runs keep their artifacts in the GitHub workflow — this runner holds no local diff.");
+    if (run.data.prUrl) {
+      const open = document.createElement("button");
+      open.className = "secondary compact";
+      open.innerHTML = `<i data-lucide="git-pull-request"></i>Open PR`;
+      open.addEventListener("click", () => $("#open-pr").click());
+      notice.append(open);
+    }
+    container.append(notice);
+  } else if (artifactsLoadedFor !== run.key) {
+    container.append(reviewNotice("loader-circle", "Loading diff", "Fetching the run's artifacts from the runner."));
+  } else if (!artifacts.find((artifact) => artifact.name === "diff.patch")) {
+    container.append(reviewNotice("file-diff", "No diff artifact", "This run recorded no diff.patch — it ended before a diff was captured, so there is nothing to review."));
+  } else if (!review || review.runKey !== run.key || review.state === "loading") {
+    container.append(reviewNotice("loader-circle", "Loading diff", "Fetching diff.patch from the runner."));
+  } else if (review.state === "error") {
+    container.append(reviewNotice("alert-circle", "Diff failed to load", review.message));
+  } else if (review.diff.files.length === 0) {
+    container.append(reviewNotice("file-diff", "Empty diff", "The captured diff.patch contains no file changes."));
+  } else {
+    const { files, additions, deletions } = review.diff;
+    const summary = document.createElement("div");
+    summary.className = "review-summary";
+    summary.innerHTML = `<strong></strong><span class="diff-counts"><b class="add"></b><b class="del"></b></span>`;
+    summary.querySelector("strong")!.textContent = `${files.length} ${files.length === 1 ? "file" : "files"} changed`;
+    summary.querySelector(".add")!.textContent = `+${additions}`;
+    summary.querySelector(".del")!.textContent = `−${deletions}`;
+    container.append(summary);
+    for (const file of files) container.append(renderDiffFile(file));
+  }
+  refreshIcons(container);
 }
 
 function renderAll(): void {
@@ -802,27 +976,29 @@ async function refreshFleetData(): Promise<void> {
   await loadArtifactsForSelected();
   if (ledgerChanged) refreshLedgerFrame();
   renderAll();
+  if (workspaceView === "review") void ensureReviewLoaded();
 }
 
 async function loadArtifactsForSelected(): Promise<void> {
   const run = selectedRun();
   const runKey = selectedKey;
   const request = ++artifactRequest;
-  if (!run || run.kind === "inflight") {
-    if (request === artifactRequest && runKey === selectedKey) artifacts = [];
-    return;
+  let next: ArtifactMetadata[] = [];
+  if (run && run.kind === "completed") {
+    if (previewMode) {
+      next = previewArtifacts();
+    } else if (run.data.runId) {
+      try {
+        const detail = await operatorGet<{ artifacts: ArtifactMetadata[] }>(`/api/runs/${encodeURIComponent(run.data.runId)}`);
+        next = detail.artifacts;
+      } catch {
+        next = [];
+      }
+    }
   }
-  if (previewMode) {
-    if (request === artifactRequest && runKey === selectedKey) artifacts = previewArtifacts();
-    return;
-  }
-  try {
-    if (run.data.runId) {
-      const detail = await operatorGet<{ artifacts: ArtifactMetadata[] }>(`/api/runs/${encodeURIComponent(run.data.runId)}`);
-      if (request === artifactRequest && runKey === selectedKey) artifacts = detail.artifacts;
-    } else if (request === artifactRequest && runKey === selectedKey) artifacts = [];
-  } catch {
-    if (request === artifactRequest && runKey === selectedKey) artifacts = [];
+  if (request === artifactRequest && runKey === selectedKey) {
+    artifacts = next;
+    artifactsLoadedFor = runKey;
   }
 }
 
@@ -830,9 +1006,10 @@ async function selectRun(key: string): Promise<void> {
   if (selectedKey !== key) {
     artifactPreview = null;
     artifactFrame.src = "about:blank";
+    review = null;
   }
   selectedKey = key;
-  workspaceView = "run";
+  if (workspaceView === "ledger") workspaceView = "run";
   artifacts = [];
   renderQueue();
   renderSelectedRun();
@@ -840,6 +1017,8 @@ async function selectRun(key: string): Promise<void> {
   renderView();
   await loadArtifactsForSelected();
   renderArtifacts();
+  if (workspaceView === "review") await ensureReviewLoaded();
+  renderReview();
 }
 
 function openArtifact(artifact: ArtifactMetadata): void {
@@ -961,6 +1140,7 @@ document.querySelectorAll<HTMLButtonElement>(".queue-filter").forEach((button) =
 document.querySelectorAll<HTMLButtonElement>(".workspace-tab").forEach((button) => button.addEventListener("click", () => {
   workspaceView = button.dataset.view as WorkspaceView;
   renderView();
+  if (workspaceView === "review") void ensureReviewLoaded();
 }));
 $("#profile-settings").addEventListener("click", () => showProfile(selectedProfile()));
 $("#profile-add").addEventListener("click", () => showProfile());
@@ -976,6 +1156,8 @@ $("#disconnect").addEventListener("click", async () => {
     cosigns = {};
     selectedKey = "";
     artifacts = [];
+    artifactsLoadedFor = "";
+    review = null;
     ledgerRevision = "";
     ledgerFrame.src = "about:blank";
     ledgerFrame.hidden = true;
@@ -1034,7 +1216,8 @@ profileForm.addEventListener("submit", async (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || profileDialog.open) return;
   if (event.metaKey && event.key === "1") { event.preventDefault(); workspaceView = "run"; renderView(); return; }
-  if (event.metaKey && event.key === "2") { event.preventDefault(); workspaceView = "ledger"; renderView(); return; }
+  if (event.metaKey && event.key === "2") { event.preventDefault(); workspaceView = "review"; renderView(); void ensureReviewLoaded(); return; }
+  if (event.metaKey && event.key === "3") { event.preventDefault(); workspaceView = "ledger"; renderView(); return; }
   if (!["ArrowUp", "ArrowDown"].includes(event.key) || runs.length === 0) return;
   event.preventDefault();
   const index = Math.max(0, runs.findIndex((run) => run.key === selectedKey));
