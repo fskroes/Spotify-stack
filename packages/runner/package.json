@@ -11,7 +11,8 @@
     "./ledger": "./src/ledger.ts",
     "./ledger-html": "./src/ledger-html.ts",
     "./ledger-serve": "./src/ledger-serve.ts",
-    "./operator-api": "./src/operator-api.ts"
+    "./operator-api": "./src/operator-api.ts",
+    "./cosign": "./src/cosign.ts"
   },
   "dependencies": {
     "@fleet/judge": "workspace:*",
