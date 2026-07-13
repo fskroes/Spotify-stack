@@ -75,7 +75,15 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
 
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? "/";
-    if (handleOperatorApi(req, res, { ledgerPath: opts.ledgerPath, controlRepo, artifactsRoot: opts.artifactsRoot })) {
+    if (
+      handleOperatorApi(req, res, {
+        ledgerPath: opts.ledgerPath,
+        controlRepo,
+        artifactsRoot: opts.artifactsRoot,
+        // Live state, not a snapshot — the poll below replaces `cosigns`.
+        getCosigns: opts.fetchCosigns ? () => cosigns ?? {} : undefined,
+      })
+    ) {
       return;
     }
     if (req.method === "GET" && (url === "/" || url.startsWith("/?"))) {
@@ -152,10 +160,11 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
   // Co-sign poll — only when the CLI supplied a fetcher. A `gh` hiccup must
   // never kill the server, so every call is guarded.
   let cosignTimer: NodeJS.Timeout | undefined;
+  let cosignKickoff: NodeJS.Timeout | undefined;
   if (opts.fetchCosigns) {
     let last = JSON.stringify(cosigns ?? {});
     const fetchCosigns = opts.fetchCosigns;
-    cosignTimer = setInterval(() => {
+    const pollOnce = (): void => {
       try {
         const next = fetchCosigns();
         const serialized = JSON.stringify(next);
@@ -167,7 +176,14 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
       } catch (err) {
         console.error(`(co-sign poll failed — keeping last state: ${(err as Error).message})`);
       }
-    }, cosignPollMs);
+    };
+    // Fetch once at startup, off the listen path so startup itself is never
+    // gated on `gh` — without this a fresh operator connect would show no
+    // co-sign state until the first interval tick (a whole minute). The fetch
+    // is still synchronous while it runs, like every poll tick.
+    cosignKickoff = setTimeout(pollOnce, 0);
+    cosignKickoff.unref();
+    cosignTimer = setInterval(pollOnce, cosignPollMs);
     cosignTimer.unref();
   }
 
@@ -181,6 +197,7 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
       const close = (): Promise<void> => {
         clearInterval(heartbeat);
         if (cosignTimer) clearInterval(cosignTimer);
+        if (cosignKickoff) clearTimeout(cosignKickoff);
         if (debounce) clearTimeout(debounce);
         for (const w of watchers) w.close();
         for (const res of clients) res.end();

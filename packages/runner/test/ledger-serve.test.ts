@@ -158,6 +158,67 @@ describe("serveLedger", () => {
     });
   });
 
+  it("serves live co-sign state on ledger and run-detail JSON as soon as polling starts", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    const prUrl = "https://github.com/o/demo-api/pull/7";
+    appendLedger(ledgerPath, entry({ runId: "run-complete", task: "007-api", repo: "demo-api", prUrl }));
+
+    handle = await serveLedger({
+      ledgerPath,
+      controlRepo: root,
+      port: 0,
+      // Long cadence: only the immediate startup fetch can supply the state below.
+      cosignPollMs: 60_000,
+      fetchCosigns: () => ({ [prUrl]: { state: "merged", mergedBy: "fernando", mergedAt: "2026-07-13T10:00:00Z" } }),
+    });
+
+    // The startup fetch is async; give it a beat without waiting a poll tick.
+    let ledgerBody: { cosigns?: Record<string, { state: string; mergedBy?: string }> } = {};
+    for (let i = 0; i < 20; i++) {
+      ledgerBody = await (await fetch(`${handle.url}/api/ledger`)).json() as typeof ledgerBody;
+      if (ledgerBody.cosigns && Object.keys(ledgerBody.cosigns).length > 0) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(ledgerBody.cosigns).toEqual({
+      [prUrl]: { state: "merged", mergedBy: "fernando", mergedAt: "2026-07-13T10:00:00Z" },
+    });
+
+    const runBody = await (await fetch(`${handle.url}/api/runs/run-complete`)).json();
+    expect(runBody).toMatchObject({
+      state: "completed",
+      cosign: { state: "merged", mergedBy: "fernando" },
+    });
+  });
+
+  it("omits co-sign state from the API when polling is off", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    appendLedger(ledgerPath, entry({ runId: "run-complete", task: "007-api", repo: "demo-api", prUrl: "https://github.com/o/demo-api/pull/7" }));
+
+    handle = await serveLedger({ ledgerPath, controlRepo: root, port: 0 });
+    const ledgerBody = await (await fetch(`${handle.url}/api/ledger`)).json() as Record<string, unknown>;
+    const runBody = await (await fetch(`${handle.url}/api/runs/run-complete`)).json() as Record<string, unknown>;
+
+    expect("cosigns" in ledgerBody).toBe(false);
+    expect("cosign" in runBody).toBe(false);
+  });
+
+  it("pushes a reload event when polled co-sign state changes", async () => {
+    const ledgerPath = tmpLedger();
+    const prUrl = "https://github.com/o/demo-api/pull/7";
+    appendLedger(ledgerPath, entry({ runId: "run-complete", prUrl }));
+
+    let calls = 0;
+    handle = await serveLedger({
+      ledgerPath,
+      port: 0,
+      cosignPollMs: 100,
+      // Empty at startup; the state lands on a later poll tick.
+      fetchCosigns: (): Record<string, { state: "merged" }> => (++calls < 2 ? {} : { [prUrl]: { state: "merged" } }),
+    });
+
+    await expect(waitForReload(handle.url, 3000)).resolves.toBeUndefined();
+  });
+
   it("serves only allowlisted artifacts and returns their metadata", async () => {
     const { root, ledgerPath } = tmpControlRepo();
     const dir = path.join(root, "artifacts", "007-api", "demo-api");

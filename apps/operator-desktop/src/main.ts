@@ -13,7 +13,9 @@ import {
   createIcons,
   FileCode2,
   FileDiff,
+  GitMerge,
   GitPullRequest,
+  GitPullRequestClosed,
   ListFilter,
   LoaderCircle,
   PanelRightClose,
@@ -102,6 +104,13 @@ interface ArtifactMetadata {
   modifiedAt: string;
   url: string;
   contentType: string;
+}
+
+/** Live PR merge state keyed by PR URL — present only while the serve polls GitHub (--cosign). */
+interface Cosign {
+  state: "open" | "merged" | "closed";
+  mergedBy?: string;
+  mergedAt?: string;
 }
 
 type FleetRun =
@@ -285,6 +294,7 @@ let profiles: HostProfile[] = [];
 let status: ConnectionStatus = disconnectedStatus();
 let catalog: Catalog | null = null;
 let runs: FleetRun[] = [];
+let cosigns: Record<string, Cosign> = {};
 let artifacts: ArtifactMetadata[] = [];
 let results: RemoteCommandResult[] = [];
 let selectedKey = "";
@@ -323,6 +333,20 @@ function runTitle(run: FleetRun): string {
 function runRepo(run: FleetRun): string {
   return run.data.repo;
 }
+
+/** Live merge state for a run's PR, when known. Runs without a PR have none. */
+function cosignFor(run: FleetRun): Cosign | undefined {
+  return run.kind === "completed" && run.data.prUrl ? cosigns[run.data.prUrl] : undefined;
+}
+
+/** Everything the UI says about a PR state, in one place — the queue chip and
+ *  the run-details row must never disagree. For shipped runs the decision
+ *  dimension (co-sign) supersedes the pipeline dimension (approved). */
+const COSIGN_CHIP: Record<Cosign["state"], { label: string; detail: string; icon: string; tone: string }> = {
+  open: { label: "PR open", detail: "Open — awaiting co-sign", icon: "git-pull-request", tone: "warning" },
+  merged: { label: "Merged", detail: "Merged", icon: "git-merge", tone: "success" },
+  closed: { label: "Closed", detail: "Closed without merging", icon: "git-pull-request-closed", tone: "neutral" },
+};
 
 function isAttention(run: FleetRun): boolean {
   return run.kind === "completed" && ["agent-failed", "verify-failed", "vetoed", "scope-violation", "engine-failed"].includes(run.data.status);
@@ -394,9 +418,9 @@ function refreshIcons(_root: HTMLElement = document.body): void {
   createIcons({
     icons: {
       Activity, AlertCircle, Cable, Check, CheckCircle2, ChevronDown, ChevronRight, Circle,
-      CircleStop, Clock3, FileCode2, FileDiff, GitPullRequest, ListFilter, LoaderCircle,
-      PanelRightClose, PanelRightOpen, Play, Plus, RefreshCw, Rocket, Save, Settings,
-      ShieldCheck, TerminalSquare, Trash2, WifiOff, X, XCircle,
+      CircleStop, Clock3, FileCode2, FileDiff, GitMerge, GitPullRequest, GitPullRequestClosed,
+      ListFilter, LoaderCircle, PanelRightClose, PanelRightOpen, Play, Plus, RefreshCw, Rocket,
+      Save, Settings, ShieldCheck, TerminalSquare, Trash2, WifiOff, X, XCircle,
     },
   });
 }
@@ -511,10 +535,12 @@ function renderQueue(): void {
       const meta = document.createElement("span");
       meta.textContent = `${run.data.task} · ${relativeTime(run.sortAt)}`;
       main.append(title, meta);
+      const cosign = cosignFor(run);
+      const chip = cosign && COSIGN_CHIP[cosign.state];
       const state = document.createElement("span");
-      state.className = `run-row-state ${statusTone(value)}`;
-      state.innerHTML = `<i data-lucide="${statusIcon(value)}"></i><span></span>`;
-      state.querySelector("span")!.textContent = statusLabel(value);
+      state.className = `run-row-state ${chip?.tone ?? statusTone(value)}`;
+      state.innerHTML = `<i data-lucide="${chip?.icon ?? statusIcon(value)}"></i><span></span>`;
+      state.querySelector("span")!.textContent = chip?.label ?? statusLabel(value);
       row.append(main, state);
       row.addEventListener("click", () => void selectRun(run.key));
       section.append(row);
@@ -614,6 +640,16 @@ function renderSelectedRun(): void {
   renderMetadata(run);
 }
 
+/** Run-details rows for the PR's live merge state — the decision record. */
+function cosignRows(run: FleetRun): Array<[string, string]> {
+  const cosign = cosignFor(run);
+  if (!cosign) return [];
+  const rows: Array<[string, string]> = [["Pull request", COSIGN_CHIP[cosign.state].detail]];
+  if (cosign.state === "merged" && cosign.mergedBy) rows.push(["Co-signed by", cosign.mergedBy]);
+  if (cosign.state === "merged" && cosign.mergedAt) rows.push(["Co-signed", new Date(cosign.mergedAt).toLocaleString()]);
+  return rows;
+}
+
 function renderMetadata(run: FleetRun | undefined): void {
   const list = $("#run-metadata");
   const rows: Array<[string, string]> = !run ? [["Status", "—"], ["Task", "—"], ["Repository", "—"], ["Started", "—"]] : run.kind === "inflight" ? [
@@ -623,6 +659,7 @@ function renderMetadata(run: FleetRun | undefined): void {
     ["Status", statusLabel(run.data.status)], ["Task", run.data.task], ["Repository", run.data.repo],
     ["Completed", new Date(run.data.ts).toLocaleString()], ["Mode", run.data.mode], ["Duration", duration(run.data.elapsedMs)],
     ...(run.data.sha ? [["Commit", run.data.sha] as [string, string]] : []), ...(run.data.vetoes ? [["Vetoes", String(run.data.vetoes)] as [string, string]] : []),
+    ...cosignRows(run),
   ];
   list.replaceChildren();
   for (const [term, value] of rows) {
@@ -745,9 +782,10 @@ function refreshLedgerFrame(): void {
 async function refreshFleetData(): Promise<void> {
   if (previewMode) return loadPreviewData();
   const [ledger, inflight] = await Promise.all([
-    operatorGet<{ generatedAt: string; entries: LedgerEntry[] }>("/api/ledger"),
+    operatorGet<{ generatedAt: string; entries: LedgerEntry[]; cosigns?: Record<string, Cosign> }>("/api/ledger"),
     operatorGet<{ generatedAt: string; runs: InflightRecord[] }>("/api/inflight"),
   ]);
+  cosigns = ledger.cosigns ?? {};
   const completed: FleetRun[] = ledger.entries.map((entry, index) => ({ kind: "completed", key: entry.runId ?? `ledger-${entry.ts}-${entry.task}-${entry.repo}-${index}`, sortAt: entry.ts, data: entry }));
   const live: FleetRun[] = inflight.runs.map((entry) => ({ kind: "inflight", key: entry.runId, sortAt: entry.startedAt, data: entry }));
   const nextRevision = fleetRevision(ledger.entries, inflight.runs);
@@ -872,18 +910,23 @@ async function runAction(kind: "dispatch" | "localRun"): Promise<void> {
 function loadPreviewData(): void {
   const now = Date.now();
   profiles = [{ id: "preview", name: "Production runner", sshTarget: "fleet@runner", remoteRepoPath: "/srv/spotify-stack", remoteCommandPrefix: "", remotePort: 4173, preferredLocalPort: null }];
-  status = { profileId: "preview", state: "connected", localPort: 49152, url: null, command: "ssh fleet@runner [forward localhost:49152] fleet report --serve", exitStatus: null, outputTail: "Fleet Ledger live at http://127.0.0.1:4173", startedAt: now - 3_600_000 };
+  status = { profileId: "preview", state: "connected", localPort: 49152, url: null, command: "ssh fleet@runner [forward localhost:49152] fleet report --serve --cosign", exitStatus: null, outputTail: "Fleet Ledger live at http://127.0.0.1:4173", startedAt: now - 3_600_000 };
   catalog = {
     tasks: [{ id: "004-upstream-failure-mode-tests", title: "Cover upstream failure modes", targets: ["demo-feed-service"], risk: "low" }, { id: "onramp-1-feed-tests", title: "Add feed builder tests", targets: ["demo-feed-service"], risk: "low" }],
     repos: [{ name: "demo-feed-service", language: "javascript", defaultBranch: "main" }, { name: "demo-ts-service", language: "typescript", defaultBranch: "main" }],
   };
   const entries: LedgerEntry[] = [
     { ts: new Date(now - 12 * 60_000).toISOString(), runId: "approved", task: "004-upstream-failure-mode-tests", repo: "demo-feed-service", status: "approved", mode: "cloud", vetoes: 0, title: "Cover upstream failure modes", elapsedMs: 186_421, prUrl: "https://github.com/example/repo/pull/42", sha: "8df31c2", evidence: ["Scope contract passed for 4 changed files", "VERIFY PASSED", "npm run test passed (42 tests)", "Judge approved with no violations"] },
+    { ts: new Date(now - 2 * 3_600_000).toISOString(), runId: "shipped", task: "onramp-1-feed-tests", repo: "demo-feed-service", status: "approved", mode: "local", vetoes: 0, title: "Add feed builder tests", elapsedMs: 121_204, prUrl: "https://github.com/example/repo/pull/38", sha: "1fa9b04", evidence: ["Scope contract passed", "VERIFY PASSED", "Judge approved with no violations"] },
     { ts: new Date(now - 47 * 60_000).toISOString(), runId: "failed", task: "onramp-1-feed-tests", repo: "demo-feed-service", status: "verify-failed", mode: "local", vetoes: 0, title: "Add feed builder tests", elapsedMs: 74_902, reason: "npm run test failed: expected 3 items, received 4", evidence: ["Scope contract passed", "VERIFY FAILED", "expected 3 items, received 4"] },
     { ts: new Date(now - 4 * 3_600_000).toISOString(), runId: "noop", task: "003-add-agent-badge", repo: "demo-ts-service", status: "no-changes", mode: "cloud", vetoes: 0, title: "Add agent badge", elapsedMs: 23_511, evidence: ["Task precondition is already satisfied", "NO_CHANGES_NEEDED"] },
     { ts: new Date(now - 26 * 3_600_000).toISOString(), runId: "vetoed", task: "002-dedupe-feed-items", repo: "demo-feed-service", status: "vetoed", mode: "cloud", vetoes: 3, title: "Dedupe feed items on ingest", elapsedMs: 224_007, reason: "Change regenerated the entire lockfile", evidence: ["Scope contract passed", "VERIFY PASSED", "Judge veto: regenerated the entire lockfile"] },
   ];
   const live: InflightRecord = { runId: "live", startedAt: new Date(now - 6 * 60_000).toISOString(), task: "004-upstream-failure-mode-tests", repo: "demo-ts-service", title: "Cover upstream failure modes", stage: "verify", attempt: 1, stageSince: new Date(now - 70_000).toISOString() };
+  cosigns = {
+    "https://github.com/example/repo/pull/42": { state: "open" },
+    "https://github.com/example/repo/pull/38": { state: "merged", mergedBy: "fernando", mergedAt: new Date(now - 90 * 60_000).toISOString() },
+  };
   runs = [
     { kind: "inflight", key: live.runId, sortAt: live.startedAt, data: live },
     ...entries.map((entry) => ({ kind: "completed" as const, key: entry.runId!, sortAt: entry.ts, data: entry })),
@@ -924,6 +967,7 @@ $("#disconnect").addEventListener("click", async () => {
     status = previewMode ? disconnectedStatus() : await invoke<ConnectionStatus>("disconnect");
     catalog = null;
     runs = [];
+    cosigns = {};
     selectedKey = "";
     artifacts = [];
     ledgerRevision = "";
