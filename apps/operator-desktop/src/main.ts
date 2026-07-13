@@ -213,7 +213,8 @@ app.innerHTML = `
         <div class="dispatch-context"><i data-lucide="rocket"></i><span>Dispatch</span></div>
         <select id="task-select" aria-label="Task" disabled><option>Connect to load tasks</option></select>
         <select id="repo-select" aria-label="Target repository" disabled><option value="">All matching repos</option></select>
-        <button id="local-run" class="secondary compact" disabled title="Run on the remote runner without opening a PR"><i data-lucide="play"></i>Dry-run</button>
+        <label class="pr-toggle" title="Open a pull request on the target repo when the run is approved — untick for an artifacts-only dry run"><input id="local-run-pr" type="checkbox" checked disabled />PR</label>
+        <button id="local-run" class="secondary compact" disabled title="Run on the remote runner"><i data-lucide="play"></i>Run</button>
         <button id="dispatch-action" class="primary compact" disabled><i data-lucide="rocket"></i>Dispatch</button>
       </footer>
     </main>
@@ -284,6 +285,7 @@ const workbench = $(".workbench");
 const profileSelect = $("#profile-select") as HTMLSelectElement;
 const taskSelect = $("#task-select") as HTMLSelectElement;
 const repoSelect = $("#repo-select") as HTMLSelectElement;
+const prToggle = $("#local-run-pr") as HTMLInputElement;
 const ledgerFrame = $("#ledger-frame") as HTMLIFrameElement;
 const artifactFrame = $("#artifact-frame") as HTMLIFrameElement;
 const profileDialog = $("#profile-dialog") as HTMLDialogElement;
@@ -466,8 +468,11 @@ function renderCatalog(): void {
     repoSelect.disabled = status.state !== "connected" || busy;
   }
   const canRun = status.state === "connected" && Boolean(activeProfile());
-  $("#dispatch-action").toggleAttribute("disabled", !canRun || !catalog || !taskSelect.value || busy);
-  $("#local-run").toggleAttribute("disabled", !canRun || !catalog || !taskSelect.value || !repoSelect.value || busy);
+  const canDispatch = canRun && Boolean(catalog) && Boolean(taskSelect.value) && !busy;
+  const canLocalRun = canDispatch && Boolean(repoSelect.value);
+  $("#dispatch-action").toggleAttribute("disabled", !canDispatch);
+  $("#local-run").toggleAttribute("disabled", !canLocalRun);
+  prToggle.disabled = !canLocalRun;
 }
 
 function renderQueue(): void {
@@ -893,9 +898,10 @@ async function runAction(kind: "dispatch" | "localRun"): Promise<void> {
   if (status.state !== "connected" || !profile || !task || (kind === "localRun" && !repo)) return;
   setBusy(true);
   try {
-    const action = kind === "dispatch" ? { kind, task, repo: repo || null } : { kind, task, repo };
+    const pr = prToggle.checked;
+    const action = kind === "dispatch" ? { kind, task, repo: repo || null } : { kind, task, repo, pr };
     const result = previewMode
-      ? { command: `ssh ${profile.sshTarget} fleet ${kind === "dispatch" ? `dispatch ${task}` : `run ${task} --repo ${repo} --local`}`, exitStatus: 0, stdoutTail: kind === "dispatch" ? "workflow dispatch accepted" : "dry-run started on remote runner", stderrTail: "", timestamp: Date.now() }
+      ? { command: `ssh ${profile.sshTarget} fleet ${kind === "dispatch" ? `dispatch ${task}` : `run ${task} --repo ${repo} --local${pr ? " --pr" : ""}`}`, exitStatus: 0, stdoutTail: kind === "dispatch" ? "workflow dispatch accepted" : `${pr ? "run" : "dry-run"} started on remote runner`, stderrTail: "", timestamp: Date.now() }
       : await invoke<RemoteCommandResult>("execute_fleet_action", { profile, action });
     results.unshift(result);
     toast(result.exitStatus === 0 ? "Remote command completed" : `Remote command exited ${result.exitStatus}`, result.exitStatus !== 0);

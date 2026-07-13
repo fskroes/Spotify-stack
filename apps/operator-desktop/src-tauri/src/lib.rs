@@ -29,7 +29,7 @@ struct HostProfile {
 #[serde(rename_all = "camelCase", tag = "kind")]
 enum FleetAction {
     Dispatch { task: String, repo: Option<String> },
-    LocalRun { task: String, repo: String },
+    LocalRun { task: String, repo: String, pr: bool },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -158,7 +158,7 @@ fn fleet_command(profile: &HostProfile, action: &FleetAction) -> Result<String, 
     validate_profile(profile)?;
     let (task, repo) = match action {
         FleetAction::Dispatch { task, repo } => (task, repo.as_ref()),
-        FleetAction::LocalRun { task, repo } => (task, Some(repo)),
+        FleetAction::LocalRun { task, repo, .. } => (task, Some(repo)),
     };
     if !valid_identifier(task) || repo.is_some_and(|value| !valid_identifier(value)) {
         return Err("task and repo must be fleet identifiers".into());
@@ -176,8 +176,11 @@ fn fleet_command(profile: &HostProfile, action: &FleetAction) -> Result<String, 
     if let Some(repo) = repo {
         command.push_str(&format!(" --repo {}", shell_quote(repo)));
     }
-    if matches!(action, FleetAction::LocalRun { .. }) {
+    if let FleetAction::LocalRun { pr, .. } = action {
         command.push_str(" --local");
+        if *pr {
+            command.push_str(" --pr");
+        }
     }
     Ok(command)
 }
@@ -223,8 +226,11 @@ fn action_spec(profile: &HostProfile, action: &FleetAction) -> Result<CommandSpe
                 .map(|repo| format!(" --repo {repo}"))
                 .unwrap_or_default()
         ),
-        FleetAction::LocalRun { task, repo } => {
-            format!("fleet run {task} --repo {repo} --local")
+        FleetAction::LocalRun { task, repo, pr } => {
+            format!(
+                "fleet run {task} --repo {repo} --local{}",
+                if *pr { " --pr" } else { "" }
+            )
         }
     };
     Ok(CommandSpec {
@@ -551,17 +557,62 @@ mod tests {
     }
 
     #[test]
-    fn local_run_has_only_the_fixed_local_flag() {
+    fn local_run_without_pr_has_only_the_fixed_local_flag() {
         assert_eq!(
             fleet_command(
                 &profile(),
                 &FleetAction::LocalRun {
                     task: "007-api".into(),
-                    repo: "demo-api".into()
+                    repo: "demo-api".into(),
+                    pr: false,
                 },
             )
             .unwrap(),
             "cd -- '/srv/fleet control' && exec pnpm fleet run '007-api' --repo 'demo-api' --local"
+        );
+    }
+
+    #[test]
+    fn local_run_with_pr_appends_only_the_fixed_pr_flag() {
+        assert_eq!(
+            fleet_command(
+                &profile(),
+                &FleetAction::LocalRun {
+                    task: "007-api".into(),
+                    repo: "demo-api".into(),
+                    pr: true,
+                },
+            )
+            .unwrap(),
+            "cd -- '/srv/fleet control' && exec pnpm fleet run '007-api' --repo 'demo-api' --local --pr"
+        );
+        // The flag is a bool on a fixed spec — the only free values stay the
+        // identifier-validated task and repo.
+        assert!(fleet_command(
+            &profile(),
+            &FleetAction::LocalRun {
+                task: "007-api".into(),
+                repo: "demo-api'; rm -rf /".into(),
+                pr: true,
+            },
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn local_run_receipt_names_the_pr_flag_when_set() {
+        let action = |pr| FleetAction::LocalRun {
+            task: "007-api".into(),
+            repo: "demo-api".into(),
+            pr,
+        };
+        assert_eq!(
+            action_spec(&profile(), &action(true)).unwrap().display,
+            "ssh fleet@example.test fleet run 007-api --repo demo-api --local --pr"
+        );
+        assert_eq!(
+            action_spec(&profile(), &action(false)).unwrap().display,
+            "ssh fleet@example.test fleet run 007-api --repo demo-api --local"
         );
     }
 
