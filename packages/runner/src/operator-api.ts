@@ -12,6 +12,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { readLiveInflight, type InflightRecord } from "./inflight.js";
 import { readLedger, type LedgerEntry } from "./ledger.js";
+import type { Cosign } from "./ledger-html.js";
 import { loadTask } from "./task.js";
 
 export const OPERATOR_API_PREFIX = "/api";
@@ -28,6 +29,13 @@ export interface OperatorApiOptions {
   ledgerPath: string;
   controlRepo: string;
   artifactsRoot?: string;
+  /**
+   * Live PR co-sign state keyed by PR URL, when the serve was started with
+   * polling (`--cosign`). Undefined = offline; the API then omits co-sign
+   * fields entirely rather than serving an empty map that reads as "nothing
+   * is merged".
+   */
+  getCosigns?: () => Record<string, Cosign>;
 }
 
 export interface ArtifactMetadata {
@@ -238,7 +246,11 @@ export function handleOperatorApi(
       }
       const cutoff = days === undefined ? undefined : Date.now() - days * 86_400_000;
       const filtered = cutoff === undefined ? entries() : entries().filter((entry) => Date.parse(entry.ts) >= cutoff);
-      json(res, 200, { generatedAt: new Date().toISOString(), entries: filtered });
+      json(res, 200, {
+        generatedAt: new Date().toISOString(),
+        entries: filtered,
+        ...(opts.getCosigns ? { cosigns: opts.getCosigns() } : {}),
+      });
       return true;
     }
 
@@ -274,7 +286,8 @@ export function handleOperatorApi(
             if (!(err instanceof ApiError) || err.status !== 404) throw err;
           }
         }
-        json(res, 200, { state: "completed", run: completed, artifacts });
+        const cosign = completed.prUrl && opts.getCosigns ? opts.getCosigns()[completed.prUrl] : undefined;
+        json(res, 200, { state: "completed", run: completed, artifacts, ...(cosign ? { cosign } : {}) });
         return true;
       }
       const live = entriesWithoutDuplicateInflight(ledger, readLiveInflight(opts.ledgerPath)).find(

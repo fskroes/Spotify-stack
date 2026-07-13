@@ -184,8 +184,12 @@ fn fleet_command(profile: &HostProfile, action: &FleetAction) -> Result<String, 
 
 fn connect_spec(profile: &HostProfile, local_port: u16) -> Result<CommandSpec, String> {
     validate_profile(profile)?;
+    // --cosign: the serve polls GitHub PR merge state (via the runner's gh
+    // auth) so the workbench can show open/merged/closed beside each shipped
+    // run and refresh after a co-sign action. Still a fixed command — the
+    // flag set is not caller-extensible.
     let remote = format!(
-        "{} report --serve --port {}",
+        "{} report --serve --port {} --cosign",
         command_prefix(&profile.remote_repo_path),
         profile.remote_port
     );
@@ -203,7 +207,7 @@ fn connect_spec(profile: &HostProfile, local_port: u16) -> Result<CommandSpec, S
     Ok(CommandSpec {
         program: "ssh".into(),
         display: format!(
-            "ssh {} [forward localhost:{local_port}] fleet report --serve",
+            "ssh {} [forward localhost:{local_port}] fleet report --serve --cosign",
             profile.ssh_target
         ),
         args,
@@ -569,11 +573,19 @@ mod tests {
             .args
             .windows(2)
             .any(|pair| pair == ["-L", "49152:127.0.0.1:4173"]));
-        assert!(spec
-            .args
-            .last()
-            .unwrap()
-            .ends_with("report --serve --port 4173"));
+        // The exact remote command, prefix included — a suffix match would let
+        // anything ride between the prefix and `report`. --cosign: the serve
+        // polls GitHub merge state, so co-sign chips and post-action refresh
+        // work with zero per-connection setup.
+        assert_eq!(
+            spec.args.last().unwrap(),
+            "cd -- '/srv/fleet control' && exec pnpm fleet report --serve --port 4173 --cosign"
+        );
+        // The receipt shown to the operator names the same fixed command.
+        assert_eq!(
+            spec.display,
+            "ssh fleet@example.test [forward localhost:49152] fleet report --serve --cosign"
+        );
         assert!(!spec.args.iter().any(|arg| arg.contains("IdentityFile")));
     }
 
