@@ -8,6 +8,7 @@ import { resolveOwner, targetRepos } from "@fleet/runner/fleet";
 import { defaultLedgerPath, fleetRecord, formatRecordLine, readLedger, type LedgerEntry } from "@fleet/runner/ledger";
 import { writeLedgerHtml, type Cosign } from "@fleet/runner/ledger-html";
 import { serveLedger } from "@fleet/runner/ledger-serve";
+import { cosign, formatCosignResult } from "@fleet/runner/cosign";
 
 const controlRepo = process.cwd();
 
@@ -151,6 +152,28 @@ program
         }
       }
     }
+  });
+
+program
+  .command("cosign")
+  .description("The human decision on a shipped run: squash-merge its PR, or close it with a reason")
+  .argument("<runId>", "run id from the ledger (fleet report / the operator)")
+  .option("--merge", "squash-merge the run's PR and delete the branch", false)
+  .option("--close", "close the run's PR without merging", false)
+  .option("--reason <text>", "required with --close: why — lands as a PR comment")
+  .option("--json", "print the structured result (for the operator app)", false)
+  .action((runId: string, options: { merge: boolean; close: boolean; reason?: string; json: boolean }) => {
+    if (options.merge === options.close) throw new Error("cosign needs exactly one of --merge or --close");
+    if (options.reason && !options.close) throw new Error("--reason only applies to --close");
+    const result = cosign({
+      entries: readLedger(defaultLedgerPath(controlRepo)),
+      runId,
+      action: options.merge ? "merge" : "close",
+      reason: options.reason,
+      gh: (args) => gh(args),
+    });
+    console.log(options.json ? JSON.stringify(result) : formatCosignResult(result));
+    process.exitCode = result.ok ? 0 : 1;
   });
 
 /**
