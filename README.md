@@ -262,6 +262,23 @@ its own. Other flags: `--days <n>` (window, default 30), `--out <path>`
 default 4173). The report regenerated after each run stays offline — co-sign
 polling only happens when you ask for it.
 
+The co-sign itself — the human decision on a shipped run — can be executed
+from the CLI instead of the GitHub UI:
+
+```sh
+pnpm fleet cosign <runId> --merge                      # squash-merge the run's PR, delete the branch
+pnpm fleet cosign <runId> --close --reason "why"       # close it; the reason lands as a PR comment
+```
+
+`<runId>` comes from the ledger (`fleet report`). The merge is **ledger-gated
+on this machine**: it refuses — with a structured, named reason — unless the
+run shipped from here (`approved`, local, PR opened) and GitHub reports the PR
+open and cleanly mergeable. There is deliberately no `--force`; a refusal is
+the gate working. `--json` emits the result (including refusals and the merge
+receipt: squash sha, merged-by, merged-at) for machine consumers like the
+desktop operator. Nothing new is written to the ledger — GitHub stays the
+source of truth for co-sign state, which `--cosign` polling picks up.
+
 ### Optional desktop operator
 
 `apps/operator-desktop` is a macOS-first Tauri shell over the same CLI and
