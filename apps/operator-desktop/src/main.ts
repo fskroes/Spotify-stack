@@ -370,6 +370,9 @@ let review: ReviewState | null = null;
 /** Run key whose artifact list has actually loaded — before that, an empty
  *  `artifacts` means "still fetching", not "the run recorded nothing". */
 let artifactsLoadedFor = "";
+/** The selected run's artifacts were overwritten by a later run of the same
+ *  task (runner reports `artifactsSuperseded`) — "gone", not "never existed". */
+let artifactsSuperseded = false;
 let artifactPreview: { runKey: string; name: string } | null = null;
 let artifactRequest = 0;
 let ledgerRevision = "";
@@ -1037,7 +1040,11 @@ function renderArtifacts(): void {
   if (artifacts.length === 0) {
     const empty = document.createElement("div");
     empty.className = "rail-empty";
-    empty.textContent = selectedRun()?.kind === "inflight" ? "Available when the run completes" : "No artifacts";
+    empty.textContent = selectedRun()?.kind === "inflight"
+      ? "Available when the run completes"
+      : artifactsSuperseded
+        ? "Overwritten by a later run"
+        : "No artifacts";
     list.append(empty);
     return;
   }
@@ -1280,6 +1287,16 @@ function renderReview(): void {
     container.append(notice);
   } else if (artifactsLoadedFor !== run.key) {
     container.append(reviewNotice("loader-circle", "Loading diff", "Fetching the run's artifacts from the runner."));
+  } else if (!artifacts.find((artifact) => artifact.name === "diff.patch") && artifactsSuperseded) {
+    const notice = reviewNotice("history", "Diff overwritten by a later run", "A later run of this task replaced the shared artifact set, so this run's local evidence is gone. Review the change on GitHub.");
+    if (run.data.prUrl) {
+      const open = document.createElement("button");
+      open.className = "secondary compact";
+      open.innerHTML = `<i data-lucide="git-pull-request"></i>Open PR`;
+      open.addEventListener("click", openSelectedPr);
+      notice.append(open);
+    }
+    container.append(notice);
   } else if (!artifacts.find((artifact) => artifact.name === "diff.patch")) {
     container.append(reviewNotice("file-diff", "No diff artifact", "This run recorded no diff.patch — it ended before a diff was captured, so there is nothing to review."));
   } else if (!review || review.runKey !== run.key || review.state === "loading") {
@@ -1385,13 +1402,17 @@ async function loadArtifactsForSelected(): Promise<void> {
   // null = fetch failed: the list is unknown, not known-empty — the Review tab
   // must keep saying "fetching" (and let the poll retry), never "recorded nothing".
   let next: ArtifactMetadata[] | null = [];
+  let nextSuperseded = false;
   if (run && run.kind === "completed") {
     if (previewMode) {
       next = previewArtifacts();
     } else if (run.data.runId) {
       try {
-        const detail = await operatorGet<{ artifacts: ArtifactMetadata[] }>(`/api/runs/${encodeURIComponent(run.data.runId)}`);
+        const detail = await operatorGet<{ artifacts: ArtifactMetadata[]; artifactsSuperseded?: boolean }>(
+          `/api/runs/${encodeURIComponent(run.data.runId)}`,
+        );
         next = detail.artifacts;
+        nextSuperseded = detail.artifactsSuperseded === true;
       } catch {
         next = null;
       }
@@ -1400,6 +1421,7 @@ async function loadArtifactsForSelected(): Promise<void> {
   if (request === artifactRequest && runKey === selectedKey) {
     artifacts = next ?? [];
     artifactsLoadedFor = next ? runKey : "";
+    artifactsSuperseded = nextSuperseded;
   }
 }
 
@@ -1412,6 +1434,7 @@ async function selectRun(key: string): Promise<void> {
   selectedKey = key;
   if (workspaceView === "ledger") workspaceView = "run";
   artifacts = [];
+  artifactsSuperseded = false;
   renderQueue();
   renderSelectedRun();
   renderArtifacts();
@@ -1563,6 +1586,7 @@ $("#disconnect").addEventListener("click", async () => {
     selectedKey = "";
     artifacts = [];
     artifactsLoadedFor = "";
+    artifactsSuperseded = false;
     review = null;
     cosignRefusals = {};
     ledgerRevision = "";

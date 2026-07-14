@@ -239,7 +239,7 @@ describe("serveLedger", () => {
     expect(blocked.status).toBe(404);
   });
 
-  it("never attaches latest-run artifacts to an older run with the same task and repo", async () => {
+  it("never attaches latest-run artifacts to an older run — and says the older evidence was superseded", async () => {
     const { root, ledgerPath } = tmpControlRepo();
     const older = entry({
       ts: new Date(Date.now() - 60_000).toISOString(),
@@ -255,11 +255,58 @@ describe("serveLedger", () => {
     writeFileSync(path.join(dir, "diff.patch"), "latest run only\n");
 
     handle = await serveLedger({ ledgerPath, controlRepo: root, port: 0 });
-    const olderDetail = await fetch(`${handle.url}/api/runs/run-older`);
-    const latestDetail = await fetch(`${handle.url}/api/runs/run-latest`);
+    const olderDetail = await (await fetch(`${handle.url}/api/runs/run-older`)).json();
+    const latestDetail = await (await fetch(`${handle.url}/api/runs/run-latest`)).json();
 
-    expect(await olderDetail.json()).toMatchObject({ artifacts: [] });
-    expect(await latestDetail.json()).toMatchObject({ artifacts: [{ name: "diff.patch" }] });
+    expect(olderDetail).toMatchObject({ artifacts: [], artifactsSuperseded: true });
+    expect(latestDetail).toMatchObject({ artifacts: [{ name: "diff.patch" }] });
+    expect("artifactsSuperseded" in (latestDetail as Record<string, unknown>)).toBe(false);
+  });
+
+  it("serves the per-run archive to its exact run even after a newer run replaces the shared set", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    appendLedger(ledgerPath, entry({
+      ts: new Date(Date.now() - 60_000).toISOString(),
+      runId: "run-older",
+      task: "007-api",
+      repo: "demo-api",
+    }));
+    appendLedger(ledgerPath, entry({ runId: "run-latest", task: "007-api", repo: "demo-api" }));
+    const flat = path.join(root, "artifacts", "007-api", "demo-api");
+    mkdirSync(flat, { recursive: true });
+    writeFileSync(path.join(flat, "diff.patch"), "latest run only\n");
+    const archive = path.join(root, "artifacts", "runs", "run-older");
+    mkdirSync(archive, { recursive: true });
+    writeFileSync(path.join(archive, "diff.patch"), "older run archived\n");
+
+    handle = await serveLedger({ ledgerPath, controlRepo: root, port: 0 });
+    const olderDetail = await (await fetch(`${handle.url}/api/runs/run-older`)).json() as {
+      artifacts: Array<{ name: string; url: string }>;
+    };
+    const served = await fetch(`${handle.url}${olderDetail.artifacts[0].url}`);
+
+    expect(olderDetail.artifacts).toHaveLength(1);
+    expect(olderDetail.artifacts[0].url).toBe("/api/artifacts/runs/run-older/diff.patch");
+    expect("artifactsSuperseded" in (olderDetail as unknown as Record<string, unknown>)).toBe(false);
+    expect(await served.text()).toBe("older run archived\n");
+  });
+
+  it("does not claim superseded artifacts for cloud runs — they never had local evidence", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    appendLedger(ledgerPath, entry({
+      ts: new Date(Date.now() - 60_000).toISOString(),
+      runId: "run-cloud",
+      task: "007-api",
+      repo: "demo-api",
+      mode: "cloud",
+    }));
+    appendLedger(ledgerPath, entry({ runId: "run-latest", task: "007-api", repo: "demo-api" }));
+
+    handle = await serveLedger({ ledgerPath, controlRepo: root, port: 0 });
+    const detail = await (await fetch(`${handle.url}/api/runs/run-cloud`)).json();
+
+    expect(detail).toMatchObject({ artifacts: [] });
+    expect("artifactsSuperseded" in (detail as Record<string, unknown>)).toBe(false);
   });
 
   it("does not attach in-flight artifacts to the previous completed run", async () => {
