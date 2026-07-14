@@ -35,6 +35,7 @@ import {
 } from "lucide";
 import { fleetRevision, ledgerRefreshDecision, refreshedLedgerUrl } from "./ledger-refresh";
 import { parsePatch, type DiffFile, type ParsedDiff } from "./diff-parser";
+import { mergeBlocker, parseCosignResult, type CosignResult } from "./cosign-result";
 import "./styles.css";
 
 interface HostProfile {
@@ -65,6 +66,9 @@ interface RemoteCommandResult {
   stderrTail: string;
   timestamp: number;
 }
+
+/** A command receipt; cosign receipts also carry the runner's structured result. */
+type Receipt = RemoteCommandResult & { cosign?: CosignResult };
 
 interface Catalog {
   tasks: Array<{ id: string; title: string; targets: string[]; risk: string }>;
@@ -242,6 +246,7 @@ app.innerHTML = `
           <div><dt>Repository</dt><dd>—</dd></div>
           <div><dt>Started</dt><dd>—</dd></div>
         </dl>
+        <div id="cosign-decision" class="cosign-decision" hidden></div>
       </section>
 
       <section class="rail-section artifacts-section">
@@ -280,6 +285,22 @@ app.innerHTML = `
     </form>
   </dialog>
 
+  <dialog id="merge-dialog">
+    <form id="merge-form" method="dialog">
+      <div class="dialog-head">
+        <div><span class="eyebrow">Co-sign</span><h2>Squash-merge pull request</h2></div>
+        <button type="button" id="close-merge-dialog" class="icon-button" title="Cancel" aria-label="Cancel"><i data-lucide="x"></i></button>
+      </div>
+      <p id="merge-stakes" class="merge-stakes"></p>
+      <dl id="merge-facts" class="metadata-list merge-facts"></dl>
+      <div class="dialog-actions">
+        <span></span><span></span>
+        <button type="button" id="cancel-merge" class="secondary">Cancel</button>
+        <button type="submit" class="primary"><i data-lucide="git-merge"></i>Squash-merge</button>
+      </div>
+    </form>
+  </dialog>
+
   <div id="toast" class="toast" role="status" hidden></div>
 `;
 
@@ -302,6 +323,7 @@ const ledgerFrame = $("#ledger-frame") as HTMLIFrameElement;
 const artifactFrame = $("#artifact-frame") as HTMLIFrameElement;
 const profileDialog = $("#profile-dialog") as HTMLDialogElement;
 const profileForm = $("#profile-form") as HTMLFormElement;
+const mergeDialog = $("#merge-dialog") as HTMLDialogElement;
 const previewMode = import.meta.env.DEV && new URLSearchParams(window.location.search).has("preview");
 
 let profiles: HostProfile[] = [];
@@ -310,7 +332,10 @@ let catalog: Catalog | null = null;
 let runs: FleetRun[] = [];
 let cosigns: Record<string, Cosign> = {};
 let artifacts: ArtifactMetadata[] = [];
-let results: RemoteCommandResult[] = [];
+let results: Receipt[] = [];
+/** Witnessed merge refusals by run key — first-class state, rendered where the
+ *  button was until the next co-sign poll moves the PR off "open". */
+let mergeRefusals: Record<string, CosignResult> = {};
 let selectedKey = "";
 let review: ReviewState | null = null;
 /** Run key whose artifact list has actually loaded — before that, an empty
@@ -682,6 +707,11 @@ function renderMetadata(run: FleetRun | undefined): void {
     ...(run.data.sha ? [["Commit", run.data.sha] as [string, string]] : []), ...(run.data.vetoes ? [["Vetoes", String(run.data.vetoes)] as [string, string]] : []),
     ...cosignRows(run),
   ];
+  renderDefinitionRows(list, rows);
+  renderCosignDecision(run);
+}
+
+function renderDefinitionRows(list: HTMLElement, rows: Array<[string, string]>): void {
   list.replaceChildren();
   for (const [term, value] of rows) {
     const row = document.createElement("div");
@@ -691,6 +721,156 @@ function renderMetadata(run: FleetRun | undefined): void {
     dd.textContent = value;
     row.append(dt, dd);
     list.append(row);
+  }
+}
+
+function prNumber(prUrl: string | undefined): string {
+  return prUrl?.match(/\/pull\/(\d+)/)?.[1] ?? "?";
+}
+
+/** Refusal `code` selects icon and tone only — the detail text is never touched. */
+function refusalPresentation(code: string): { icon: string; tone: "failure" | "neutral" } {
+  if (code === "already-merged") return { icon: "git-merge", tone: "neutral" };
+  if (code === "already-closed") return { icon: "git-pull-request-closed", tone: "neutral" };
+  return { icon: "x-circle", tone: "failure" };
+}
+
+/**
+ * The decision block in the run-details rail: the merge button for runs the
+ * gate could accept, the blocking reason in its place for every other run, and
+ * a witnessed refusal verbatim where the button was. Always evidence-adjacent —
+ * this is the only surface that renders it. A refusal that leaves the PR open
+ * (conflicts, not-mergeable) keeps the button below it, so a retry after the
+ * operator fixes the cause never needs a reconnect — the runner's gate stays
+ * the real gate.
+ */
+function renderCosignDecision(run: FleetRun | undefined): void {
+  const container = $("#cosign-decision");
+  container.replaceChildren();
+  container.hidden = !run;
+  if (!run) return;
+
+  const refusal = mergeRefusals[run.key];
+  if (refusal) {
+    const first = refusal.refusals[0] ?? { code: "merge-failed", detail: "no detail returned" };
+    const { icon, tone } = refusalPresentation(first.code);
+    const block = document.createElement("div");
+    block.className = `cosign-refusal ${tone}`;
+    block.innerHTML = `<i data-lucide="${icon}"></i><div><strong></strong></div>`;
+    block.querySelector("strong")!.textContent = `Merge refused — ${first.code}`;
+    for (const { detail } of refusal.refusals) {
+      const line = document.createElement("span");
+      line.textContent = detail;
+      block.querySelector("div")!.append(line);
+    }
+    container.append(block);
+  }
+
+  const blocker = status.state !== "connected" && !previewMode
+    ? "Runner disconnected — reconnect to co-sign."
+    : mergeBlocker(
+        run.kind === "inflight"
+          ? { kind: "inflight" }
+          : { kind: "completed", mode: run.data.mode, status: run.data.status, prUrl: run.data.prUrl, cosignState: cosignFor(run)?.state },
+      );
+  if (blocker) {
+    const reason = document.createElement("div");
+    reason.className = "cosign-blocker";
+    reason.textContent = blocker;
+    container.append(reason);
+  } else {
+    const button = document.createElement("button");
+    button.className = "primary compact cosign-merge";
+    button.disabled = busy;
+    button.innerHTML = `<i data-lucide="git-merge"></i><span></span>`;
+    button.querySelector("span")!.textContent = busy
+      ? "Merging…"
+      : `${refusal ? "Retry squash-merge" : "Squash-merge"} PR #${prNumber(run.kind === "completed" ? run.data.prUrl : undefined)}`;
+    button.addEventListener("click", () => openMergeConfirm(run.key));
+    container.append(button);
+  }
+  refreshIcons(container);
+}
+
+/** The run key the open confirm dialog is about. */
+let mergeCandidate = "";
+
+/** Restates the stakes from data the app already has, then hands the real
+ *  decision to the runner's gate — no typed challenge, just informed consent. */
+function openMergeConfirm(key: string): void {
+  const run = runs.find((item) => item.key === key);
+  if (!run || run.kind !== "completed" || !run.data.prUrl) return;
+  mergeCandidate = key;
+  const evidence = run.data.evidence ?? [];
+  $("#merge-stakes").textContent =
+    `Squash-merge PR #${prNumber(run.data.prUrl)} into ${run.data.repo} — verify green, judge approved. ` +
+    "The branch is deleted after the merge.";
+  renderDefinitionRows($("#merge-facts"), [
+    ["Task", run.data.task],
+    ["Repository", run.data.repo],
+    ["Pull request", `#${prNumber(run.data.prUrl)} — open`],
+    ["Verify", evidence.find((line) => /verify/i.test(line)) ?? "Run approved — no verify line in the evidence"],
+    ["Judge", evidence.find((line) => /judge/i.test(line)) ?? "Run approved — no judge line in the evidence"],
+  ]);
+  mergeDialog.showModal();
+}
+
+/** Preview merges succeed; `?preview&refuse` exercises the refusal state —
+ *  witnessed refusals are a feature, so the dev preview must show one. */
+function previewMergeResult(run: FleetRun & { kind: "completed" }): Receipt {
+  const refuse = new URLSearchParams(window.location.search).has("refuse");
+  const base = { action: "merge", runId: run.data.runId, task: run.data.task, repo: run.data.repo, prUrl: run.data.prUrl };
+  const line = JSON.stringify(
+    refuse
+      ? { ...base, ok: false, refusals: [{ code: "not-mergeable", detail: "blocked by required checks or reviews" }] }
+      : { ...base, ok: true, state: "merged", mergedSha: "9fe31c7", mergedBy: "operator", mergedAt: new Date().toISOString(), refusals: [] },
+  );
+  return {
+    command: `ssh fleet@runner fleet cosign ${run.data.runId} --merge`,
+    exitStatus: refuse ? 1 : 0,
+    stdoutTail: `> spotify-stack@0.1.0 fleet /srv/spotify-stack\n\n${line}`,
+    stderrTail: "",
+    timestamp: Date.now(),
+  };
+}
+
+/** The approve path: fixed cosign-merge command over SSH, structured result
+ *  parsed from the last JSON line, state refreshed from the result immediately
+ *  and reconciled by the next co-sign poll. */
+async function executeMerge(key: string): Promise<void> {
+  const run = runs.find((item) => item.key === key);
+  const profile = activeProfile();
+  if (!run || run.kind !== "completed" || !run.data.runId || !run.data.prUrl) return;
+  if (!previewMode && (status.state !== "connected" || !profile)) return;
+  setBusy(true);
+  try {
+    const result: Receipt = previewMode
+      ? previewMergeResult(run)
+      : await invoke<RemoteCommandResult>("execute_fleet_action", {
+          profile,
+          action: { kind: "cosignMerge", runId: run.data.runId },
+        });
+    result.cosign = parseCosignResult(result.stdoutTail) ?? undefined;
+    results.unshift(result);
+    if (result.cosign?.ok && result.cosign.state === "merged") {
+      cosigns[run.data.prUrl] = {
+        state: "merged",
+        mergedBy: result.cosign.mergedBy,
+        mergedAt: result.cosign.mergedAt,
+      };
+      delete mergeRefusals[key];
+      toast(`PR #${prNumber(run.data.prUrl)} squash-merged`);
+    } else if (result.cosign) {
+      mergeRefusals[key] = result.cosign;
+      toast(`Merge refused: ${result.cosign.refusals[0]?.code ?? "no reason returned"}`, true);
+    } else {
+      toast(`Merge command exited ${result.exitStatus} without a structured result`, true);
+    }
+  } catch (error) {
+    toast(String(error), true);
+  } finally {
+    setBusy(false);
+    renderAll();
   }
 }
 
@@ -717,6 +897,38 @@ function renderArtifacts(): void {
   refreshIcons(list);
 }
 
+/** The merge receipt's body — squash sha, merged-by, merged-at, branch deleted —
+ *  or, for a refusal, every refusal line verbatim. */
+function cosignReceiptBody(result: CosignResult): HTMLElement {
+  const body = document.createElement("div");
+  body.className = "receipt-cosign";
+  if (result.ok && result.state === "merged") {
+    const rows: Array<[string, string]> = [
+      ["Squash sha", result.mergedSha ?? "unknown"],
+      ["Merged by", result.mergedBy ?? "unknown"],
+      ["Merged at", result.mergedAt ? new Date(result.mergedAt).toLocaleString() : "unknown"],
+      ["Branch", "deleted"],
+    ];
+    for (const [term, value] of rows) {
+      const row = document.createElement("div");
+      row.innerHTML = `<span></span><b></b>`;
+      row.querySelector("span")!.textContent = term;
+      row.querySelector("b")!.textContent = value;
+      body.append(row);
+    }
+  } else {
+    for (const refusal of result.refusals) {
+      const row = document.createElement("div");
+      row.className = "refusal";
+      row.innerHTML = `<span></span><b></b>`;
+      row.querySelector("span")!.textContent = refusal.code;
+      row.querySelector("b")!.textContent = refusal.detail;
+      body.append(row);
+    }
+  }
+  return body;
+}
+
 function renderActivity(): void {
   const list = $("#activity-list");
   list.replaceChildren();
@@ -734,12 +946,19 @@ function renderActivity(): void {
   for (const receipt of receipts) {
     const details = document.createElement("details");
     details.className = "receipt-row";
+    const success = receipt.exitStatus === 0;
+    const icon = receipt.cosign ? (success ? "git-merge" : "x-circle") : success ? "check-circle-2" : "x-circle";
     const summary = document.createElement("summary");
-    summary.innerHTML = `<span class="receipt-state ${receipt.exitStatus === 0 ? "success" : "failure"}"><i data-lucide="${receipt.exitStatus === 0 ? "check-circle-2" : "x-circle"}"></i></span><span class="receipt-command"><strong></strong><small>${new Date(receipt.timestamp).toLocaleTimeString()} · exit ${receipt.exitStatus}</small></span><i data-lucide="chevron-right"></i>`;
+    summary.innerHTML = `<span class="receipt-state ${success ? "success" : "failure"}"><i data-lucide="${icon}"></i></span><span class="receipt-command"><strong></strong><small>${new Date(receipt.timestamp).toLocaleTimeString()} · exit ${receipt.exitStatus}</small></span><i data-lucide="chevron-right"></i>`;
     summary.querySelector("strong")!.textContent = receipt.command;
+    details.append(summary);
+    if (receipt.cosign) {
+      details.open = true;
+      details.append(cosignReceiptBody(receipt.cosign));
+    }
     const output = document.createElement("pre");
     output.textContent = [receipt.stdoutTail, receipt.stderrTail].filter(Boolean).join("\n").trim() || "No output";
-    details.append(summary, output);
+    details.append(output);
     list.append(details);
   }
   refreshIcons(list);
@@ -939,6 +1158,7 @@ function setBusy(next: boolean): void {
   busy = next;
   renderConnection();
   renderCatalog();
+  renderCosignDecision(selectedRun());
 }
 
 function showProfile(profile?: HostProfile): void {
@@ -978,6 +1198,12 @@ async function refreshFleetData(): Promise<void> {
   const ledgerChanged = ledgerRefreshDecision(ledgerRevision, nextRevision);
   ledgerRevision = nextRevision;
   runs = [...live, ...completed].sort((a, b) => Date.parse(b.sortAt) - Date.parse(a.sortAt));
+  // A refusal witnessed against an open PR stands until the co-sign poll moves
+  // the PR's live state — from then on the blocking reason says it better.
+  for (const key of Object.keys(mergeRefusals)) {
+    const refused = runs.find((run) => run.key === key);
+    if (!refused || cosignFor(refused)?.state !== "open") delete mergeRefusals[key];
+  }
   lastUpdated = new Date(ledger.generatedAt);
   if (!selectedKey || !runs.some((run) => run.key === selectedKey)) selectedKey = runs[0]?.key ?? "";
   await loadArtifactsForSelected();
@@ -1111,6 +1337,7 @@ function loadPreviewData(): void {
   };
   const entries: LedgerEntry[] = [
     { ts: new Date(now - 12 * 60_000).toISOString(), runId: "approved", task: "004-upstream-failure-mode-tests", repo: "demo-feed-service", status: "approved", mode: "cloud", vetoes: 0, title: "Cover upstream failure modes", elapsedMs: 186_421, prUrl: "https://github.com/example/repo/pull/42", sha: "8df31c2", evidence: ["Scope contract passed for 4 changed files", "VERIFY PASSED", "npm run test passed (42 tests)", "Judge approved with no violations"] },
+    { ts: new Date(now - 25 * 60_000).toISOString(), runId: "review-me", task: "onramp-1-feed-tests", repo: "demo-feed-service", status: "approved", mode: "local", vetoes: 0, title: "Harden feed pagination", elapsedMs: 141_380, prUrl: "https://github.com/example/repo/pull/44", sha: "3e91d0a", evidence: ["Scope contract passed for 2 changed files", "VERIFY PASSED", "npm run test passed (17 tests)", "Judge approved with no violations"] },
     { ts: new Date(now - 2 * 3_600_000).toISOString(), runId: "shipped", task: "onramp-1-feed-tests", repo: "demo-feed-service", status: "approved", mode: "local", vetoes: 0, title: "Add feed builder tests", elapsedMs: 121_204, prUrl: "https://github.com/example/repo/pull/38", sha: "1fa9b04", evidence: ["Scope contract passed", "VERIFY PASSED", "Judge approved with no violations"] },
     { ts: new Date(now - 47 * 60_000).toISOString(), runId: "failed", task: "onramp-1-feed-tests", repo: "demo-feed-service", status: "verify-failed", mode: "local", vetoes: 0, title: "Add feed builder tests", elapsedMs: 74_902, reason: "npm run test failed: expected 3 items, received 4", evidence: ["Scope contract passed", "VERIFY FAILED", "expected 3 items, received 4"] },
     { ts: new Date(now - 4 * 3_600_000).toISOString(), runId: "noop", task: "003-add-agent-badge", repo: "demo-ts-service", status: "no-changes", mode: "cloud", vetoes: 0, title: "Add agent badge", elapsedMs: 23_511, evidence: ["Task precondition is already satisfied", "NO_CHANGES_NEEDED"] },
@@ -1119,13 +1346,14 @@ function loadPreviewData(): void {
   const live: InflightRecord = { runId: "live", startedAt: new Date(now - 6 * 60_000).toISOString(), task: "004-upstream-failure-mode-tests", repo: "demo-ts-service", title: "Cover upstream failure modes", stage: "verify", attempt: 1, stageSince: new Date(now - 70_000).toISOString() };
   cosigns = {
     "https://github.com/example/repo/pull/42": { state: "open" },
+    "https://github.com/example/repo/pull/44": { state: "open" },
     "https://github.com/example/repo/pull/38": { state: "merged", mergedBy: "fernando", mergedAt: new Date(now - 90 * 60_000).toISOString() },
   };
   runs = [
     { kind: "inflight", key: live.runId, sortAt: live.startedAt, data: live },
     ...entries.map((entry) => ({ kind: "completed" as const, key: entry.runId!, sortAt: entry.ts, data: entry })),
   ];
-  selectedKey = "approved";
+  selectedKey = "review-me";
   artifacts = previewArtifacts();
   results = [{ command: "ssh fleet@runner fleet dispatch 004-upstream-failure-mode-tests --repo demo-feed-service", exitStatus: 0, stdoutTail: "dispatched agent-task.yml", stderrTail: "", timestamp: now - 17 * 60_000 }];
   lastUpdated = new Date(now - 18_000);
@@ -1167,6 +1395,7 @@ $("#disconnect").addEventListener("click", async () => {
     artifacts = [];
     artifactsLoadedFor = "";
     review = null;
+    mergeRefusals = {};
     ledgerRevision = "";
     ledgerFrame.src = "about:blank";
     ledgerFrame.hidden = true;
@@ -1199,6 +1428,13 @@ repoSelect.addEventListener("change", renderCatalog);
 profileSelect.addEventListener("change", renderConnection);
 $("#close-dialog").addEventListener("click", () => profileDialog.close());
 $("#cancel-profile").addEventListener("click", () => profileDialog.close());
+$("#close-merge-dialog").addEventListener("click", () => mergeDialog.close());
+$("#cancel-merge").addEventListener("click", () => mergeDialog.close());
+$("#merge-form").addEventListener("submit", () => {
+  const key = mergeCandidate;
+  mergeCandidate = "";
+  void executeMerge(key);
+});
 $("#remote-repo").addEventListener("input", (event) => { ($("#command-prefix") as HTMLInputElement).value = prefixFor((event.target as HTMLInputElement).value); });
 $("#delete-profile").addEventListener("click", async () => {
   const id = ($("#profile-id") as HTMLInputElement).value;

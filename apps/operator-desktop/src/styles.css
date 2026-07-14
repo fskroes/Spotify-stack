@@ -229,6 +229,16 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .metadata-list > div { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 8px; min-height: 23px; align-items: baseline; }
 .metadata-list dt { color: var(--muted); font-size: 9.5px; }
 .metadata-list dd { overflow: hidden; margin: 0; color: var(--text-secondary); font-family: var(--mono); font-size: 9.5px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.cosign-decision { display: grid; gap: 7px; margin-top: 10px; padding-top: 11px; border-top: 1px solid var(--border-soft); }
+.cosign-decision .cosign-merge { width: 100%; }
+.cosign-blocker { color: var(--muted); font-size: 9.5px; line-height: 1.5; }
+.cosign-refusal { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 8px; padding: 9px 10px; border: 1px solid #542c31; border-radius: 5px; background: var(--red-soft); }
+.cosign-refusal.neutral { border-color: var(--border); background: var(--panel-raised); }
+.cosign-refusal svg { width: 13px; height: 13px; margin-top: 1px; color: var(--red); }
+.cosign-refusal.neutral svg { color: var(--muted); }
+.cosign-refusal > div { display: grid; min-width: 0; gap: 3px; }
+.cosign-refusal strong { font-size: 10px; font-weight: 650; }
+.cosign-refusal span { color: var(--text-secondary); font-size: 9.5px; line-height: 1.5; overflow-wrap: break-word; }
 .artifact-list { margin: 0 -5px; }
 .artifact-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) 12px; align-items: center; gap: 6px; width: 100%; min-height: 35px; padding: 4px 5px; border: 0; border-radius: 3px; color: var(--text-secondary); background: transparent; text-align: left; cursor: pointer; }
 .artifact-row:hover { color: var(--text); background: var(--panel-hover); }
@@ -253,6 +263,11 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .receipt-row summary > svg { width: 11px; height: 11px; color: var(--muted); transition: transform 100ms ease; }
 .receipt-row[open] summary > svg { transform: rotate(90deg); }
 .receipt-row pre { max-height: 150px; margin: 0; overflow: auto; padding: 8px 10px 10px 29px; color: #aaa5a0; background: #0f0f0e; font-size: 9px; line-height: 1.5; white-space: pre-wrap; }
+.receipt-cosign { display: grid; gap: 4px; padding: 8px 10px 8px 29px; border-top: 1px solid var(--border-soft); background: var(--panel-raised); }
+.receipt-cosign > div { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 8px; font-size: 9px; }
+.receipt-cosign span { color: var(--muted); }
+.receipt-cosign b { overflow: hidden; color: var(--text-secondary); font-family: var(--mono); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.receipt-cosign .refusal b { color: #f1c5c7; white-space: normal; overflow-wrap: break-word; }
 
 dialog { width: min(560px, calc(100vw - 40px)); padding: 0; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: var(--panel); box-shadow: 0 24px 80px rgb(0 0 0 / 55%); }
 dialog::backdrop { background: rgb(0 0 0 / 55%); backdrop-filter: blur(2px); }
@@ -266,6 +281,10 @@ label { display: grid; gap: 6px; margin-bottom: 12px; color: var(--text-secondar
 .dialog-actions button { min-height: 32px; padding: 0 11px; border-radius: 4px; }
 button.danger { color: var(--red); border: 1px solid #613338; background: transparent; }
 button.danger:hover { background: var(--red-soft); }
+.merge-stakes { margin: 0 0 16px; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+.merge-facts { margin-bottom: 4px; padding: 4px 12px; border: 1px solid var(--border-soft); border-radius: 5px; background: var(--panel-raised); }
+.merge-facts > div { grid-template-columns: 96px minmax(0, 1fr); }
+.merge-facts dd { text-align: left; white-space: normal; }
 
 .toast { position: fixed; right: 14px; bottom: 14px; z-index: 20; max-width: min(500px, calc(100vw - 28px)); padding: 10px 13px; border: 1px solid #4a4541; border-radius: 5px; color: var(--text); background: #262422; box-shadow: 0 12px 35px rgb(0 0 0 / 35%); font-size: 10.5px; }
 .toast.error { color: #f1c5c7; border-color: #67343a; background: #341f22; }

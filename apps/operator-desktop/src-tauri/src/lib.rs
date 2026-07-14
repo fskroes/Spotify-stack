@@ -30,6 +30,7 @@ struct HostProfile {
 enum FleetAction {
     Dispatch { task: String, repo: Option<String> },
     LocalRun { task: String, repo: String, pr: bool },
+    CosignMerge { run_id: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,33 +157,35 @@ fn command_prefix(repo_path: &str) -> String {
 
 fn fleet_command(profile: &HostProfile, action: &FleetAction) -> Result<String, String> {
     validate_profile(profile)?;
-    let (task, repo) = match action {
-        FleetAction::Dispatch { task, repo } => (task, repo.as_ref()),
-        FleetAction::LocalRun { task, repo, .. } => (task, Some(repo)),
-    };
-    if !valid_identifier(task) || repo.is_some_and(|value| !valid_identifier(value)) {
-        return Err("task and repo must be fleet identifiers".into());
-    }
-
-    let mut command = format!(
-        "{} {} {}",
-        command_prefix(&profile.remote_repo_path),
-        match action {
-            FleetAction::Dispatch { .. } => "dispatch",
-            FleetAction::LocalRun { .. } => "run",
-        },
-        shell_quote(task)
-    );
-    if let Some(repo) = repo {
-        command.push_str(&format!(" --repo {}", shell_quote(repo)));
-    }
-    if let FleetAction::LocalRun { pr, .. } = action {
-        command.push_str(" --local");
-        if *pr {
-            command.push_str(" --pr");
+    let prefix = command_prefix(&profile.remote_repo_path);
+    let quoted = |value: &str, what: &str| -> Result<String, String> {
+        if valid_identifier(value) {
+            Ok(shell_quote(value))
+        } else {
+            Err(format!("{what} must be a fleet identifier"))
         }
+    };
+    match action {
+        FleetAction::Dispatch { task, repo } => {
+            let mut command = format!("{prefix} dispatch {}", quoted(task, "task")?);
+            if let Some(repo) = repo {
+                command.push_str(&format!(" --repo {}", quoted(repo, "repo")?));
+            }
+            Ok(command)
+        }
+        FleetAction::LocalRun { task, repo, pr } => Ok(format!(
+            "{prefix} run {} --repo {} --local{}",
+            quoted(task, "task")?,
+            quoted(repo, "repo")?,
+            if *pr { " --pr" } else { "" }
+        )),
+        // Fixed flag set — --merge --json, no --force by design: a refusal
+        // from the runner's cosign gate is the product working.
+        FleetAction::CosignMerge { run_id } => Ok(format!(
+            "{prefix} cosign {} --merge --json",
+            quoted(run_id, "run id")?
+        )),
     }
-    Ok(command)
 }
 
 fn connect_spec(profile: &HostProfile, local_port: u16) -> Result<CommandSpec, String> {
@@ -232,6 +235,7 @@ fn action_spec(profile: &HostProfile, action: &FleetAction) -> Result<CommandSpe
                 if *pr { " --pr" } else { "" }
             )
         }
+        FleetAction::CosignMerge { run_id } => format!("fleet cosign {run_id} --merge"),
     };
     Ok(CommandSpec {
         program: "ssh".into(),
@@ -639,6 +643,44 @@ mod tests {
             action_spec(&profile(), &action(false)).unwrap().display,
             "ssh fleet@example.test fleet run 007-api --repo demo-api --local"
         );
+    }
+
+    #[test]
+    fn cosign_merge_command_is_fixed_and_validates_run_id() {
+        let command = fleet_command(
+            &profile(),
+            &FleetAction::CosignMerge {
+                run_id: "eacac4d4-56d8-4420-b923-9d7ec886d983".into(),
+            },
+        )
+        .unwrap();
+        // The whole flag set is fixed — --merge --json, no --force. The runId
+        // is the only free value and it is identifier-validated like task and
+        // repo: no arbitrary shell ever rides a cosign.
+        assert_eq!(
+            command,
+            "cd -- '/srv/fleet control' && exec pnpm fleet cosign 'eacac4d4-56d8-4420-b923-9d7ec886d983' --merge --json"
+        );
+        for bad in ["run'; rm -rf /", "", "run id", ".."] {
+            assert!(fleet_command(
+                &profile(),
+                &FleetAction::CosignMerge { run_id: bad.into() },
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn cosign_merge_receipt_names_the_fixed_command() {
+        let spec = action_spec(
+            &profile(),
+            &FleetAction::CosignMerge {
+                run_id: "abc-123".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(spec.program, "ssh");
+        assert_eq!(spec.display, "ssh fleet@example.test fleet cosign abc-123 --merge");
     }
 
     #[test]
