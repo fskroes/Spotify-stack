@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  awaitingReview,
   closeReasonProblem,
   MAX_REASON_LENGTH,
   mergeBlocker,
@@ -146,5 +147,41 @@ describe("mergeBlocker", () => {
     expect(mergeBlocker({ ...mergeable, cosignState: "closed" })).toBe(
       "Pull request was closed without merging.",
     );
+  });
+});
+
+describe("awaitingReview", () => {
+  // Awaiting review is defined as "the merge gate would accept a co-sign
+  // decision right now" — the attention state and the merge button can never
+  // disagree about which runs need the operator.
+  const reviewable = {
+    kind: "completed",
+    mode: "local",
+    status: "approved",
+    prUrl: "https://github.com/example/demo-feed-service/pull/1",
+    cosignState: "open",
+  } as const;
+
+  it("marks a shipped local run with a live open PR as awaiting review", () => {
+    expect(awaitingReview(reviewable)).toBe(true);
+  });
+
+  it("never marks a cloud run — its review lives on GitHub", () => {
+    expect(awaitingReview({ ...reviewable, mode: "cloud" })).toBe(false);
+  });
+
+  it("leaves the attention state once the PR is merged or closed", () => {
+    expect(awaitingReview({ ...reviewable, cosignState: "merged" })).toBe(false);
+    expect(awaitingReview({ ...reviewable, cosignState: "closed" })).toBe(false);
+  });
+
+  it("is derived from live co-sign state, never assumed before it lands", () => {
+    expect(awaitingReview({ ...reviewable, cosignState: undefined })).toBe(false);
+  });
+
+  it("excludes runs the gate would refuse anyway", () => {
+    expect(awaitingReview({ kind: "inflight" })).toBe(false);
+    expect(awaitingReview({ ...reviewable, status: "verify-failed" })).toBe(false);
+    expect(awaitingReview({ ...reviewable, prUrl: undefined })).toBe(false);
   });
 });

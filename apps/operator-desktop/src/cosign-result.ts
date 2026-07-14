@@ -77,6 +77,19 @@ export function mergeBlocker(run: MergeGateInput): string | null {
   return null;
 }
 
+/**
+ * Whether this run is shipped and waiting on the operator's co-sign decision —
+ * the queue's awaiting-review attention state. Defined as "the merge gate
+ * would accept a decision right now", so the attention treatment and the merge
+ * button judge a run identically (the decision block additionally requires a
+ * live runner connection). Derived from live co-sign state (#20), it appears
+ * only once the serve reports the PR open and leaves when the PR merges or
+ * closes. Cloud runs never qualify: their review lives on GitHub.
+ */
+export function awaitingReview(run: MergeGateInput): boolean {
+  return run.kind === "completed" && mergeBlocker(run) === null;
+}
+
 /** Mirrors the CLI's --reason cap — a reason accepted by the form is never
  *  rejected after the fact by the runner. */
 export const MAX_REASON_LENGTH = 500;

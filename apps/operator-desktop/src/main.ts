@@ -37,11 +37,13 @@ import {
 import { fleetRevision, ledgerRefreshDecision, refreshedLedgerUrl } from "./ledger-refresh";
 import { parsePatch, type DiffFile, type ParsedDiff } from "./diff-parser";
 import {
+  awaitingReview,
   closeReasonProblem,
   MAX_REASON_LENGTH,
   mergeBlocker,
   parseCosignResult,
   type CosignResult,
+  type MergeGateInput,
 } from "./cosign-result";
 import "./styles.css";
 
@@ -409,17 +411,58 @@ function cosignFor(run: FleetRun): Cosign | undefined {
   return run.kind === "completed" && run.data.prUrl ? cosigns[run.data.prUrl] : undefined;
 }
 
+/** The merge gate's view of a run — the decision block, the queue's attention
+ *  state, and the chip all judge this same input (the decision block adds one
+ *  check of its own: a live runner connection). */
+function gateInput(run: FleetRun): MergeGateInput {
+  return run.kind === "inflight"
+    ? { kind: "inflight" }
+    : { kind: "completed", mode: run.data.mode, status: run.data.status, prUrl: run.data.prUrl, cosignState: cosignFor(run)?.state };
+}
+
+/** One PR state as the UI tells it — label for the queue chip, detail for the
+ *  run-details row, icon and tone shared by both. */
+interface CosignChip {
+  label: string;
+  detail: string;
+  icon: string;
+  tone: string;
+}
+
 /** Everything the UI says about a PR state, in one place — the queue chip and
  *  the run-details row must never disagree. For shipped runs the decision
  *  dimension (co-sign) supersedes the pipeline dimension (approved). */
-const COSIGN_CHIP: Record<Cosign["state"], { label: string; detail: string; icon: string; tone: string }> = {
+const COSIGN_CHIP: Record<Cosign["state"], CosignChip> = {
   open: { label: "PR open", detail: "Open — awaiting co-sign", icon: "git-pull-request", tone: "warning" },
   merged: { label: "Merged", detail: "Merged", icon: "git-merge", tone: "success" },
   closed: { label: "Closed", detail: "Closed without merging", icon: "git-pull-request-closed", tone: "neutral" },
 };
 
+/** An open PR splits by who can act on it: a local run the gate would accept
+ *  is the operator's awaiting-review attention state; a cloud run's review
+ *  lives on GitHub and the chip says so instead of implying an in-app action. */
+function cosignChip(run: FleetRun): CosignChip | undefined {
+  const cosign = cosignFor(run);
+  if (!cosign) return undefined;
+  if (cosign.state === "open" && run.kind === "completed" && run.data.mode === "cloud") {
+    return { ...COSIGN_CHIP.open, detail: "Open — review on GitHub" };
+  }
+  if (cosign.state === "open" && awaitingReview(gateInput(run))) {
+    return { label: "Needs review", detail: "Open — awaiting your co-sign", icon: "git-pull-request", tone: "review" };
+  }
+  return COSIGN_CHIP[cosign.state];
+}
+
 function isAttention(run: FleetRun): boolean {
-  return run.kind === "completed" && ["agent-failed", "verify-failed", "vetoed", "scope-violation", "engine-failed"].includes(run.data.status);
+  if (run.kind !== "completed") return false;
+  return ["agent-failed", "verify-failed", "vetoed", "scope-violation", "engine-failed"].includes(run.data.status)
+    || awaitingReview(gateInput(run));
+}
+
+/** Attention-first queue order: runs that need the operator (failures and
+ *  shipped-awaiting-review) sort above the rest; recency breaks ties. */
+function queueOrder(a: FleetRun, b: FleetRun): number {
+  return Number(isAttention(b)) - Number(isAttention(a)) || Date.parse(b.sortAt) - Date.parse(a.sortAt);
 }
 
 function statusTone(value: string): "success" | "failure" | "working" | "warning" | "neutral" {
@@ -537,6 +580,9 @@ function renderCatalog(): void {
 }
 
 function renderQueue(): void {
+  // Re-order on every render, not only on poll — a merge or close moves the
+  // run out of the attention slot the moment its live state changes.
+  runs.sort(queueOrder);
   const list = $("#queue-list");
   list.replaceChildren();
   $("#all-count").textContent = String(runs.length);
@@ -592,7 +638,7 @@ function renderQueue(): void {
     for (const run of repoRuns) {
       const value = runStatus(run);
       const row = document.createElement("button");
-      row.className = `run-row ${run.key === selectedKey ? "selected" : ""}`;
+      row.className = `run-row ${run.key === selectedKey ? "selected" : ""} ${awaitingReview(gateInput(run)) ? "needs-review" : ""}`;
       row.dataset.runKey = run.key;
       const main = document.createElement("span");
       main.className = "run-row-main";
@@ -601,8 +647,7 @@ function renderQueue(): void {
       const meta = document.createElement("span");
       meta.textContent = `${run.data.task} · ${relativeTime(run.sortAt)}`;
       main.append(title, meta);
-      const cosign = cosignFor(run);
-      const chip = cosign && COSIGN_CHIP[cosign.state];
+      const chip = cosignChip(run);
       const state = document.createElement("span");
       state.className = `run-row-state ${chip?.tone ?? statusTone(value)}`;
       state.innerHTML = `<i data-lucide="${chip?.icon ?? statusIcon(value)}"></i><span></span>`;
@@ -709,8 +754,9 @@ function renderSelectedRun(): void {
 /** Run-details rows for the PR's live merge state — the decision record. */
 function cosignRows(run: FleetRun): Array<[string, string]> {
   const cosign = cosignFor(run);
-  if (!cosign) return [];
-  const rows: Array<[string, string]> = [["Pull request", COSIGN_CHIP[cosign.state].detail]];
+  const chip = cosignChip(run);
+  if (!cosign || !chip) return [];
+  const rows: Array<[string, string]> = [["Pull request", chip.detail]];
   if (cosign.state === "merged" && cosign.mergedBy) rows.push(["Co-signed by", cosign.mergedBy]);
   if (cosign.state === "merged" && cosign.mergedAt) rows.push(["Co-signed", new Date(cosign.mergedAt).toLocaleString()]);
   return rows;
@@ -746,6 +792,21 @@ function renderDefinitionRows(list: HTMLElement, rows: Array<[string, string]>):
 
 function prNumber(prUrl: string | undefined): string {
   return prUrl?.match(/\/pull\/(\d+)/)?.[1] ?? "?";
+}
+
+/** Open the selected run's PR in the browser — HTTPS only, opener severed.
+ *  Every open-the-PR affordance (header button, Review tab, decision block)
+ *  goes through here. */
+function openSelectedPr(): void {
+  const run = selectedRun();
+  if (run?.kind !== "completed" || !run.data.prUrl) return;
+  try {
+    const url = new URL(run.data.prUrl);
+    if (url.protocol !== "https:") throw new Error("Pull request URL is not HTTPS");
+    window.open(url, "_blank", "noopener");
+  } catch (error) {
+    toast(String(error), true);
+  }
 }
 
 /** Refusal `code` selects icon and tone only — the detail text is never touched. */
@@ -791,16 +852,21 @@ function renderCosignDecision(run: FleetRun | undefined): void {
 
   const blocker = status.state !== "connected" && !previewMode
     ? "Runner disconnected — reconnect to co-sign."
-    : mergeBlocker(
-        run.kind === "inflight"
-          ? { kind: "inflight" }
-          : { kind: "completed", mode: run.data.mode, status: run.data.status, prUrl: run.data.prUrl, cosignState: cosignFor(run)?.state },
-      );
+    : mergeBlocker(gateInput(run));
   if (blocker) {
     const reason = document.createElement("div");
     reason.className = "cosign-blocker";
     reason.textContent = blocker;
     container.append(reason);
+    // Honest cloud state: this runner holds no cosign authority over a cloud
+    // run, so the decision block offers the deep link instead of the verbs.
+    if (run.kind === "completed" && run.data.mode === "cloud" && run.data.prUrl) {
+      const github = document.createElement("button");
+      github.className = "secondary compact cosign-review-github";
+      github.innerHTML = `<i data-lucide="git-pull-request"></i><span>Review on GitHub</span>`;
+      github.addEventListener("click", openSelectedPr);
+      container.append(github);
+    }
     if (run.kind === "completed" && cosignFor(run)?.state === "closed") {
       const again = document.createElement("button");
       again.className = "secondary compact cosign-run-again";
@@ -1208,7 +1274,7 @@ function renderReview(): void {
       const open = document.createElement("button");
       open.className = "secondary compact";
       open.innerHTML = `<i data-lucide="git-pull-request"></i>Open PR`;
-      open.addEventListener("click", () => $("#open-pr").click());
+      open.addEventListener("click", openSelectedPr);
       notice.append(open);
     }
     container.append(notice);
@@ -1297,7 +1363,7 @@ async function refreshFleetData(): Promise<void> {
   const nextRevision = fleetRevision(ledger.entries, inflight.runs);
   const ledgerChanged = ledgerRefreshDecision(ledgerRevision, nextRevision);
   ledgerRevision = nextRevision;
-  runs = [...live, ...completed].sort((a, b) => Date.parse(b.sortAt) - Date.parse(a.sortAt));
+  runs = [...live, ...completed].sort(queueOrder);
   // A refusal witnessed against an open PR stands until the co-sign poll moves
   // the PR's live state — from then on the blocking reason says it better.
   for (const key of Object.keys(cosignRefusals)) {
@@ -1514,17 +1580,7 @@ $("#toggle-rail").addEventListener("click", () => {
   $("#toggle-rail").innerHTML = `<i data-lucide="${collapsed ? "panel-right-open" : "panel-right-close"}"></i>`;
   refreshIcons($("#toggle-rail"));
 });
-$("#open-pr").addEventListener("click", () => {
-  const run = selectedRun();
-  if (run?.kind !== "completed" || !run.data.prUrl) return;
-  try {
-    const url = new URL(run.data.prUrl);
-    if (url.protocol !== "https:") throw new Error("Pull request URL is not HTTPS");
-    window.open(url, "_blank", "noopener");
-  } catch (error) {
-    toast(String(error), true);
-  }
-});
+$("#open-pr").addEventListener("click", openSelectedPr);
 $("#close-artifact").addEventListener("click", () => { artifactPreview = null; $("#artifact-preview").hidden = true; $("#run-detail").hidden = !selectedRun(); $("#run-empty").hidden = Boolean(selectedRun()); artifactFrame.src = "about:blank"; });
 taskSelect.addEventListener("change", renderCatalog);
 repoSelect.addEventListener("change", renderCatalog);
