@@ -198,7 +198,9 @@ fn fleet_command(profile: &HostProfile, action: &FleetAction) -> Result<String, 
             if reason.is_empty() {
                 return Err("a close reason is required — it lands as the PR comment".into());
             }
-            if reason.chars().count() > MAX_REASON_LENGTH {
+            // UTF-16 code units, not chars: the CLI's cap is JS String.length,
+            // and this boundary must never accept what the runner would reject.
+            if reason.encode_utf16().count() > MAX_REASON_LENGTH {
                 return Err(format!(
                     "the close reason is capped at {MAX_REASON_LENGTH} characters"
                 ));
@@ -770,8 +772,12 @@ mod tests {
         assert!(close(&"x".repeat(501)).is_err());
         assert!(close("").is_err());
         assert!(close("   \n  ").is_err());
-        // The cap counts characters like the CLI does, not bytes.
+        // The cap counts UTF-16 code units exactly like the CLI's
+        // String.length — not bytes ("é" is 2 bytes but 1 unit), and not
+        // Unicode scalars ("😀" is 1 char but 2 units).
         assert!(close(&"é".repeat(500)).is_ok());
+        assert!(close(&"😀".repeat(250)).is_ok());
+        assert!(close(&"😀".repeat(251)).is_err());
     }
 
     #[test]

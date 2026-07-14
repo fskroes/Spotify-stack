@@ -328,14 +328,14 @@ app.innerHTML = `
   <div id="toast" class="toast" role="status" hidden></div>
 `;
 
-createIcons({
-  icons: {
-    Activity, AlertCircle, Cable, Check, CheckCircle2, ChevronDown, ChevronRight, Circle,
-    CircleStop, Clock3, FileCode2, FileDiff, GitMerge, GitPullRequest, GitPullRequestClosed,
-    ListFilter, LoaderCircle, PanelRightClose, PanelRightOpen, Play, Plus, RefreshCw, Rocket,
-    RotateCcw, Save, Settings, ShieldCheck, TerminalSquare, Trash2, WifiOff, X, XCircle,
-  },
-});
+const LUCIDE_ICONS = {
+  Activity, AlertCircle, Cable, Check, CheckCircle2, ChevronDown, ChevronRight, Circle,
+  CircleStop, Clock3, FileCode2, FileDiff, GitMerge, GitPullRequest, GitPullRequestClosed,
+  ListFilter, LoaderCircle, PanelRightClose, PanelRightOpen, Play, Plus, RefreshCw, Rocket,
+  RotateCcw, Save, Settings, ShieldCheck, TerminalSquare, Trash2, WifiOff, X, XCircle,
+};
+
+createIcons({ icons: LUCIDE_ICONS });
 
 const $ = <T extends HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const workbench = $(".workbench");
@@ -485,14 +485,7 @@ function setOptions(select: HTMLSelectElement, options: Array<{ value: string; l
 }
 
 function refreshIcons(_root: HTMLElement = document.body): void {
-  createIcons({
-    icons: {
-      Activity, AlertCircle, Cable, Check, CheckCircle2, ChevronDown, ChevronRight, Circle,
-      CircleStop, Clock3, FileCode2, FileDiff, GitMerge, GitPullRequest, GitPullRequestClosed,
-      ListFilter, LoaderCircle, PanelRightClose, PanelRightOpen, Play, Plus, RefreshCw, Rocket,
-      RotateCcw, Save, Settings, ShieldCheck, TerminalSquare, Trash2, WifiOff, X, XCircle,
-    },
-  });
+  createIcons({ icons: LUCIDE_ICONS });
 }
 
 function renderProfiles(): void {
@@ -780,7 +773,8 @@ function renderCosignDecision(run: FleetRun | undefined): void {
 
   const refusal = cosignRefusals[run.key];
   if (refusal) {
-    const first = refusal.refusals[0] ?? { code: "merge-failed", detail: "no detail returned" };
+    const first = refusal.refusals[0]
+      ?? { code: refusal.action === "close" ? "close-failed" : "merge-failed", detail: "no detail returned" };
     const { icon, tone } = refusalPresentation(first.code);
     const block = document.createElement("div");
     block.className = `cosign-refusal ${tone}`;
@@ -926,19 +920,21 @@ function previewCosignResult(run: FleetRun & { kind: "completed" }, action: "mer
 /** Both cosign verbs share one path: fixed command over SSH, structured result
  *  parsed from the last JSON line, state refreshed from the result immediately
  *  and reconciled by the next co-sign poll. */
-async function executeCosign(key: string, action: { kind: "cosignMerge" } | { kind: "cosignClose"; reason: string }): Promise<void> {
+async function executeCosign(key: string, action: "merge" | "close", reason?: string): Promise<void> {
   const run = runs.find((item) => item.key === key);
   const profile = activeProfile();
-  const verb = action.kind === "cosignMerge" ? "Merge" : "Close";
+  const verb = action === "merge" ? "Merge" : "Close";
   if (!run || run.kind !== "completed" || !run.data.runId || !run.data.prUrl) return;
   if (!previewMode && (status.state !== "connected" || !profile)) return;
   setBusy(true);
   try {
     const result: Receipt = previewMode
-      ? previewCosignResult(run, action.kind === "cosignMerge" ? "merge" : "close")
+      ? previewCosignResult(run, action)
       : await invoke<RemoteCommandResult>("execute_fleet_action", {
           profile,
-          action: { ...action, runId: run.data.runId },
+          action: action === "merge"
+            ? { kind: "cosignMerge", runId: run.data.runId }
+            : { kind: "cosignClose", runId: run.data.runId, reason },
         });
     result.cosign = parseCosignResult(result.stdoutTail) ?? undefined;
     results.unshift(result);
@@ -1540,7 +1536,7 @@ $("#cancel-merge").addEventListener("click", () => mergeDialog.close());
 $("#merge-form").addEventListener("submit", () => {
   const key = mergeCandidate;
   mergeCandidate = "";
-  void executeCosign(key, { kind: "cosignMerge" });
+  void executeCosign(key, "merge");
 });
 $("#dismiss-close-dialog").addEventListener("click", () => closeDialog.close());
 $("#cancel-close").addEventListener("click", () => closeDialog.close());
@@ -1556,7 +1552,7 @@ $("#close-form").addEventListener("submit", (event) => {
   }
   const key = closeCandidate;
   closeCandidate = "";
-  void executeCosign(key, { kind: "cosignClose", reason: closeReasonInput.value.trim() });
+  void executeCosign(key, "close", closeReasonInput.value.trim());
 });
 $("#remote-repo").addEventListener("input", (event) => { ($("#command-prefix") as HTMLInputElement).value = prefixFor((event.target as HTMLInputElement).value); });
 $("#delete-profile").addEventListener("click", async () => {
