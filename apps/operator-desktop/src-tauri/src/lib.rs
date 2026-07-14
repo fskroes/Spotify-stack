@@ -452,14 +452,21 @@ async fn execute_fleet_action(
     .map_err(|error| format!("SSH command task failed: {error}"))?
 }
 
-#[tauri::command]
-async fn operator_get(state: State<'_, OperatorState>, path: String) -> Result<Value, String> {
+fn validate_operator_path(path: &str) -> Result<(), String> {
     if !path.starts_with("/api/")
         || path.contains("://")
         || path.chars().any(|c| matches!(c, '\n' | '\r'))
     {
         return Err("only operator API paths are allowed".into());
     }
+    Ok(())
+}
+
+async fn operator_response(
+    state: &OperatorState,
+    path: &str,
+) -> Result<reqwest::Response, String> {
+    validate_operator_path(path)?;
     let port = {
         let mut guard = state
             .session
@@ -483,10 +490,27 @@ async fn operator_get(state: State<'_, OperatorState>, path: String) -> Result<V
     if !status.is_success() {
         return Err(format!("operator API returned {status}"));
     }
-    response
+    Ok(response)
+}
+
+#[tauri::command]
+async fn operator_get(state: State<'_, OperatorState>, path: String) -> Result<Value, String> {
+    operator_response(state.inner(), &path)
+        .await?
         .json::<Value>()
         .await
         .map_err(|error| format!("operator API returned invalid JSON: {error}"))
+}
+
+/// Raw-text sibling of `operator_get` for non-JSON artifacts (diff.patch) —
+/// same allowlisted-path guard, same forwarded loopback port.
+#[tauri::command]
+async fn operator_get_text(state: State<'_, OperatorState>, path: String) -> Result<String, String> {
+    operator_response(state.inner(), &path)
+        .await?
+        .text()
+        .await
+        .map_err(|error| format!("operator API returned unreadable text: {error}"))
 }
 
 pub fn run() {
@@ -499,7 +523,8 @@ pub fn run() {
             disconnect,
             connection_status,
             execute_fleet_action,
-            operator_get
+            operator_get,
+            operator_get_text
         ])
         .run(tauri::generate_context!())
         .expect("error while running Fleet Operator");
@@ -660,6 +685,16 @@ mod tests {
         let mut unsafe_profile = profile();
         unsafe_profile.id = "../../outside".into();
         assert!(validate_profile(&unsafe_profile).is_err());
+    }
+
+    #[test]
+    fn operator_paths_stay_on_the_allowlisted_api_prefix() {
+        // Both the JSON and raw-text commands share this guard.
+        assert!(validate_operator_path("/api/ledger").is_ok());
+        assert!(validate_operator_path("/api/artifacts/run/repo/diff.patch").is_ok());
+        assert!(validate_operator_path("/etc/passwd").is_err());
+        assert!(validate_operator_path("http://evil.test/api/").is_err());
+        assert!(validate_operator_path("/api/x\r\nHost: evil").is_err());
     }
 
     #[test]
