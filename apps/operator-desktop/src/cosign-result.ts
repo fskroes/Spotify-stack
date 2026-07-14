@@ -10,7 +10,6 @@
 
 export type CosignRefusalCode =
   | "run-not-found"
-  | "cloud-run"
   | "not-shipped"
   | "no-pr"
   | "already-merged"
@@ -62,13 +61,15 @@ export interface MergeGateInput {
 
 /**
  * Why the merge button must not render for this run — null when the runner's
- * gate could plausibly accept the merge (local, approved, PR present and open
- * per live state). The UI shows the returned reason in the button's place, so
- * it never offers a decision the gate would refuse.
+ * gate could plausibly accept the merge (approved, PR present and open per live
+ * state). Mode-blind, exactly like the runner's gate (#36): a cloud run is
+ * co-signable here too. The UI shows the returned reason in the button's place,
+ * so it never offers a decision the gate would refuse. Evidence adjacency — the
+ * hard "no synced diff, no button" invariant — is enforced separately at the
+ * render site, since it depends on artifact state this pure gate can't see.
  */
 export function mergeBlocker(run: MergeGateInput): string | null {
   if (run.kind === "inflight") return "Run is still in progress — only shipped runs can be co-signed.";
-  if (run.mode === "cloud") return "Cloud run — review and merge on GitHub.";
   if (run.status !== "approved") return `Run is ${run.status} — only approved runs can be merged.`;
   if (!run.prUrl) return "Run has no pull request — nothing to merge.";
   if (!run.cosignState) return "Waiting for live pull-request state from the runner.";
@@ -82,9 +83,10 @@ export function mergeBlocker(run: MergeGateInput): string | null {
  * the queue's awaiting-review attention state. Defined as "the merge gate
  * would accept a decision right now", so the attention treatment and the merge
  * button judge a run identically (the decision block additionally requires a
- * live runner connection). Derived from live co-sign state (#20), it appears
- * only once the serve reports the PR open and leaves when the PR merges or
- * closes. Cloud runs never qualify: their review lives on GitHub.
+ * live runner connection and synced evidence). Derived from live co-sign state
+ * (#20), it appears only once the serve reports the PR open and leaves when the
+ * PR merges or closes. Cloud runs qualify too (#36) — a synced cloud run needs
+ * the operator's co-sign exactly as a local one does.
  */
 export function awaitingReview(run: MergeGateInput): boolean {
   return run.kind === "completed" && mergeBlocker(run) === null;

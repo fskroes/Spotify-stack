@@ -118,16 +118,16 @@ describe("mergeBlocker", () => {
     cosignState: "open",
   } as const;
 
-  it("offers the merge only for a shipped local run with a live open PR", () => {
+  it("offers the merge for any shipped run with a live open PR — cloud included", () => {
     expect(mergeBlocker(mergeable)).toBeNull();
+    // Mode-blind (#36): a synced cloud run is co-signable here too. Evidence
+    // adjacency is enforced at the render site, not by this gate.
+    expect(mergeBlocker({ ...mergeable, mode: "cloud" })).toBeNull();
   });
 
   it("names the blocking reason for every run the gate would refuse", () => {
     expect(mergeBlocker({ kind: "inflight" })).toBe(
       "Run is still in progress — only shipped runs can be co-signed.",
-    );
-    expect(mergeBlocker({ ...mergeable, mode: "cloud" })).toBe(
-      "Cloud run — review and merge on GitHub.",
     );
     expect(mergeBlocker({ ...mergeable, status: "verify-failed" })).toBe(
       "Run is verify-failed — only approved runs can be merged.",
@@ -162,12 +162,10 @@ describe("awaitingReview", () => {
     cosignState: "open",
   } as const;
 
-  it("marks a shipped local run with a live open PR as awaiting review", () => {
+  it("marks a shipped run with a live open PR as awaiting review — cloud included", () => {
     expect(awaitingReview(reviewable)).toBe(true);
-  });
-
-  it("never marks a cloud run — its review lives on GitHub", () => {
-    expect(awaitingReview({ ...reviewable, mode: "cloud" })).toBe(false);
+    // A synced cloud run needs the operator's co-sign exactly as a local one (#36).
+    expect(awaitingReview({ ...reviewable, mode: "cloud" })).toBe(true);
   });
 
   it("leaves the attention state once the PR is merged or closed", () => {

@@ -127,6 +127,17 @@ interface Cosign {
   mergedAt?: string;
 }
 
+/** A cloud run's evidence-sync state, mirrored verbatim from the runner's
+ *  operator API (#35). A cloud run keeps its diff in the GitHub Actions
+ *  artifact, fetched on demand; this appears on a `/runs` payload only while
+ *  that archive is not yet (or never) on the runner. It drives both the Review
+ *  tab's syncing/retryable/unavailable copy and the "no synced evidence, no
+ *  co-sign button" invariant in the decision rail. */
+type SyncState =
+  | { kind: "syncing" }
+  | { kind: "unavailable"; reason: string }
+  | { kind: "retryable"; detail: string };
+
 type FleetRun =
   | { kind: "completed"; key: string; sortAt: string; data: LedgerEntry }
   | { kind: "inflight"; key: string; sortAt: string; data: InflightRecord };
@@ -373,6 +384,11 @@ let artifactsLoadedFor = "";
 /** The selected run's artifacts were overwritten by a later run of the same
  *  task (runner reports `artifactsSuperseded`) — "gone", not "never existed". */
 let artifactsSuperseded = false;
+/** The selected cloud run's evidence-sync state, when its diff archive is not
+ *  yet on the runner (`syncing`), gone for good (`unavailable`), or waiting to
+ *  retry (`retryable`). null once the archive is local — then it reviews and
+ *  co-signs exactly like a local run. */
+let artifactSync: SyncState | null = null;
 let artifactPreview: { runKey: string; name: string } | null = null;
 let artifactRequest = 0;
 let ledgerRevision = "";
@@ -441,15 +457,12 @@ const COSIGN_CHIP: Record<Cosign["state"], CosignChip> = {
   closed: { label: "Closed", detail: "Closed without merging", icon: "git-pull-request-closed", tone: "neutral" },
 };
 
-/** An open PR splits by who can act on it: a local run the gate would accept
- *  is the operator's awaiting-review attention state; a cloud run's review
- *  lives on GitHub and the chip says so instead of implying an in-app action. */
+/** An open PR the gate would accept is the operator's awaiting-review attention
+ *  state — the same in-app co-sign for a local or a cloud run (#36), since a
+ *  synced cloud run is reviewed and merged here just like a local one. */
 function cosignChip(run: FleetRun): CosignChip | undefined {
   const cosign = cosignFor(run);
   if (!cosign) return undefined;
-  if (cosign.state === "open" && run.kind === "completed" && run.data.mode === "cloud") {
-    return { ...COSIGN_CHIP.open, detail: "Open — review on GitHub" };
-  }
   if (cosign.state === "open" && awaitingReview(gateInput(run))) {
     return { label: "Needs review", detail: "Open — awaiting your co-sign", icon: "git-pull-request", tone: "review" };
   }
@@ -819,6 +832,71 @@ function refusalPresentation(code: string): { icon: string; tone: "failure" | "n
   return { icon: "x-circle", tone: "failure" };
 }
 
+/** Operator copy for a cloud run's evidence-sync state, shared by the Review tab
+ *  and the co-sign rail so both name the same state the same way. */
+function syncNotice(sync: SyncState): { icon: string; title: string; detail: string } {
+  if (sync.kind === "syncing") {
+    return {
+      icon: "loader-circle",
+      title: "Syncing evidence from GitHub",
+      detail: "Fetching this cloud run's artifacts from GitHub Actions — the diff appears here as soon as the download lands.",
+    };
+  }
+  if (sync.kind === "retryable") {
+    return { icon: "refresh-cw", title: "Evidence sync interrupted", detail: sync.detail };
+  }
+  return { icon: "alert-circle", title: "Evidence unavailable", detail: sync.reason };
+}
+
+/** The sync state as a co-sign-rail block — mirrors the refusal block's shape. */
+function syncBlock(sync: SyncState): HTMLElement {
+  const { icon, title, detail } = syncNotice(sync);
+  const block = document.createElement("div");
+  block.className = `cosign-sync ${sync.kind}`;
+  block.innerHTML = `<i data-lucide="${icon}"></i><div><strong></strong><span></span></div>`;
+  block.querySelector("strong")!.textContent = title;
+  block.querySelector("span")!.textContent = detail;
+  return block;
+}
+
+/** The GitHub PR fallback — the explicit escape hatch when evidence is gone,
+ *  never the default. */
+function reviewOnGithubButton(): HTMLButtonElement {
+  const github = document.createElement("button");
+  github.className = "secondary compact cosign-review-github";
+  github.innerHTML = `<i data-lucide="git-pull-request"></i><span>Review on GitHub</span>`;
+  github.addEventListener("click", openSelectedPr);
+  return github;
+}
+
+/** Re-check a stalled cloud sync — re-opening the run re-triggers the runner's
+ *  on-demand download once its retry cooldown passes. */
+function retrySyncButton(): HTMLButtonElement {
+  const retry = document.createElement("button");
+  retry.className = "secondary compact cosign-retry";
+  retry.disabled = busy;
+  retry.innerHTML = `<i data-lucide="refresh-cw"></i><span>Retry sync</span>`;
+  retry.addEventListener("click", () => void retrySync());
+  return retry;
+}
+
+async function retrySync(): Promise<void> {
+  await loadArtifactsForSelected();
+  renderArtifacts();
+  renderSelectedRun();
+  if (workspaceView === "review") await ensureReviewLoaded();
+  renderReview();
+}
+
+/** The affordances a sync state carries — decided once, appended by both the
+ *  Review tab and the co-sign rail so the two surfaces never diverge: a retry
+ *  for a transient failure, the GitHub PR fallback when the evidence is gone. */
+function syncActions(sync: SyncState, prUrl: string | undefined): HTMLButtonElement[] {
+  if (sync.kind === "retryable") return [retrySyncButton()];
+  if (sync.kind === "unavailable" && prUrl) return [reviewOnGithubButton()];
+  return [];
+}
+
 /**
  * The decision block in the run-details rail: the merge and close buttons for
  * runs the gate could accept, the blocking reason in their place for every
@@ -856,20 +934,32 @@ function renderCosignDecision(run: FleetRun | undefined): void {
   const blocker = status.state !== "connected" && !previewMode
     ? "Runner disconnected — reconnect to co-sign."
     : mergeBlocker(gateInput(run));
+
+  // Hard invariant: no showable diff, no co-sign button (#36) — the app never
+  // offers a merge whose diff it cannot show. A cloud run's diff arrives via the
+  // on-demand sync, so the button waits on the diff itself, not merely on a
+  // "synced" signal: while it's fetching, gone, or the archive landed without a
+  // diff, the sync state stands in the button's place, `unavailable` keeping the
+  // GitHub PR as the explicit fallback. A local run's diff is captured beside
+  // it, so it is never gated here.
+  if (!blocker && run.kind === "completed" && run.data.mode === "cloud") {
+    const diffReady = artifactsLoadedFor === run.key && artifacts.some((a) => a.name === "diff.patch");
+    if (!diffReady) {
+      const sync: SyncState = artifactSync
+        ?? (artifactsLoadedFor === run.key
+          ? { kind: "unavailable", reason: "the synced cloud artifact held no reviewable diff" }
+          : { kind: "syncing" });
+      container.append(syncBlock(sync), ...syncActions(sync, run.data.prUrl));
+      refreshIcons(container);
+      return;
+    }
+  }
+
   if (blocker) {
     const reason = document.createElement("div");
     reason.className = "cosign-blocker";
     reason.textContent = blocker;
     container.append(reason);
-    // Honest cloud state: this runner holds no cosign authority over a cloud
-    // run, so the decision block offers the deep link instead of the verbs.
-    if (run.kind === "completed" && run.data.mode === "cloud" && run.data.prUrl) {
-      const github = document.createElement("button");
-      github.className = "secondary compact cosign-review-github";
-      github.innerHTML = `<i data-lucide="git-pull-request"></i><span>Review on GitHub</span>`;
-      github.addEventListener("click", openSelectedPr);
-      container.append(github);
-    }
     if (run.kind === "completed" && cosignFor(run)?.state === "closed") {
       const again = document.createElement("button");
       again.className = "secondary compact cosign-run-again";
@@ -1173,7 +1263,9 @@ const PREVIEW_PATCH = [
  *  tab can show (loading, parsed, honest refusals) renders from `review`. */
 async function ensureReviewLoaded(): Promise<void> {
   const run = selectedRun();
-  if (!run || run.kind !== "completed" || run.data.mode !== "local") return;
+  // Mode-blind (#36): once a cloud run's diff archive has synced it lives in the
+  // same per-run artifact set as a local run, fetched and parsed identically.
+  if (!run || run.kind !== "completed") return;
   const diffArtifact = artifacts.find((artifact) => artifact.name === "diff.patch");
   if (!diffArtifact) return;
   if (review?.runKey === run.key && review.state !== "error") return;
@@ -1275,15 +1367,15 @@ function renderReview(): void {
     container.append(reviewNotice("file-diff", "No run selected", "Choose a run from the queue to review its change."));
   } else if (run.kind === "inflight") {
     container.append(reviewNotice("loader-circle", "Run in progress", "The diff is captured when the run completes — nothing to review yet."));
-  } else if (run.data.mode === "cloud") {
-    const notice = reviewNotice("git-pull-request", "Review on GitHub", "Cloud runs keep their artifacts in the GitHub workflow — this runner holds no local diff.");
-    if (run.data.prUrl) {
-      const open = document.createElement("button");
-      open.className = "secondary compact";
-      open.innerHTML = `<i data-lucide="git-pull-request"></i>Open PR`;
-      open.addEventListener("click", openSelectedPr);
-      notice.append(open);
-    }
+  } else if (artifactSync) {
+    // A cloud run whose diff archive is being fetched, is gone, or is waiting to
+    // retry (#35/#36) — render the sync state verbatim. Syncing shows a spinner;
+    // retryable offers a retry; unavailable names the reason and keeps the
+    // GitHub PR as the explicit fallback. A synced cloud run has no sync state
+    // and falls through to the same diff rendering a local run uses.
+    const { icon, title, detail } = syncNotice(artifactSync);
+    const notice = reviewNotice(icon, title, detail);
+    notice.append(...syncActions(artifactSync, run.data.prUrl));
     container.append(notice);
   } else if (artifactsLoadedFor !== run.key) {
     container.append(reviewNotice("loader-circle", "Loading diff", "Fetching the run's artifacts from the runner."));
@@ -1403,16 +1495,19 @@ async function loadArtifactsForSelected(): Promise<void> {
   // must keep saying "fetching" (and let the poll retry), never "recorded nothing".
   let next: ArtifactMetadata[] | null = [];
   let nextSuperseded = false;
+  let nextSync: SyncState | null = null;
   if (run && run.kind === "completed") {
     if (previewMode) {
-      next = previewArtifacts();
+      nextSync = previewSyncState(run);
+      next = nextSync ? [] : previewArtifacts();
     } else if (run.data.runId) {
       try {
-        const detail = await operatorGet<{ artifacts: ArtifactMetadata[]; artifactsSuperseded?: boolean }>(
+        const detail = await operatorGet<{ artifacts: ArtifactMetadata[]; artifactsSuperseded?: boolean; sync?: SyncState }>(
           `/api/runs/${encodeURIComponent(run.data.runId)}`,
         );
         next = detail.artifacts;
         nextSuperseded = detail.artifactsSuperseded === true;
+        nextSync = detail.sync ?? null;
       } catch {
         next = null;
       }
@@ -1422,6 +1517,7 @@ async function loadArtifactsForSelected(): Promise<void> {
     artifacts = next ?? [];
     artifactsLoadedFor = next ? runKey : "";
     artifactsSuperseded = nextSuperseded;
+    artifactSync = nextSync;
   }
 }
 
@@ -1435,12 +1531,16 @@ async function selectRun(key: string): Promise<void> {
   if (workspaceView === "ledger") workspaceView = "run";
   artifacts = [];
   artifactsSuperseded = false;
+  artifactSync = null;
   renderQueue();
   renderSelectedRun();
   renderArtifacts();
   renderView();
   await loadArtifactsForSelected();
   renderArtifacts();
+  // The decision rail's evidence gate depends on the artifact/sync state we just
+  // loaded — re-render it so a synced cloud run gains its co-sign buttons.
+  renderSelectedRun();
   if (workspaceView === "review") await ensureReviewLoaded();
   renderReview();
 }
@@ -1526,6 +1626,9 @@ function loadPreviewData(): void {
   };
   const entries: LedgerEntry[] = [
     { ts: new Date(now - 12 * 60_000).toISOString(), runId: "approved", task: "004-upstream-failure-mode-tests", repo: "demo-feed-service", status: "approved", mode: "cloud", vetoes: 0, title: "Cover upstream failure modes", elapsedMs: 186_421, prUrl: "https://github.com/example/repo/pull/42", sha: "8df31c2", evidence: ["Scope contract passed for 4 changed files", "VERIFY PASSED", "npm run test passed (42 tests)", "Judge approved with no violations"] },
+    { ts: new Date(now - 9 * 60_000).toISOString(), runId: "cloud-syncing", task: "004-upstream-failure-mode-tests", repo: "demo-feed-service", status: "approved", mode: "cloud", vetoes: 0, title: "Guard empty upstream payloads", elapsedMs: 158_004, prUrl: "https://github.com/example/repo/pull/50", sha: "a10f4c9", evidence: ["Scope contract passed for 3 changed files", "VERIFY PASSED", "Judge approved with no violations"] },
+    { ts: new Date(now - 33 * 60_000).toISOString(), runId: "cloud-gone", task: "002-dedupe-feed-items", repo: "demo-feed-service", status: "approved", mode: "cloud", vetoes: 0, title: "Dedupe feed items on ingest", elapsedMs: 201_887, prUrl: "https://github.com/example/repo/pull/51", sha: "c74be02", evidence: ["Scope contract passed", "VERIFY PASSED", "Judge approved with no violations"] },
+    { ts: new Date(now - 51 * 60_000).toISOString(), runId: "cloud-retry", task: "003-add-agent-badge", repo: "demo-ts-service", status: "approved", mode: "cloud", vetoes: 0, title: "Add agent badge", elapsedMs: 96_512, prUrl: "https://github.com/example/repo/pull/52", sha: "e0b91d4", evidence: ["Scope contract passed", "VERIFY PASSED", "Judge approved with no violations"] },
     { ts: new Date(now - 25 * 60_000).toISOString(), runId: "review-me", task: "onramp-1-feed-tests", repo: "demo-feed-service", status: "approved", mode: "local", vetoes: 0, title: "Harden feed pagination", elapsedMs: 141_380, prUrl: "https://github.com/example/repo/pull/44", sha: "3e91d0a", evidence: ["Scope contract passed for 2 changed files", "VERIFY PASSED", "npm run test passed (17 tests)", "Judge approved with no violations"] },
     { ts: new Date(now - 2 * 3_600_000).toISOString(), runId: "shipped", task: "onramp-1-feed-tests", repo: "demo-feed-service", status: "approved", mode: "local", vetoes: 0, title: "Add feed builder tests", elapsedMs: 121_204, prUrl: "https://github.com/example/repo/pull/38", sha: "1fa9b04", evidence: ["Scope contract passed", "VERIFY PASSED", "Judge approved with no violations"] },
     { ts: new Date(now - 47 * 60_000).toISOString(), runId: "failed", task: "onramp-1-feed-tests", repo: "demo-feed-service", status: "verify-failed", mode: "local", vetoes: 0, title: "Add feed builder tests", elapsedMs: 74_902, reason: "npm run test failed: expected 3 items, received 4", evidence: ["Scope contract passed", "VERIFY FAILED", "expected 3 items, received 4"] },
@@ -1536,6 +1639,11 @@ function loadPreviewData(): void {
   const live: InflightRecord = { runId: "live", startedAt: new Date(now - 6 * 60_000).toISOString(), task: "004-upstream-failure-mode-tests", repo: "demo-ts-service", title: "Cover upstream failure modes", stage: "verify", attempt: 1, stageSince: new Date(now - 70_000).toISOString() };
   cosigns = {
     "https://github.com/example/repo/pull/42": { state: "open" },
+    // Cloud runs whose evidence is still syncing / gone / retrying — open PRs,
+    // but the "no synced evidence, no button" invariant governs the rail.
+    "https://github.com/example/repo/pull/50": { state: "open" },
+    "https://github.com/example/repo/pull/51": { state: "open" },
+    "https://github.com/example/repo/pull/52": { state: "open" },
     "https://github.com/example/repo/pull/44": { state: "open" },
     "https://github.com/example/repo/pull/38": { state: "merged", mergedBy: "fernando", mergedAt: new Date(now - 90 * 60_000).toISOString() },
     // A closed run: exercises the "Run again" prefill path in the preview.
@@ -1547,8 +1655,25 @@ function loadPreviewData(): void {
   ];
   selectedKey = "review-me";
   artifacts = previewArtifacts();
+  // The default run's evidence is already "loaded" so opening Review renders its
+  // diff immediately; selecting another run re-loads through loadArtifactsForSelected.
+  artifactsLoadedFor = selectedKey;
   results = [{ command: "ssh fleet@runner fleet dispatch 004-upstream-failure-mode-tests --repo demo-feed-service", exitStatus: 0, stdoutTail: "dispatched agent-task.yml", stderrTail: "", timestamp: now - 17 * 60_000 }];
   lastUpdated = new Date(now - 18_000);
+}
+
+/** Preview-only: the cloud runs that stand in for each evidence-sync state, so
+ *  the dev preview exercises the syncing/unavailable/retryable rail and Review
+ *  copy. A cloud run not listed here is "synced" — it shows the diff and the
+ *  co-sign buttons exactly like a local run. */
+function previewSyncState(run: FleetRun): SyncState | null {
+  if (run.kind !== "completed") return null;
+  const states: Record<string, SyncState> = {
+    "cloud-syncing": { kind: "syncing" },
+    "cloud-gone": { kind: "unavailable", reason: "the run's artifact is no longer on GitHub (expired past retention, or never uploaded)" },
+    "cloud-retry": { kind: "retryable", detail: "artifact download failed: gh: server error (HTTP 500)" },
+  };
+  return states[run.data.runId ?? ""] ?? null;
 }
 
 function previewArtifacts(): ArtifactMetadata[] {
@@ -1587,6 +1712,7 @@ $("#disconnect").addEventListener("click", async () => {
     artifacts = [];
     artifactsLoadedFor = "";
     artifactsSuperseded = false;
+    artifactSync = null;
     review = null;
     cosignRefusals = {};
     ledgerRevision = "";
