@@ -304,7 +304,15 @@ agent/keychain, and verify:
 ssh -o BatchMode=yes <target> true
 ssh <target> 'command -v node && command -v pnpm'
 ssh <target> 'cd /absolute/path/to/control-repo && pnpm fleet report --days 1'
+ssh -o BatchMode=yes <target> 'cd /absolute/path/to/control-repo && gh auth status'
 ```
+
+The last check backs the in-app co-sign actions: `fleet cosign` runs `gh` on
+the runner, so `gh auth status` must succeed over the same non-interactive SSH
+channel — the shell is non-login, so the `gh` binary and its token must be
+reachable from `~/.zshenv`, not only from an interactive profile. The token
+needs write access on the target repos (already true wherever PR creation
+works). Verify this once per profile during setup, not during your first merge.
 
 ```sh
 # Rust is only required for the optional desktop shell.

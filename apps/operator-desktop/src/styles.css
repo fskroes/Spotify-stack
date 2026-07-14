@@ -86,8 +86,10 @@ button svg { width: 15px; height: 15px; flex: 0 0 auto; }
 .run-row-state.success { color: var(--green); }
 .run-row-state.failure { color: var(--red); }
 .run-row-state.warning { color: var(--yellow); }
+.run-row-state.review { color: var(--blue); }
 .run-row-state.working { color: var(--accent); }
 .run-row-state.working svg { animation: spin 1.5s linear infinite; }
+.run-row.needs-review:not(.selected) { box-shadow: inset 2px 0 var(--blue); }
 .queue-empty { display: grid; place-items: center; align-content: center; gap: 6px; height: 100%; min-height: 180px; padding: 30px; color: var(--muted); text-align: center; }
 .queue-empty svg { width: 19px; height: 19px; margin-bottom: 4px; }
 .queue-empty strong { color: var(--text-secondary); font-size: 11px; }
@@ -230,7 +232,7 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .metadata-list dt { color: var(--muted); font-size: 9.5px; }
 .metadata-list dd { overflow: hidden; margin: 0; color: var(--text-secondary); font-family: var(--mono); font-size: 9.5px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .cosign-decision { display: grid; gap: 7px; margin-top: 10px; padding-top: 11px; border-top: 1px solid var(--border-soft); }
-.cosign-decision .cosign-merge, .cosign-decision .cosign-close, .cosign-decision .cosign-run-again { width: 100%; }
+.cosign-decision .cosign-merge, .cosign-decision .cosign-close, .cosign-decision .cosign-run-again, .cosign-decision .cosign-review-github { width: 100%; }
 .cosign-decision .cosign-close { color: var(--red); border-color: #613338; }
 .cosign-decision .cosign-close:hover { background: var(--red-soft); }
 .cosign-blocker { color: var(--muted); font-size: 9.5px; line-height: 1.5; }
