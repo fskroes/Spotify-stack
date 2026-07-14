@@ -13,6 +13,10 @@ use tauri::{AppHandle, Manager, State};
 
 const OUTPUT_TAIL_CHARS: usize = 8_000;
 
+/// Mirrors the CLI's `--reason` cap (packages/runner cosign contract): enforce
+/// it before dispatch so a too-long reason never costs an SSH round-trip.
+const MAX_REASON_LENGTH: usize = 500;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct HostProfile {
@@ -26,11 +30,12 @@ struct HostProfile {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
 enum FleetAction {
     Dispatch { task: String, repo: Option<String> },
     LocalRun { task: String, repo: String, pr: bool },
     CosignMerge { run_id: String },
+    CosignClose { run_id: String, reason: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -185,6 +190,25 @@ fn fleet_command(profile: &HostProfile, action: &FleetAction) -> Result<String, 
             "{prefix} cosign {} --merge --json",
             quoted(run_id, "run id")?
         )),
+        // Same fixed shape as merge; the reason is the one free-text value
+        // that crosses the SSH boundary — shell-quoted like every other value
+        // and capped to the CLI's limit before dispatch.
+        FleetAction::CosignClose { run_id, reason } => {
+            let reason = reason.trim();
+            if reason.is_empty() {
+                return Err("a close reason is required — it lands as the PR comment".into());
+            }
+            if reason.chars().count() > MAX_REASON_LENGTH {
+                return Err(format!(
+                    "the close reason is capped at {MAX_REASON_LENGTH} characters"
+                ));
+            }
+            Ok(format!(
+                "{prefix} cosign {} --close --reason {} --json",
+                quoted(run_id, "run id")?,
+                shell_quote(reason)
+            ))
+        }
     }
 }
 
@@ -236,6 +260,9 @@ fn action_spec(profile: &HostProfile, action: &FleetAction) -> Result<CommandSpe
             )
         }
         FleetAction::CosignMerge { run_id } => format!("fleet cosign {run_id} --merge"),
+        // The reason stays out of the display — it can be 500 characters of
+        // prose and it already lands verbatim on the PR.
+        FleetAction::CosignClose { run_id, .. } => format!("fleet cosign {run_id} --close"),
     };
     Ok(CommandSpec {
         program: "ssh".into(),
@@ -668,6 +695,99 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn fleet_actions_deserialize_the_apps_camel_case_payloads() {
+        // main.ts sends camelCase keys (runId); the enum must accept them or
+        // every cosign invoke dies at the deserialization boundary.
+        let merge: FleetAction = serde_json::from_str(r#"{"kind":"cosignMerge","runId":"abc-123"}"#)
+            .expect("cosignMerge payload from main.ts must deserialize");
+        assert!(matches!(merge, FleetAction::CosignMerge { run_id } if run_id == "abc-123"));
+        let close: FleetAction =
+            serde_json::from_str(r#"{"kind":"cosignClose","runId":"abc-123","reason":"stale approach"}"#)
+                .expect("cosignClose payload from main.ts must deserialize");
+        assert!(
+            matches!(close, FleetAction::CosignClose { run_id, reason } if run_id == "abc-123" && reason == "stale approach")
+        );
+    }
+
+    #[test]
+    fn cosign_close_command_is_fixed_and_shell_quotes_the_reason() {
+        // The reason is the one free-text value that crosses the SSH boundary:
+        // shell-quoted like every existing value, never interpolated raw.
+        let command = fleet_command(
+            &profile(),
+            &FleetAction::CosignClose {
+                run_id: "eacac4d4-56d8-4420-b923-9d7ec886d983".into(),
+                reason: "judge missed it: doesn't handle empty feeds".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            command,
+            "cd -- '/srv/fleet control' && exec pnpm fleet cosign 'eacac4d4-56d8-4420-b923-9d7ec886d983' --close --reason 'judge missed it: doesn'\"'\"'t handle empty feeds' --json"
+        );
+        // A hostile reason rides inside the quotes as inert text — the quote
+        // escape keeps `'; rm -rf /` from ever reaching the shell unquoted.
+        let hostile = fleet_command(
+            &profile(),
+            &FleetAction::CosignClose {
+                run_id: "abc-123".into(),
+                reason: "'; rm -rf / #".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            hostile,
+            "cd -- '/srv/fleet control' && exec pnpm fleet cosign 'abc-123' --close --reason ''\"'\"'; rm -rf / #' --json"
+        );
+        // The runId stays identifier-validated like task and repo.
+        assert!(fleet_command(
+            &profile(),
+            &FleetAction::CosignClose {
+                run_id: "run'; rm -rf /".into(),
+                reason: "why".into(),
+            },
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn cosign_close_reason_cap_and_presence_are_enforced_before_dispatch() {
+        let close = |reason: &str| {
+            fleet_command(
+                &profile(),
+                &FleetAction::CosignClose {
+                    run_id: "abc-123".into(),
+                    reason: reason.into(),
+                },
+            )
+        };
+        // The CLI caps --reason at 500 characters; the app must refuse before
+        // dispatch, not learn it from a remote error after the SSH round-trip.
+        assert!(close(&"x".repeat(500)).is_ok());
+        assert!(close(&"x".repeat(501)).is_err());
+        assert!(close("").is_err());
+        assert!(close("   \n  ").is_err());
+        // The cap counts characters like the CLI does, not bytes.
+        assert!(close(&"é".repeat(500)).is_ok());
+    }
+
+    #[test]
+    fn cosign_close_receipt_names_the_fixed_command_without_the_reason() {
+        // The reason can be 500 characters of prose — the receipt title names
+        // the fixed command; the full reason lands on the PR, not in the title.
+        let spec = action_spec(
+            &profile(),
+            &FleetAction::CosignClose {
+                run_id: "abc-123".into(),
+                reason: "superseded by a better run".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(spec.program, "ssh");
+        assert_eq!(spec.display, "ssh fleet@example.test fleet cosign abc-123 --close");
     }
 
     #[test]

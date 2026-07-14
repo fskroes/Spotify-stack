@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { mergeBlocker, parseCosignResult } from "../src/cosign-result.js";
+import {
+  closeReasonProblem,
+  MAX_REASON_LENGTH,
+  mergeBlocker,
+  parseCosignResult,
+} from "../src/cosign-result.js";
 
 // Structurally verbatim from a real capture (2026-07-14): `pnpm fleet cosign
 // <runId> --merge --json` against an already-merged shipped run. pnpm's script
@@ -55,6 +60,51 @@ describe("parseCosignResult", () => {
     expect(parseCosignResult("ssh: connect to host runner port 22: timed out")).toBeNull();
     // JSON, but not the cosign contract — e.g. a stray verdict object.
     expect(parseCosignResult('{"verdict":"approve"}')).toBeNull();
+  });
+
+  it("reads a close result the same way it reads a merge", () => {
+    // Same channel, same pnpm banner — the close path shares the parser.
+    const closed = [
+      "> spotify-stack@0.1.0 fleet /srv/spotify-stack",
+      "> tsx packages/cli/src/index.ts cosign 9c69a13d-37fb-483a-8424-5c5f3faaee56 --close --reason 'stale approach' --json",
+      "",
+      '{"action":"close","runId":"9c69a13d-37fb-483a-8424-5c5f3faaee56","task":"onramp-1-feed-tests","repo":"demo-feed-service","prUrl":"https://github.com/example/demo-feed-service/pull/1","ok":true,"state":"closed","refusals":[]}',
+    ].join("\n");
+
+    expect(parseCosignResult(closed)).toMatchObject({ ok: true, action: "close", state: "closed" });
+
+    const refused =
+      '{"action":"close","runId":"9c69a13d-37fb-483a-8424-5c5f3faaee56","ok":false,"refusals":[{"code":"already-merged","detail":"the PR is already merged"}]}';
+    expect(parseCosignResult(refused)).toMatchObject({
+      ok: false,
+      action: "close",
+      refusals: [{ code: "already-merged", detail: "the PR is already merged" }],
+    });
+  });
+});
+
+describe("closeReasonProblem", () => {
+  it("requires a reason — it is the PR comment", () => {
+    expect(closeReasonProblem("")).toBe("A reason is required — it lands as the PR comment.");
+    expect(closeReasonProblem("   \n ")).toBe("A reason is required — it lands as the PR comment.");
+  });
+
+  it("accepts anything up to the CLI's cap and refuses beyond it", () => {
+    // The cap mirrors the CLI's — a reason accepted here is never rejected
+    // after the fact by the runner.
+    expect(MAX_REASON_LENGTH).toBe(500);
+    expect(closeReasonProblem("judge missed it: empty feeds crash")).toBeNull();
+    expect(closeReasonProblem("x".repeat(500))).toBeNull();
+    expect(closeReasonProblem("x".repeat(501))).toBe(
+      "The reason is 1 character over the 500-character cap.",
+    );
+    expect(closeReasonProblem("x".repeat(512))).toBe(
+      "The reason is 12 characters over the 500-character cap.",
+    );
+  });
+
+  it("judges the trimmed reason — surrounding whitespace is not sent", () => {
+    expect(closeReasonProblem(`  ${"x".repeat(500)}  `)).toBeNull();
   });
 });
 
