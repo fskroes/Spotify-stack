@@ -1,5 +1,5 @@
 import { get } from "node:http";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -21,6 +21,22 @@ function entry(overrides: Partial<LedgerEntry>): LedgerEntry {
 
 function tmpLedger(): string {
   return path.join(mkdtempSync(path.join(os.tmpdir(), "fleet-serve-")), "ledger.jsonl");
+}
+
+function tmpControlRepo(): { root: string; ledgerPath: string } {
+  const root = mkdtempSync(path.join(os.tmpdir(), "fleet-operator-"));
+  const ledgerPath = path.join(root, "fleet", "ledger.jsonl");
+  mkdirSync(path.join(root, "fleet"), { recursive: true });
+  mkdirSync(path.join(root, "tasks"), { recursive: true });
+  writeFileSync(
+    path.join(root, "fleet", "repos.yaml"),
+    "repos:\n  - name: demo-api\n    language: typescript\n    default_branch: main\n",
+  );
+  writeFileSync(
+    path.join(root, "tasks", "007-api.md"),
+    "---\nid: 007-api\ntitle: Add operator API\ntargets: [demo-api]\nrisk: low\n---\nBuild it.\n",
+  );
+  return { root, ledgerPath };
 }
 
 /** Wait for the first `data: reload` frame on the SSE stream, or reject. */
@@ -103,6 +119,246 @@ describe("serveLedger", () => {
 
     expect(html).toContain("In flight · 1");
     expect(html).toContain("Dedupe feed items on ingest");
+  });
+
+  it("serves ledger, in-flight, run-detail, and catalog JSON", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    appendLedger(ledgerPath, entry({
+      runId: "run-complete",
+      task: "007-api",
+      repo: "demo-api",
+      title: "Add operator API",
+    }));
+    const live = beginInflight({
+      ledgerPath,
+      runId: "run-live",
+      startedAt: new Date(),
+      task: "007-api",
+      repo: "demo-api",
+      title: "Add operator API",
+      log: () => {},
+    });
+
+    handle = await serveLedger({ ledgerPath, controlRepo: root, port: 0 });
+    const [ledgerRes, inflightRes, runRes, catalogRes] = await Promise.all([
+      fetch(`${handle.url}/api/ledger`),
+      fetch(`${handle.url}/api/inflight`),
+      fetch(`${handle.url}/api/runs/run-complete`),
+      fetch(`${handle.url}/api/catalog`),
+    ]);
+    live.clear();
+
+    expect(ledgerRes.status).toBe(200);
+    expect((await ledgerRes.json() as { entries: LedgerEntry[] }).entries[0].runId).toBe("run-complete");
+    expect((await inflightRes.json() as { runs: Array<{ runId: string }> }).runs[0].runId).toBe("run-live");
+    expect(await runRes.json()).toMatchObject({ state: "completed", run: { runId: "run-complete" } });
+    expect(await catalogRes.json()).toMatchObject({
+      tasks: [{ id: "007-api", title: "Add operator API" }],
+      repos: [{ name: "demo-api", language: "typescript", defaultBranch: "main" }],
+    });
+  });
+
+  it("serves live co-sign state on ledger and run-detail JSON as soon as polling starts", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    const prUrl = "https://github.com/o/demo-api/pull/7";
+    appendLedger(ledgerPath, entry({ runId: "run-complete", task: "007-api", repo: "demo-api", prUrl }));
+
+    handle = await serveLedger({
+      ledgerPath,
+      controlRepo: root,
+      port: 0,
+      // Long cadence: only the immediate startup fetch can supply the state below.
+      cosignPollMs: 60_000,
+      fetchCosigns: () => ({ [prUrl]: { state: "merged", mergedBy: "fernando", mergedAt: "2026-07-13T10:00:00Z" } }),
+    });
+
+    // The startup fetch is async; give it a beat without waiting a poll tick.
+    let ledgerBody: { cosigns?: Record<string, { state: string; mergedBy?: string }> } = {};
+    for (let i = 0; i < 20; i++) {
+      ledgerBody = await (await fetch(`${handle.url}/api/ledger`)).json() as typeof ledgerBody;
+      if (ledgerBody.cosigns && Object.keys(ledgerBody.cosigns).length > 0) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(ledgerBody.cosigns).toEqual({
+      [prUrl]: { state: "merged", mergedBy: "fernando", mergedAt: "2026-07-13T10:00:00Z" },
+    });
+
+    const runBody = await (await fetch(`${handle.url}/api/runs/run-complete`)).json();
+    expect(runBody).toMatchObject({
+      state: "completed",
+      cosign: { state: "merged", mergedBy: "fernando" },
+    });
+  });
+
+  it("omits co-sign state from the API when polling is off", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    appendLedger(ledgerPath, entry({ runId: "run-complete", task: "007-api", repo: "demo-api", prUrl: "https://github.com/o/demo-api/pull/7" }));
+
+    handle = await serveLedger({ ledgerPath, controlRepo: root, port: 0 });
+    const ledgerBody = await (await fetch(`${handle.url}/api/ledger`)).json() as Record<string, unknown>;
+    const runBody = await (await fetch(`${handle.url}/api/runs/run-complete`)).json() as Record<string, unknown>;
+
+    expect("cosigns" in ledgerBody).toBe(false);
+    expect("cosign" in runBody).toBe(false);
+  });
+
+  it("pushes a reload event when polled co-sign state changes", async () => {
+    const ledgerPath = tmpLedger();
+    const prUrl = "https://github.com/o/demo-api/pull/7";
+    appendLedger(ledgerPath, entry({ runId: "run-complete", prUrl }));
+
+    let calls = 0;
+    handle = await serveLedger({
+      ledgerPath,
+      port: 0,
+      cosignPollMs: 100,
+      // Empty at startup; the state lands on a later poll tick.
+      fetchCosigns: (): Record<string, { state: "merged" }> => (++calls < 2 ? {} : { [prUrl]: { state: "merged" } }),
+    });
+
+    await expect(waitForReload(handle.url, 3000)).resolves.toBeUndefined();
+  });
+
+  it("serves only allowlisted artifacts and returns their metadata", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    const dir = path.join(root, "artifacts", "007-api", "demo-api");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "diff.patch"), "diff --git a/a b/a\n");
+    writeFileSync(path.join(dir, "transcript.json"), "secret\n");
+
+    handle = await serveLedger({ ledgerPath, controlRepo: root, port: 0 });
+    const metadata = await fetch(`${handle.url}/api/artifacts/007-api/demo-api`);
+    const body = await metadata.json() as { artifacts: Array<{ name: string; url: string }> };
+    const artifact = await fetch(`${handle.url}${body.artifacts[0].url}`);
+    const blocked = await fetch(`${handle.url}/api/artifacts/007-api/demo-api/transcript.json`);
+
+    expect(body.artifacts).toHaveLength(1);
+    expect(body.artifacts[0].name).toBe("diff.patch");
+    expect(artifact.headers.get("content-type")).toContain("text/x-diff");
+    expect(await artifact.text()).toContain("diff --git");
+    expect(blocked.status).toBe(404);
+  });
+
+  it("never attaches latest-run artifacts to an older run — and says the older evidence was superseded", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    const older = entry({
+      ts: new Date(Date.now() - 60_000).toISOString(),
+      runId: "run-older",
+      task: "007-api",
+      repo: "demo-api",
+    });
+    const latest = entry({ runId: "run-latest", task: "007-api", repo: "demo-api" });
+    appendLedger(ledgerPath, older);
+    appendLedger(ledgerPath, latest);
+    const dir = path.join(root, "artifacts", "007-api", "demo-api");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "diff.patch"), "latest run only\n");
+
+    handle = await serveLedger({ ledgerPath, controlRepo: root, port: 0 });
+    const olderDetail = await (await fetch(`${handle.url}/api/runs/run-older`)).json();
+    const latestDetail = await (await fetch(`${handle.url}/api/runs/run-latest`)).json();
+
+    expect(olderDetail).toMatchObject({ artifacts: [], artifactsSuperseded: true });
+    expect(latestDetail).toMatchObject({ artifacts: [{ name: "diff.patch" }] });
+    expect("artifactsSuperseded" in (latestDetail as Record<string, unknown>)).toBe(false);
+  });
+
+  it("serves the per-run archive to its exact run even after a newer run replaces the shared set", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    appendLedger(ledgerPath, entry({
+      ts: new Date(Date.now() - 60_000).toISOString(),
+      runId: "run-older",
+      task: "007-api",
+      repo: "demo-api",
+    }));
+    appendLedger(ledgerPath, entry({ runId: "run-latest", task: "007-api", repo: "demo-api" }));
+    const flat = path.join(root, "artifacts", "007-api", "demo-api");
+    mkdirSync(flat, { recursive: true });
+    writeFileSync(path.join(flat, "diff.patch"), "latest run only\n");
+    const archive = path.join(root, "artifacts", "runs", "run-older");
+    mkdirSync(archive, { recursive: true });
+    writeFileSync(path.join(archive, "diff.patch"), "older run archived\n");
+
+    handle = await serveLedger({ ledgerPath, controlRepo: root, port: 0 });
+    const olderDetail = await (await fetch(`${handle.url}/api/runs/run-older`)).json() as {
+      artifacts: Array<{ name: string; url: string }>;
+    };
+    const served = await fetch(`${handle.url}${olderDetail.artifacts[0].url}`);
+
+    expect(olderDetail.artifacts).toHaveLength(1);
+    expect(olderDetail.artifacts[0].url).toBe("/api/artifacts/runs/run-older/diff.patch");
+    expect("artifactsSuperseded" in (olderDetail as unknown as Record<string, unknown>)).toBe(false);
+    expect(await served.text()).toBe("older run archived\n");
+  });
+
+  it("does not claim superseded artifacts for cloud runs — they never had local evidence", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    appendLedger(ledgerPath, entry({
+      ts: new Date(Date.now() - 60_000).toISOString(),
+      runId: "run-cloud",
+      task: "007-api",
+      repo: "demo-api",
+      mode: "cloud",
+    }));
+    appendLedger(ledgerPath, entry({ runId: "run-latest", task: "007-api", repo: "demo-api" }));
+
+    handle = await serveLedger({ ledgerPath, controlRepo: root, port: 0 });
+    const detail = await (await fetch(`${handle.url}/api/runs/run-cloud`)).json();
+
+    expect(detail).toMatchObject({ artifacts: [] });
+    expect("artifactsSuperseded" in (detail as Record<string, unknown>)).toBe(false);
+  });
+
+  it("does not attach in-flight artifacts to the previous completed run", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    appendLedger(ledgerPath, entry({ runId: "run-complete", task: "007-api", repo: "demo-api" }));
+    const live = beginInflight({
+      ledgerPath,
+      runId: "run-new",
+      startedAt: new Date(),
+      task: "007-api",
+      repo: "demo-api",
+      title: "Add operator API",
+      log: () => {},
+    });
+    const dir = path.join(root, "artifacts", "007-api", "demo-api");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "diff.patch"), "new run partial artifact\n");
+
+    handle = await serveLedger({ ledgerPath, controlRepo: root, port: 0 });
+    const detail = await fetch(`${handle.url}/api/runs/run-complete`);
+    live.clear();
+
+    expect(await detail.json()).toMatchObject({ artifacts: [] });
+  });
+
+  it("rejects traversal and symlink escapes from the artifact root", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    const dir = path.join(root, "artifacts", "007-api", "demo-api");
+    mkdirSync(dir, { recursive: true });
+    const outside = path.join(root, "outside.patch");
+    writeFileSync(outside, "private\n");
+    symlinkSync(outside, path.join(dir, "diff.patch"));
+
+    handle = await serveLedger({ ledgerPath, controlRepo: root, port: 0 });
+    const traversal = await fetch(`${handle.url}/api/artifacts/..%2Foutside/demo-api/diff.patch`);
+    const symlink = await fetch(`${handle.url}/api/artifacts/007-api/demo-api/diff.patch`);
+
+    expect(traversal.status).toBe(400);
+    expect(symlink.status).toBe(404);
+  });
+
+  it("returns JSON 404s for missing runs and artifact sets", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    handle = await serveLedger({ ledgerPath, controlRepo: root, port: 0 });
+
+    const missingRun = await fetch(`${handle.url}/api/runs/not-here`);
+    const missingArtifacts = await fetch(`${handle.url}/api/artifacts/no-task/no-repo`);
+
+    expect(missingRun.status).toBe(404);
+    expect(await missingRun.json()).toEqual({ error: "run not found" });
+    expect(missingArtifacts.status).toBe(404);
+    expect(await missingArtifacts.json()).toEqual({ error: "artifact set not found" });
   });
 
   it("pushes a reload event when a run changes stage", async () => {

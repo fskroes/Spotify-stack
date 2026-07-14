@@ -16,6 +16,7 @@ import { type FSWatcher, mkdirSync, watch } from "node:fs";
 import path from "node:path";
 import { readLedger } from "./ledger.js";
 import { inflightDir, readLiveInflight } from "./inflight.js";
+import { handleOperatorApi } from "./operator-api.js";
 import {
   type Cosign,
   type RenderOptions,
@@ -26,6 +27,10 @@ import {
 export interface ServeLedgerOptions {
   /** Path to the watched ledger (fleet/ledger.jsonl). */
   ledgerPath: string;
+  /** Control repository root. Inferred from `<repo>/fleet/ledger.jsonl`. */
+  controlRepo?: string;
+  /** Artifact root exposed by the read-only operator API. */
+  artifactsRoot?: string;
   /** Port to listen on; 0 lets the OS pick a free one (used in tests). */
   port: number;
   /** Bind address; defaults to loopback. */
@@ -57,6 +62,7 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
   const host = opts.host ?? "127.0.0.1";
   const renderOpts = opts.renderOpts ?? {};
   const cosignPollMs = opts.cosignPollMs ?? 60_000;
+  const controlRepo = opts.controlRepo ?? path.dirname(path.dirname(opts.ledgerPath));
 
   // Open SSE responses. A reload is broadcast to all of them on ledger change.
   const clients = new Set<ServerResponse>();
@@ -69,6 +75,17 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
 
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? "/";
+    if (
+      handleOperatorApi(req, res, {
+        ledgerPath: opts.ledgerPath,
+        controlRepo,
+        artifactsRoot: opts.artifactsRoot,
+        // Live state, not a snapshot — the poll below replaces `cosigns`.
+        getCosigns: opts.fetchCosigns ? () => cosigns ?? {} : undefined,
+      })
+    ) {
+      return;
+    }
     if (req.method === "GET" && (url === "/" || url.startsWith("/?"))) {
       const entries = readLedger(opts.ledgerPath);
       // Read, never sweep: a GET stays side-effect-free and so cannot race a
@@ -143,10 +160,11 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
   // Co-sign poll — only when the CLI supplied a fetcher. A `gh` hiccup must
   // never kill the server, so every call is guarded.
   let cosignTimer: NodeJS.Timeout | undefined;
+  let cosignKickoff: NodeJS.Timeout | undefined;
   if (opts.fetchCosigns) {
     let last = JSON.stringify(cosigns ?? {});
     const fetchCosigns = opts.fetchCosigns;
-    cosignTimer = setInterval(() => {
+    const pollOnce = (): void => {
       try {
         const next = fetchCosigns();
         const serialized = JSON.stringify(next);
@@ -158,7 +176,14 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
       } catch (err) {
         console.error(`(co-sign poll failed — keeping last state: ${(err as Error).message})`);
       }
-    }, cosignPollMs);
+    };
+    // Fetch once at startup, off the listen path so startup itself is never
+    // gated on `gh` — without this a fresh operator connect would show no
+    // co-sign state until the first interval tick (a whole minute). The fetch
+    // is still synchronous while it runs, like every poll tick.
+    cosignKickoff = setTimeout(pollOnce, 0);
+    cosignKickoff.unref();
+    cosignTimer = setInterval(pollOnce, cosignPollMs);
     cosignTimer.unref();
   }
 
@@ -172,6 +197,7 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
       const close = (): Promise<void> => {
         clearInterval(heartbeat);
         if (cosignTimer) clearInterval(cosignTimer);
+        if (cosignKickoff) clearTimeout(cosignKickoff);
         if (debounce) clearTimeout(debounce);
         for (const w of watchers) w.close();
         for (const res of clients) res.end();

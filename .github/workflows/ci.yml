@@ -36,3 +36,20 @@ jobs:
       # The hermetic runner e2e installs the demo repo's own deps and runs
       # real eslint/tsc/vitest inside temp workspaces.
       - run: pnpm test
+
+  desktop:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @fleet/operator-desktop build
+      - run: cargo test --manifest-path apps/operator-desktop/src-tauri/Cargo.toml

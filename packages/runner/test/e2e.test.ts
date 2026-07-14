@@ -83,6 +83,19 @@ describe("runner e2e (mock engine, hermetic)", () => {
     for (const f of ["diff.patch", "verdict.json", "verify.log", "transcript.json", "result.json", "pr-preview.md"]) {
       expect(existsSync(path.join(result.artifactsDir, f)), f).toBe(true);
     }
+
+    // The reviewable set is also archived per run — byte-identical to the flat
+    // copy — so a same-task rerun can't destroy this run's evidence. The bulky
+    // transcript stays out of the archive.
+    const runDir = path.join(CONTROL_REPO, "artifacts", "runs", result.runId);
+    for (const f of ["diff.patch", "verdict.json", "verify.log", "result.json", "pr-preview.md"]) {
+      expect(readFileSync(path.join(runDir, f), "utf8"), f).toBe(
+        readFileSync(path.join(result.artifactsDir, f), "utf8"),
+      );
+    }
+    expect(existsSync(path.join(runDir, "transcript.json"))).toBe(false);
+    // result.json names its run, so the archive is attributable on its own.
+    expect(JSON.parse(readFileSync(path.join(runDir, "result.json"), "utf8")).runId).toBe(result.runId);
     const diffPatch = readFileSync(path.join(result.artifactsDir, "diff.patch"), "utf8");
     expect(diffPatch).toContain("deleted file mode");
     // demo-ts-service commits its own .claude/settings.json, which the

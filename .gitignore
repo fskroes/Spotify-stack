@@ -22,3 +22,4 @@ fleet/inflight/
 # local Claude Code session config (personal/machine-local; the fleet injects its
 # own .claude/ into sandboxes from agent-config/ at run time)
 .claude/
+.gstack/
