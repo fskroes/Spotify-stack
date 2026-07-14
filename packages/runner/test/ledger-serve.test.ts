@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { appendLedger, type LedgerEntry } from "../src/ledger.js";
+import type { GitRunner } from "../src/ledger-union.js";
+import type { AsyncGhRunner } from "../src/cloud-sync.js";
 import { beginInflight } from "../src/inflight.js";
 import { serveLedger, type ServeLedgerHandle } from "../src/ledger-serve.js";
 
@@ -60,6 +62,35 @@ function waitForReload(url: string, timeoutMs: number): Promise<void> {
     }, timeoutMs);
     t.unref();
   });
+}
+
+/** A git runner that answers `show` with the given ledger lines (the copy the
+ *  cloud committed to origin/main) and no-ops `fetch`. */
+function gitReturning(entries: LedgerEntry[]): GitRunner {
+  const jsonl = entries.map((e) => JSON.stringify(e)).join("\n");
+  return (args) => {
+    if (args[0] === "fetch") return "";
+    if (args[0] === "show") return jsonl;
+    throw new Error(`unexpected git call: ${args.join(" ")}`);
+  };
+}
+
+/** Poll `fn` until it returns a defined value, or time out. Used to wait for the
+ *  serve's kickoff poll / an async download to land. */
+async function waitFor<T>(fn: () => Promise<T | undefined>, timeoutMs = 3000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await fn();
+    if (value !== undefined) return value;
+    if (Date.now() > deadline) throw new Error("waitFor timed out");
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+interface RunDetail {
+  run: LedgerEntry;
+  artifacts: Array<{ name: string; url: string }>;
+  sync?: { kind: string; reason?: string; detail?: string };
 }
 
 describe("serveLedger", () => {
@@ -382,6 +413,98 @@ describe("serveLedger", () => {
 
     await expect(reloaded).resolves.toBeUndefined();
     claim.clear();
+  });
+
+  const cloudEntry = (overrides: Partial<LedgerEntry> = {}): LedgerEntry =>
+    entry({
+      runId: "cloud-1",
+      task: "007-api",
+      repo: "demo-api",
+      mode: "cloud",
+      actionsRunId: "555",
+      actionsArtifact: "007-api-demo-api",
+      ...overrides,
+    });
+
+  it("brings cloud runs into the ledger view via origin/main (union read)", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    appendLedger(ledgerPath, entry({ runId: "local-1", task: "007-api", repo: "demo-api" }));
+    // The cloud run's line lives only on origin/main, never in the local file.
+    handle = await serveLedger({ ledgerPath, controlRepo: root, port: 0, git: gitReturning([cloudEntry()]) });
+
+    const body = await waitFor(async () => {
+      const b = (await (await fetch(`${handle!.url}/api/ledger`)).json()) as { entries: LedgerEntry[] };
+      return b.entries.some((e) => e.runId === "cloud-1") ? b : undefined;
+    });
+    expect(body.entries.map((e) => e.runId).sort()).toEqual(["cloud-1", "local-1"]);
+  });
+
+  it("syncs a cloud run's evidence on demand: syncing, then the downloaded diff", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    const downloadGh: AsyncGhRunner = async (args) => {
+      const dir = args[args.indexOf("--dir") + 1];
+      writeFileSync(path.join(dir, "diff.patch"), "the cloud diff\n");
+      return "";
+    };
+    handle = await serveLedger({
+      ledgerPath,
+      controlRepo: root,
+      port: 0,
+      git: gitReturning([cloudEntry()]),
+      downloadGh,
+    });
+
+    // Once the run is visible, the first Review open reports syncing and kicks
+    // the download.
+    const first = await waitFor(async () => {
+      const d = (await (await fetch(`${handle!.url}/api/runs/cloud-1`)).json()) as RunDetail;
+      return d.run?.runId === "cloud-1" ? d : undefined;
+    });
+    expect(first.sync).toEqual({ kind: "syncing" });
+
+    // The download lands in the per-run archive; a re-open serves the diff.
+    const detail = await waitFor(async () => {
+      const d = (await (await fetch(`${handle!.url}/api/runs/cloud-1`)).json()) as RunDetail;
+      return d.artifacts.length > 0 ? d : undefined;
+    });
+    expect(detail.artifacts.map((a) => a.name)).toContain("diff.patch");
+    expect(detail.sync).toBeUndefined();
+    const served = await fetch(`${handle.url}${detail.artifacts[0].url}`);
+    expect(await served.text()).toBe("the cloud diff\n");
+  });
+
+  it("names a gone cloud artifact as permanently unavailable", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    const downloadGh: AsyncGhRunner = async () => {
+      throw new Error("no valid artifacts found to download");
+    };
+    handle = await serveLedger({
+      ledgerPath,
+      controlRepo: root,
+      port: 0,
+      git: gitReturning([cloudEntry()]),
+      downloadGh,
+    });
+
+    const detail = await waitFor(async () => {
+      const d = (await (await fetch(`${handle!.url}/api/runs/cloud-1`)).json()) as RunDetail;
+      return d.sync?.kind === "unavailable" ? d : undefined;
+    });
+    expect(detail.artifacts).toEqual([]);
+    expect(detail.sync?.reason).toContain("no longer on GitHub");
+  });
+
+  it("reports cloud evidence unavailable when the server can't download it", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    // git (union) but no downloadGh: the run is visible, evidence is not fetchable here.
+    handle = await serveLedger({ ledgerPath, controlRepo: root, port: 0, git: gitReturning([cloudEntry()]) });
+
+    const detail = await waitFor(async () => {
+      const d = (await (await fetch(`${handle!.url}/api/runs/cloud-1`)).json()) as RunDetail;
+      return d.run?.runId === "cloud-1" ? d : undefined;
+    });
+    expect(detail.sync).toMatchObject({ kind: "unavailable" });
+    expect(detail.sync?.reason).toContain("not enabled");
   });
 
   it("closes cleanly", async () => {

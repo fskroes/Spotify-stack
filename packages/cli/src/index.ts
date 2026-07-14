@@ -6,6 +6,7 @@ import { run } from "@fleet/runner";
 import { loadTask } from "@fleet/runner/task";
 import { resolveOwner, targetRepos } from "@fleet/runner/fleet";
 import { defaultLedgerPath, fleetRecord, formatRecordLine, readLedger, type LedgerEntry } from "@fleet/runner/ledger";
+import { readUnionLedger } from "@fleet/runner/ledger-union";
 import { writeLedgerHtml, type Cosign } from "@fleet/runner/ledger-html";
 import { serveLedger } from "@fleet/runner/ledger-serve";
 import { cosign, formatCosignResult } from "@fleet/runner/cosign";
@@ -26,6 +27,31 @@ function resolveTaskPath(taskArg: string): string {
 
 function gh(args: string[], opts: { cwd?: string } = {}): string {
   return execFileSync("gh", args, { encoding: "utf8", cwd: opts.cwd ?? controlRepo });
+}
+
+/** Runs `git` in the control repo. Used for the union ledger read: `git fetch`
+ *  + `git show` of origin/main's committed ledger, never a working-tree write. */
+function git(args: string[]): string {
+  return execFileSync("git", ["-C", controlRepo, ...args], { encoding: "utf8" });
+}
+
+/**
+ * Async `gh` for `gh run download` — spawn-based so a slow artifact pull never
+ * blocks the serve event loop. Rejects with stderr so the sync layer can tell a
+ * gone artifact from a transient failure.
+ */
+function ghAsync(args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("gh", args, { cwd: controlRepo });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => (stdout += chunk));
+    child.stderr.on("data", (chunk: Buffer) => (stderr += chunk));
+    child.on("error", reject);
+    child.on("close", (code) =>
+      code === 0 ? resolve(stdout) : reject(new Error(stderr.trim() || `gh exited with code ${code}`)),
+    );
+  });
 }
 
 const program = new Command()
@@ -166,7 +192,9 @@ program
     if (options.merge === options.close) throw new Error("cosign needs exactly one of --merge or --close");
     if (options.reason && !options.close) throw new Error("--reason only applies to --close");
     const result = cosign({
-      entries: readLedger(defaultLedgerPath(controlRepo)),
+      // Union of the local ledger and origin/main's committed copy, so a cloud
+      // run's line (pushed to main, never to the local file) resolves here too.
+      entries: readUnionLedger(defaultLedgerPath(controlRepo), git),
       runId,
       action: options.merge ? "merge" : "close",
       reason: options.reason,
@@ -250,6 +278,10 @@ program
         renderOpts: { days },
         // Re-read the ledger each poll so newly shipped PRs are picked up.
         fetchCosigns: options.cosign ? () => fetchCosigns(readLedger(ledgerPath)) : undefined,
+        // Cloud review: fold origin/main's committed ledger into every view, and
+        // pull a cloud run's Actions artifact on demand when it is opened.
+        git,
+        downloadGh: ghAsync,
       });
       console.log(`Fleet Ledger live at ${url}`);
       console.log(
@@ -257,6 +289,7 @@ program
           ? "Co-sign polling on — fetching live PR merge state from GitHub every 60s."
           : "Co-sign polling off (offline). Add --cosign to poll GitHub merge state.",
       );
+      console.log("Cloud runs sync from origin/main; their evidence downloads on demand when reviewed.");
       console.log("watching fleet/ledger.jsonl — Ctrl-C to stop");
       if (options.open) openBrowser(url);
       return;

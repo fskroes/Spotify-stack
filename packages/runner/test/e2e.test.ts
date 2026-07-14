@@ -134,6 +134,32 @@ describe("runner e2e (mock engine, hermetic)", () => {
     expect(existsSync(inflightDir(ledgerPath))).toBe(true);
   });
 
+  it("records cloud provenance in the ledger when running under GitHub Actions", async () => {
+    const ledgerPath = tmpLedger();
+    // Pin the cloud signal: mode "cloud" plus the fields the operator later uses
+    // to pull this run's evidence — the artifact name matches agent-task.yml's.
+    vi.stubEnv("GITHUB_ACTIONS", "true");
+    vi.stubEnv("GITHUB_RUN_ID", "1234567890");
+    const result = await run({
+      controlRepo: CONTROL_REPO,
+      taskPath: TASK_001,
+      repoName: "demo-ts-service",
+      local: true,
+      dryRun: true,
+      engine: "mock",
+      mockPatch: GOOD_PATCH,
+      judgeMode: "approve",
+      ledgerPath,
+      log: quiet,
+    });
+
+    expect(result.status).toBe("approved");
+    const [entry] = readLedger(ledgerPath);
+    expect(entry.mode).toBe("cloud");
+    expect(entry.actionsRunId).toBe("1234567890");
+    expect(entry.actionsArtifact).toBe("001-ts-migrate-http-client-demo-ts-service");
+  });
+
   it("live state: the run publishes its stage as it goes, and clears it when it lands", async () => {
     const ledgerPath = tmpLedger();
     // The judge is the one place a stub gets to look at the world mid-run.
