@@ -77,6 +77,26 @@ export function mergeBlocker(run: MergeGateInput): string | null {
   return null;
 }
 
+/** Mirrors the CLI's --reason cap — a reason accepted by the form is never
+ *  rejected after the fact by the runner. */
+export const MAX_REASON_LENGTH = 500;
+
+/**
+ * Why this close reason cannot be dispatched — null when the trimmed reason
+ * satisfies the runner's contract (present, at most MAX_REASON_LENGTH chars).
+ * The Rust boundary enforces the same rules; this copy exists so the dialog
+ * can refuse before the invoke, with a message worth showing.
+ */
+export function closeReasonProblem(reason: string): string | null {
+  const trimmed = reason.trim();
+  if (trimmed.length === 0) return "A reason is required — it lands as the PR comment.";
+  if (trimmed.length > MAX_REASON_LENGTH) {
+    const over = trimmed.length - MAX_REASON_LENGTH;
+    return `The reason is ${over} character${over === 1 ? "" : "s"} over the ${MAX_REASON_LENGTH}-character cap.`;
+  }
+  return null;
+}
+
 /** The last line of `output` that parses as a cosign result, or null. */
 export function parseCosignResult(output: string): CosignResult | null {
   const lines = output.split("\n");

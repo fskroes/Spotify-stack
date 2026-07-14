@@ -230,7 +230,9 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .metadata-list dt { color: var(--muted); font-size: 9.5px; }
 .metadata-list dd { overflow: hidden; margin: 0; color: var(--text-secondary); font-family: var(--mono); font-size: 9.5px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .cosign-decision { display: grid; gap: 7px; margin-top: 10px; padding-top: 11px; border-top: 1px solid var(--border-soft); }
-.cosign-decision .cosign-merge { width: 100%; }
+.cosign-decision .cosign-merge, .cosign-decision .cosign-close, .cosign-decision .cosign-run-again { width: 100%; }
+.cosign-decision .cosign-close { color: var(--red); border-color: #613338; }
+.cosign-decision .cosign-close:hover { background: var(--red-soft); }
 .cosign-blocker { color: var(--muted); font-size: 9.5px; line-height: 1.5; }
 .cosign-refusal { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 8px; padding: 9px 10px; border: 1px solid #542c31; border-radius: 5px; background: var(--red-soft); }
 .cosign-refusal.neutral { border-color: var(--border); background: var(--panel-raised); }
@@ -282,6 +284,8 @@ label { display: grid; gap: 6px; margin-bottom: 12px; color: var(--text-secondar
 button.danger { color: var(--red); border: 1px solid #613338; background: transparent; }
 button.danger:hover { background: var(--red-soft); }
 .merge-stakes { margin: 0 0 16px; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+.close-reason textarea { min-height: 68px; padding: 8px 9px; border: 1px solid var(--border); border-radius: 4px; color: var(--text); background: #1d1c1b; font-size: 12px; line-height: 1.5; resize: vertical; }
+.close-reason-count { margin-top: -6px; color: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; text-align: right; }
 .merge-facts { margin-bottom: 4px; padding: 4px 12px; border: 1px solid var(--border-soft); border-radius: 5px; background: var(--panel-raised); }
 .merge-facts > div { grid-template-columns: 96px minmax(0, 1fr); }
 .merge-facts dd { text-align: left; white-space: normal; }

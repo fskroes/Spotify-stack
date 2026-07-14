@@ -24,6 +24,7 @@ import {
   Plus,
   RefreshCw,
   Rocket,
+  RotateCcw,
   Save,
   Settings,
   ShieldCheck,
@@ -35,7 +36,13 @@ import {
 } from "lucide";
 import { fleetRevision, ledgerRefreshDecision, refreshedLedgerUrl } from "./ledger-refresh";
 import { parsePatch, type DiffFile, type ParsedDiff } from "./diff-parser";
-import { mergeBlocker, parseCosignResult, type CosignResult } from "./cosign-result";
+import {
+  closeReasonProblem,
+  MAX_REASON_LENGTH,
+  mergeBlocker,
+  parseCosignResult,
+  type CosignResult,
+} from "./cosign-result";
 import "./styles.css";
 
 interface HostProfile {
@@ -285,6 +292,23 @@ app.innerHTML = `
     </form>
   </dialog>
 
+  <dialog id="close-dialog">
+    <form id="close-form" method="dialog">
+      <div class="dialog-head">
+        <div><span class="eyebrow">Co-sign</span><h2>Close pull request</h2></div>
+        <button type="button" id="dismiss-close-dialog" class="icon-button" title="Cancel" aria-label="Cancel"><i data-lucide="x"></i></button>
+      </div>
+      <p id="close-stakes" class="merge-stakes"></p>
+      <label class="close-reason">Reason<textarea id="close-reason" rows="3" maxlength="${MAX_REASON_LENGTH}" required placeholder="Why this change should not merge — posted verbatim as the PR comment"></textarea></label>
+      <div id="close-reason-count" class="close-reason-count">0 / ${MAX_REASON_LENGTH}</div>
+      <div class="dialog-actions">
+        <span></span><span></span>
+        <button type="button" id="cancel-close" class="secondary">Cancel</button>
+        <button type="submit" class="danger"><i data-lucide="git-pull-request-closed"></i>Close PR</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="merge-dialog">
     <form id="merge-form" method="dialog">
       <div class="dialog-head">
@@ -304,14 +328,14 @@ app.innerHTML = `
   <div id="toast" class="toast" role="status" hidden></div>
 `;
 
-createIcons({
-  icons: {
-    Activity, AlertCircle, Cable, Check, CheckCircle2, ChevronDown, ChevronRight, Circle,
-    CircleStop, Clock3, FileCode2, FileDiff, GitPullRequest, ListFilter, LoaderCircle,
-    PanelRightClose, PanelRightOpen, Play, Plus, RefreshCw, Rocket, Save, Settings,
-    ShieldCheck, TerminalSquare, Trash2, WifiOff, X, XCircle,
-  },
-});
+const LUCIDE_ICONS = {
+  Activity, AlertCircle, Cable, Check, CheckCircle2, ChevronDown, ChevronRight, Circle,
+  CircleStop, Clock3, FileCode2, FileDiff, GitMerge, GitPullRequest, GitPullRequestClosed,
+  ListFilter, LoaderCircle, PanelRightClose, PanelRightOpen, Play, Plus, RefreshCw, Rocket,
+  RotateCcw, Save, Settings, ShieldCheck, TerminalSquare, Trash2, WifiOff, X, XCircle,
+};
+
+createIcons({ icons: LUCIDE_ICONS });
 
 const $ = <T extends HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const workbench = $(".workbench");
@@ -324,6 +348,8 @@ const artifactFrame = $("#artifact-frame") as HTMLIFrameElement;
 const profileDialog = $("#profile-dialog") as HTMLDialogElement;
 const profileForm = $("#profile-form") as HTMLFormElement;
 const mergeDialog = $("#merge-dialog") as HTMLDialogElement;
+const closeDialog = $("#close-dialog") as HTMLDialogElement;
+const closeReasonInput = $("#close-reason") as HTMLTextAreaElement;
 const previewMode = import.meta.env.DEV && new URLSearchParams(window.location.search).has("preview");
 
 let profiles: HostProfile[] = [];
@@ -333,9 +359,10 @@ let runs: FleetRun[] = [];
 let cosigns: Record<string, Cosign> = {};
 let artifacts: ArtifactMetadata[] = [];
 let results: Receipt[] = [];
-/** Witnessed merge refusals by run key — first-class state, rendered where the
- *  button was until the next co-sign poll moves the PR off "open". */
-let mergeRefusals: Record<string, CosignResult> = {};
+/** Witnessed cosign refusals (merge and close) by run key — first-class state,
+ *  rendered where the buttons were until the next co-sign poll moves the PR
+ *  off "open". The result's `action` names which verb was refused. */
+let cosignRefusals: Record<string, CosignResult> = {};
 let selectedKey = "";
 let review: ReviewState | null = null;
 /** Run key whose artifact list has actually loaded — before that, an empty
@@ -458,14 +485,7 @@ function setOptions(select: HTMLSelectElement, options: Array<{ value: string; l
 }
 
 function refreshIcons(_root: HTMLElement = document.body): void {
-  createIcons({
-    icons: {
-      Activity, AlertCircle, Cable, Check, CheckCircle2, ChevronDown, ChevronRight, Circle,
-      CircleStop, Clock3, FileCode2, FileDiff, GitMerge, GitPullRequest, GitPullRequestClosed,
-      ListFilter, LoaderCircle, PanelRightClose, PanelRightOpen, Play, Plus, RefreshCw, Rocket,
-      Save, Settings, ShieldCheck, TerminalSquare, Trash2, WifiOff, X, XCircle,
-    },
-  });
+  createIcons({ icons: LUCIDE_ICONS });
 }
 
 function renderProfiles(): void {
@@ -736,13 +756,14 @@ function refusalPresentation(code: string): { icon: string; tone: "failure" | "n
 }
 
 /**
- * The decision block in the run-details rail: the merge button for runs the
- * gate could accept, the blocking reason in its place for every other run, and
- * a witnessed refusal verbatim where the button was. Always evidence-adjacent —
- * this is the only surface that renders it. A refusal that leaves the PR open
- * (conflicts, not-mergeable) keeps the button below it, so a retry after the
- * operator fixes the cause never needs a reconnect — the runner's gate stays
- * the real gate.
+ * The decision block in the run-details rail: the merge and close buttons for
+ * runs the gate could accept, the blocking reason in their place for every
+ * other run, and a witnessed refusal verbatim where the buttons were. Always
+ * evidence-adjacent — this is the only surface that renders it. A refusal that
+ * leaves the PR open (conflicts, not-mergeable) keeps the buttons below it, so
+ * a retry after the operator fixes the cause never needs a reconnect — the
+ * runner's gate stays the real gate. A closed run gains "Run again", which
+ * only prefills the launch form: launching stays an explicit human action.
  */
 function renderCosignDecision(run: FleetRun | undefined): void {
   const container = $("#cosign-decision");
@@ -750,14 +771,16 @@ function renderCosignDecision(run: FleetRun | undefined): void {
   container.hidden = !run;
   if (!run) return;
 
-  const refusal = mergeRefusals[run.key];
+  const refusal = cosignRefusals[run.key];
   if (refusal) {
-    const first = refusal.refusals[0] ?? { code: "merge-failed", detail: "no detail returned" };
+    const first = refusal.refusals[0]
+      ?? { code: refusal.action === "close" ? "close-failed" : "merge-failed", detail: "no detail returned" };
     const { icon, tone } = refusalPresentation(first.code);
     const block = document.createElement("div");
     block.className = `cosign-refusal ${tone}`;
     block.innerHTML = `<i data-lucide="${icon}"></i><div><strong></strong></div>`;
-    block.querySelector("strong")!.textContent = `Merge refused — ${first.code}`;
+    block.querySelector("strong")!.textContent =
+      `${refusal.action === "close" ? "Close" : "Merge"} refused — ${first.code}`;
     for (const { detail } of refusal.refusals) {
       const line = document.createElement("span");
       line.textContent = detail;
@@ -778,18 +801,55 @@ function renderCosignDecision(run: FleetRun | undefined): void {
     reason.className = "cosign-blocker";
     reason.textContent = blocker;
     container.append(reason);
+    if (run.kind === "completed" && cosignFor(run)?.state === "closed") {
+      const again = document.createElement("button");
+      again.className = "secondary compact cosign-run-again";
+      again.disabled = busy;
+      again.innerHTML = `<i data-lucide="rotate-ccw"></i><span>Run again</span>`;
+      again.addEventListener("click", () => prefillLaunchForm(run));
+      container.append(again);
+    }
   } else {
-    const button = document.createElement("button");
-    button.className = "primary compact cosign-merge";
-    button.disabled = busy;
-    button.innerHTML = `<i data-lucide="git-merge"></i><span></span>`;
-    button.querySelector("span")!.textContent = busy
-      ? "Merging…"
-      : `${refusal ? "Retry squash-merge" : "Squash-merge"} PR #${prNumber(run.kind === "completed" ? run.data.prUrl : undefined)}`;
-    button.addEventListener("click", () => openMergeConfirm(run.key));
-    container.append(button);
+    const number = prNumber(run.kind === "completed" ? run.data.prUrl : undefined);
+    const merge = document.createElement("button");
+    merge.className = "primary compact cosign-merge";
+    merge.disabled = busy;
+    merge.innerHTML = `<i data-lucide="git-merge"></i><span></span>`;
+    merge.querySelector("span")!.textContent = busy
+      ? "Working…"
+      : `${refusal?.action === "merge" ? "Retry squash-merge" : "Squash-merge"} PR #${number}`;
+    merge.addEventListener("click", () => openMergeConfirm(run.key));
+    const close = document.createElement("button");
+    close.className = "secondary compact cosign-close";
+    close.disabled = busy;
+    close.innerHTML = `<i data-lucide="git-pull-request-closed"></i><span></span>`;
+    close.querySelector("span")!.textContent = busy
+      ? "Working…"
+      : `${refusal?.action === "close" ? "Retry close" : "Close"} PR #${number} with a reason`;
+    close.addEventListener("click", () => openCloseConfirm(run.key));
+    container.append(merge, close);
   }
   refreshIcons(container);
+}
+
+/**
+ * "Run again" on a closed run: prefill the launch form (task, repo, PR toggle)
+ * and nothing else — the run starts only when the operator presses Run. Honest
+ * when the catalog has moved on: a task or repo that no longer exists is named
+ * instead of silently leaving the previous selection in place.
+ */
+function prefillLaunchForm(run: FleetRun & { kind: "completed" }): void {
+  taskSelect.value = run.data.task;
+  repoSelect.value = run.data.repo;
+  prToggle.checked = Boolean(run.data.prUrl);
+  const missing = taskSelect.value !== run.data.task
+    ? `task ${run.data.task}`
+    : repoSelect.value !== run.data.repo
+      ? `repository ${run.data.repo}`
+      : null;
+  renderCatalog();
+  if (missing) toast(`Cannot prefill — ${missing} is no longer in the catalog.`, true);
+  else toast(`Launch form prefilled: ${run.data.task} on ${run.data.repo}. Run stays your call.`);
 }
 
 /** The run key the open confirm dialog is about. */
@@ -815,18 +875,41 @@ function openMergeConfirm(key: string): void {
   mergeDialog.showModal();
 }
 
-/** Preview merges succeed; `?preview&refuse` exercises the refusal state —
- *  witnessed refusals are a feature, so the dev preview must show one. */
-function previewMergeResult(run: FleetRun & { kind: "completed" }): Receipt {
+/** The run key the open close dialog is about. */
+let closeCandidate = "";
+
+/** The negative path's confirm: the required reason is typed here, cap visible,
+ *  and the dialog refuses to dispatch without one. */
+function openCloseConfirm(key: string): void {
+  const run = runs.find((item) => item.key === key);
+  if (!run || run.kind !== "completed" || !run.data.prUrl) return;
+  closeCandidate = key;
+  $("#close-stakes").textContent =
+    `Close PR #${prNumber(run.data.prUrl)} on ${run.data.repo} without merging. ` +
+    "Your reason is posted verbatim as the PR comment — the branch and the run's artifacts stay put.";
+  closeReasonInput.value = "";
+  renderCloseReasonCount();
+  closeDialog.showModal();
+}
+
+function renderCloseReasonCount(): void {
+  $("#close-reason-count").textContent = `${closeReasonInput.value.length} / ${MAX_REASON_LENGTH}`;
+}
+
+/** Preview cosigns succeed; `?preview&refuse` exercises the refusal state —
+ *  witnessed refusals are a feature, so the dev preview must show them. */
+function previewCosignResult(run: FleetRun & { kind: "completed" }, action: "merge" | "close"): Receipt {
   const refuse = new URLSearchParams(window.location.search).has("refuse");
-  const base = { action: "merge", runId: run.data.runId, task: run.data.task, repo: run.data.repo, prUrl: run.data.prUrl };
+  const base = { action, runId: run.data.runId, task: run.data.task, repo: run.data.repo, prUrl: run.data.prUrl };
   const line = JSON.stringify(
     refuse
-      ? { ...base, ok: false, refusals: [{ code: "not-mergeable", detail: "blocked by required checks or reviews" }] }
-      : { ...base, ok: true, state: "merged", mergedSha: "9fe31c7", mergedBy: "operator", mergedAt: new Date().toISOString(), refusals: [] },
+      ? { ...base, ok: false, refusals: [action === "merge" ? { code: "not-mergeable", detail: "blocked by required checks or reviews" } : { code: "close-failed", detail: "gh pr close failed: GraphQL: was submitted too quickly" }] }
+      : action === "merge"
+        ? { ...base, ok: true, state: "merged", mergedSha: "9fe31c7", mergedBy: "operator", mergedAt: new Date().toISOString(), refusals: [] }
+        : { ...base, ok: true, state: "closed", refusals: [] },
   );
   return {
-    command: `ssh fleet@runner fleet cosign ${run.data.runId} --merge`,
+    command: `ssh fleet@runner fleet cosign ${run.data.runId} --${action}`,
     exitStatus: refuse ? 1 : 0,
     stdoutTail: `> spotify-stack@0.1.0 fleet /srv/spotify-stack\n\n${line}`,
     stderrTail: "",
@@ -834,21 +917,24 @@ function previewMergeResult(run: FleetRun & { kind: "completed" }): Receipt {
   };
 }
 
-/** The approve path: fixed cosign-merge command over SSH, structured result
+/** Both cosign verbs share one path: fixed command over SSH, structured result
  *  parsed from the last JSON line, state refreshed from the result immediately
  *  and reconciled by the next co-sign poll. */
-async function executeMerge(key: string): Promise<void> {
+async function executeCosign(key: string, action: "merge" | "close", reason?: string): Promise<void> {
   const run = runs.find((item) => item.key === key);
   const profile = activeProfile();
+  const verb = action === "merge" ? "Merge" : "Close";
   if (!run || run.kind !== "completed" || !run.data.runId || !run.data.prUrl) return;
   if (!previewMode && (status.state !== "connected" || !profile)) return;
   setBusy(true);
   try {
     const result: Receipt = previewMode
-      ? previewMergeResult(run)
+      ? previewCosignResult(run, action)
       : await invoke<RemoteCommandResult>("execute_fleet_action", {
           profile,
-          action: { kind: "cosignMerge", runId: run.data.runId },
+          action: action === "merge"
+            ? { kind: "cosignMerge", runId: run.data.runId }
+            : { kind: "cosignClose", runId: run.data.runId, reason },
         });
     result.cosign = parseCosignResult(result.stdoutTail) ?? undefined;
     results.unshift(result);
@@ -858,13 +944,17 @@ async function executeMerge(key: string): Promise<void> {
         mergedBy: result.cosign.mergedBy,
         mergedAt: result.cosign.mergedAt,
       };
-      delete mergeRefusals[key];
+      delete cosignRefusals[key];
       toast(`PR #${prNumber(run.data.prUrl)} squash-merged`);
+    } else if (result.cosign?.ok && result.cosign.state === "closed") {
+      cosigns[run.data.prUrl] = { state: "closed" };
+      delete cosignRefusals[key];
+      toast(`PR #${prNumber(run.data.prUrl)} closed — reason posted as the PR comment`);
     } else if (result.cosign) {
-      mergeRefusals[key] = result.cosign;
-      toast(`Merge refused: ${result.cosign.refusals[0]?.code ?? "no reason returned"}`, true);
+      cosignRefusals[key] = result.cosign;
+      toast(`${verb} refused: ${result.cosign.refusals[0]?.code ?? "no reason returned"}`, true);
     } else {
-      toast(`Merge command exited ${result.exitStatus} without a structured result`, true);
+      toast(`${verb} command exited ${result.exitStatus} without a structured result`, true);
     }
   } catch (error) {
     toast(String(error), true);
@@ -897,18 +987,24 @@ function renderArtifacts(): void {
   refreshIcons(list);
 }
 
-/** The merge receipt's body — squash sha, merged-by, merged-at, branch deleted —
- *  or, for a refusal, every refusal line verbatim. */
+/** The cosign receipt's body — for a merge: squash sha, merged-by, merged-at,
+ *  branch deleted; for a close: the closed state and where the reason went;
+ *  for a refusal, every refusal line verbatim. */
 function cosignReceiptBody(result: CosignResult): HTMLElement {
   const body = document.createElement("div");
   body.className = "receipt-cosign";
-  if (result.ok && result.state === "merged") {
-    const rows: Array<[string, string]> = [
-      ["Squash sha", result.mergedSha ?? "unknown"],
-      ["Merged by", result.mergedBy ?? "unknown"],
-      ["Merged at", result.mergedAt ? new Date(result.mergedAt).toLocaleString() : "unknown"],
-      ["Branch", "deleted"],
-    ];
+  if (result.ok) {
+    const rows: Array<[string, string]> = result.state === "merged"
+      ? [
+          ["Squash sha", result.mergedSha ?? "unknown"],
+          ["Merged by", result.mergedBy ?? "unknown"],
+          ["Merged at", result.mergedAt ? new Date(result.mergedAt).toLocaleString() : "unknown"],
+          ["Branch", "deleted"],
+        ]
+      : [
+          ["Pull request", "closed without merging"],
+          ["Reason", "posted verbatim as the PR comment"],
+        ];
     for (const [term, value] of rows) {
       const row = document.createElement("div");
       row.innerHTML = `<span></span><b></b>`;
@@ -947,7 +1043,11 @@ function renderActivity(): void {
     const details = document.createElement("details");
     details.className = "receipt-row";
     const success = receipt.exitStatus === 0;
-    const icon = receipt.cosign ? (success ? "git-merge" : "x-circle") : success ? "check-circle-2" : "x-circle";
+    const icon = receipt.cosign
+      ? success
+        ? receipt.cosign.state === "closed" ? "git-pull-request-closed" : "git-merge"
+        : "x-circle"
+      : success ? "check-circle-2" : "x-circle";
     const summary = document.createElement("summary");
     summary.innerHTML = `<span class="receipt-state ${success ? "success" : "failure"}"><i data-lucide="${icon}"></i></span><span class="receipt-command"><strong></strong><small>${new Date(receipt.timestamp).toLocaleTimeString()} · exit ${receipt.exitStatus}</small></span><i data-lucide="chevron-right"></i>`;
     summary.querySelector("strong")!.textContent = receipt.command;
@@ -1200,9 +1300,9 @@ async function refreshFleetData(): Promise<void> {
   runs = [...live, ...completed].sort((a, b) => Date.parse(b.sortAt) - Date.parse(a.sortAt));
   // A refusal witnessed against an open PR stands until the co-sign poll moves
   // the PR's live state — from then on the blocking reason says it better.
-  for (const key of Object.keys(mergeRefusals)) {
+  for (const key of Object.keys(cosignRefusals)) {
     const refused = runs.find((run) => run.key === key);
-    if (!refused || cosignFor(refused)?.state !== "open") delete mergeRefusals[key];
+    if (!refused || cosignFor(refused)?.state !== "open") delete cosignRefusals[key];
   }
   lastUpdated = new Date(ledger.generatedAt);
   if (!selectedKey || !runs.some((run) => run.key === selectedKey)) selectedKey = runs[0]?.key ?? "";
@@ -1340,6 +1440,7 @@ function loadPreviewData(): void {
     { ts: new Date(now - 25 * 60_000).toISOString(), runId: "review-me", task: "onramp-1-feed-tests", repo: "demo-feed-service", status: "approved", mode: "local", vetoes: 0, title: "Harden feed pagination", elapsedMs: 141_380, prUrl: "https://github.com/example/repo/pull/44", sha: "3e91d0a", evidence: ["Scope contract passed for 2 changed files", "VERIFY PASSED", "npm run test passed (17 tests)", "Judge approved with no violations"] },
     { ts: new Date(now - 2 * 3_600_000).toISOString(), runId: "shipped", task: "onramp-1-feed-tests", repo: "demo-feed-service", status: "approved", mode: "local", vetoes: 0, title: "Add feed builder tests", elapsedMs: 121_204, prUrl: "https://github.com/example/repo/pull/38", sha: "1fa9b04", evidence: ["Scope contract passed", "VERIFY PASSED", "Judge approved with no violations"] },
     { ts: new Date(now - 47 * 60_000).toISOString(), runId: "failed", task: "onramp-1-feed-tests", repo: "demo-feed-service", status: "verify-failed", mode: "local", vetoes: 0, title: "Add feed builder tests", elapsedMs: 74_902, reason: "npm run test failed: expected 3 items, received 4", evidence: ["Scope contract passed", "VERIFY FAILED", "expected 3 items, received 4"] },
+    { ts: new Date(now - 3 * 3_600_000).toISOString(), runId: "rejected", task: "004-upstream-failure-mode-tests", repo: "demo-feed-service", status: "approved", mode: "local", vetoes: 0, title: "Cover upstream failure modes", elapsedMs: 156_733, prUrl: "https://github.com/example/repo/pull/40", sha: "b7e22d1", evidence: ["Scope contract passed", "VERIFY PASSED", "Judge approved with no violations"] },
     { ts: new Date(now - 4 * 3_600_000).toISOString(), runId: "noop", task: "003-add-agent-badge", repo: "demo-ts-service", status: "no-changes", mode: "cloud", vetoes: 0, title: "Add agent badge", elapsedMs: 23_511, evidence: ["Task precondition is already satisfied", "NO_CHANGES_NEEDED"] },
     { ts: new Date(now - 26 * 3_600_000).toISOString(), runId: "vetoed", task: "002-dedupe-feed-items", repo: "demo-feed-service", status: "vetoed", mode: "cloud", vetoes: 3, title: "Dedupe feed items on ingest", elapsedMs: 224_007, reason: "Change regenerated the entire lockfile", evidence: ["Scope contract passed", "VERIFY PASSED", "Judge veto: regenerated the entire lockfile"] },
   ];
@@ -1348,6 +1449,8 @@ function loadPreviewData(): void {
     "https://github.com/example/repo/pull/42": { state: "open" },
     "https://github.com/example/repo/pull/44": { state: "open" },
     "https://github.com/example/repo/pull/38": { state: "merged", mergedBy: "fernando", mergedAt: new Date(now - 90 * 60_000).toISOString() },
+    // A closed run: exercises the "Run again" prefill path in the preview.
+    "https://github.com/example/repo/pull/40": { state: "closed" },
   };
   runs = [
     { kind: "inflight", key: live.runId, sortAt: live.startedAt, data: live },
@@ -1395,7 +1498,7 @@ $("#disconnect").addEventListener("click", async () => {
     artifacts = [];
     artifactsLoadedFor = "";
     review = null;
-    mergeRefusals = {};
+    cosignRefusals = {};
     ledgerRevision = "";
     ledgerFrame.src = "about:blank";
     ledgerFrame.hidden = true;
@@ -1433,7 +1536,23 @@ $("#cancel-merge").addEventListener("click", () => mergeDialog.close());
 $("#merge-form").addEventListener("submit", () => {
   const key = mergeCandidate;
   mergeCandidate = "";
-  void executeMerge(key);
+  void executeCosign(key, "merge");
+});
+$("#dismiss-close-dialog").addEventListener("click", () => closeDialog.close());
+$("#cancel-close").addEventListener("click", () => closeDialog.close());
+closeReasonInput.addEventListener("input", renderCloseReasonCount);
+$("#close-form").addEventListener("submit", (event) => {
+  // The dialog refuses to send without a reason — the runner would too, but
+  // this failure belongs in the form, not in a receipt after an SSH round-trip.
+  const problem = closeReasonProblem(closeReasonInput.value);
+  if (problem) {
+    event.preventDefault();
+    toast(problem, true);
+    return;
+  }
+  const key = closeCandidate;
+  closeCandidate = "";
+  void executeCosign(key, "close", closeReasonInput.value.trim());
 });
 $("#remote-repo").addEventListener("input", (event) => { ($("#command-prefix") as HTMLInputElement).value = prefixFor((event.target as HTMLInputElement).value); });
 $("#delete-profile").addEventListener("click", async () => {
@@ -1459,7 +1578,8 @@ profileForm.addEventListener("submit", async (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
-  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || profileDialog.open) return;
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) return;
+  if (profileDialog.open || mergeDialog.open || closeDialog.open) return;
   if (event.metaKey && event.key === "1") { event.preventDefault(); workspaceView = "run"; renderView(); return; }
   if (event.metaKey && event.key === "2") { event.preventDefault(); workspaceView = "review"; renderView(); void ensureReviewLoaded(); return; }
   if (event.metaKey && event.key === "3") { event.preventDefault(); workspaceView = "ledger"; renderView(); return; }
