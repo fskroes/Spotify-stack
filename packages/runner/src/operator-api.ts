@@ -11,8 +11,10 @@ import {
 import path from "node:path";
 import YAML from "yaml";
 import { REVIEW_ARTIFACTS } from "./artifacts.js";
+import type { CloudArtifactSync, SyncState } from "./cloud-sync.js";
 import { readLiveInflight, type InflightRecord } from "./inflight.js";
 import { readLedger, type LedgerEntry } from "./ledger.js";
+import { unionLedgers } from "./ledger-union.js";
 import type { Cosign } from "./ledger-html.js";
 import { loadTask } from "./task.js";
 
@@ -32,6 +34,21 @@ export interface OperatorApiOptions {
    * is merged".
    */
   getCosigns?: () => Record<string, Cosign>;
+  /**
+   * The committed ledger on origin/main, refreshed by the serve poll. When set,
+   * the API reads the *union* of the local ledger and this — so cloud runs
+   * (whose lines are pushed to main, never to the local file) enter every view.
+   * Undefined = offline; the API serves the local ledger alone, exactly as
+   * before.
+   */
+  getRemoteEntries?: () => LedgerEntry[];
+  /**
+   * On-demand cloud artifact sync. When set, opening `/runs/<id>` for a cloud
+   * run with no local archive pulls its Actions artifact and reports a
+   * structured sync state. Undefined = the API reports cloud evidence as
+   * unavailable here (the CLI remains the power path).
+   */
+  cloudSync?: CloudArtifactSync;
 }
 
 export interface ArtifactMetadata {
@@ -232,7 +249,12 @@ export function handleOperatorApi(
   try {
     if (req.method !== "GET") throw new ApiError(405, "method not allowed");
     const segments = parsed.pathname.split("/").filter(Boolean);
-    const entries = (): LedgerEntry[] => readLedger(opts.ledgerPath);
+    // The local ledger unioned with origin/main's committed copy when the serve
+    // is online — cloud runs live only on main until this merge brings them in.
+    const entries = (): LedgerEntry[] =>
+      opts.getRemoteEntries
+        ? unionLedgers(readLedger(opts.ledgerPath), opts.getRemoteEntries())
+        : readLedger(opts.ledgerPath);
 
     if (segments.length === 2 && segments[1] === "ledger") {
       const daysRaw = parsed.searchParams.get("days");
@@ -272,12 +294,20 @@ export function handleOperatorApi(
         // just another task/repo pair, so its URLs need no new endpoints.
         let artifacts: ArtifactMetadata[] = [];
         let superseded = false;
+        let sync: SyncState | undefined;
         try {
           artifacts = listArtifacts(opts, "runs", runId);
         } catch (err) {
           if (!(err instanceof ApiError) || err.status !== 404) throw err;
         }
-        if (artifacts.length === 0) {
+        if (artifacts.length === 0 && completed.mode === "cloud") {
+          // A cloud run's evidence lives in the Actions artifact, not on the
+          // runner. Pull it on demand and report a structured sync state; the
+          // flat latest-run-wins set is never a cloud run's, so never borrow it.
+          sync = opts.cloudSync
+            ? opts.cloudSync.stateFor(completed)
+            : { kind: "unavailable", reason: "cloud evidence sync is not enabled on this server" };
+        } else if (artifacts.length === 0) {
           const hasInflightForTarget = entriesWithoutDuplicateInflight(ledger, readLiveInflight(opts.ledgerPath))
             .some((record) => record.task === completed.task && record.repo === completed.repo);
           const latestForTarget = ledger
@@ -292,7 +322,7 @@ export function handleOperatorApi(
             } catch (err) {
               if (!(err instanceof ApiError) || err.status !== 404) throw err;
             }
-          } else if (completed.mode === "local") {
+          } else {
             // A local run that predates the per-run archive: a later run of
             // the same task replaced the shared set, so this run's evidence is
             // gone — say so instead of implying it never existed.
@@ -305,6 +335,7 @@ export function handleOperatorApi(
           run: completed,
           artifacts,
           ...(superseded ? { artifactsSuperseded: true } : {}),
+          ...(sync ? { sync } : {}),
           ...(cosign ? { cosign } : {}),
         });
         return true;

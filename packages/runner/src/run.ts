@@ -346,6 +346,12 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         elapsedMs: Date.now() - startedAt,
         timings: { ...timings },
         evidence: evidenceFor(full, scopeOffenders),
+        // Cloud provenance: only in Actions, where the review set is uploaded as
+        // an artifact named `<task>-<repo>` (the exact expression agent-task.yml
+        // uses). Lets the operator pull this run's evidence on demand later.
+        ...(process.env.GITHUB_ACTIONS
+          ? { actionsRunId: process.env.GITHUB_RUN_ID, actionsArtifact: `${task.id}-${repo.name}` }
+          : {}),
       });
       // Strictly after the append: the run is now durable in the ledger, so
       // dropping the live claim can only ever lose a row that has a replacement.

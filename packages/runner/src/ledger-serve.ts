@@ -14,7 +14,9 @@
 import { type IncomingMessage, type ServerResponse, createServer, type Server } from "node:http";
 import { type FSWatcher, mkdirSync, watch } from "node:fs";
 import path from "node:path";
-import { readLedger } from "./ledger.js";
+import { readLedger, type LedgerEntry } from "./ledger.js";
+import { readRemoteLedger, type GitRunner } from "./ledger-union.js";
+import { CloudArtifactSync, type AsyncGhRunner } from "./cloud-sync.js";
 import { inflightDir, readLiveInflight } from "./inflight.js";
 import { handleOperatorApi } from "./operator-api.js";
 import {
@@ -42,8 +44,21 @@ export interface ServeLedgerOptions {
    * Polled on an interval; when the result changes, open pages are reloaded.
    */
   fetchCosigns?: () => Record<string, Cosign>;
-  /** Co-sign poll cadence in ms (only when `fetchCosigns` is set). */
+  /** Poll cadence in ms for the live pollers (co-sign + remote ledger). */
   cosignPollMs?: number;
+  /**
+   * CLI-supplied `git` runner (owns the subprocess). When set, the poll reads
+   * origin/main's committed ledger on the same cadence and the operator API
+   * serves the union — bringing cloud runs (pushed to main, never to the local
+   * file) into every view. Undefined = local ledger only.
+   */
+  git?: GitRunner;
+  /**
+   * CLI-supplied async `gh` runner for `gh run download`. When set, opening a
+   * cloud run's Review pulls its Actions artifact on demand. Undefined = cloud
+   * evidence is reported unavailable on this server (the CLI stays the path).
+   */
+  downloadGh?: AsyncGhRunner;
   /** Called once the server is listening, with the resolved URL. */
   onListen?: (url: string) => void;
 }
@@ -68,6 +83,10 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
   const clients = new Set<ServerResponse>();
   // Current co-sign state, refreshed by the poll (never known when offline).
   let cosigns: Record<string, Cosign> | undefined = opts.fetchCosigns ? {} : undefined;
+  // Committed ledger on origin/main, refreshed by the poll (empty when offline).
+  let remoteEntries: LedgerEntry[] = [];
+  // Cloud artifact sync, built below once scheduleReload exists to notify it.
+  let cloudSync: CloudArtifactSync | undefined;
 
   const broadcastReload = (): void => {
     for (const res of clients) res.write("data: reload\n\n");
@@ -80,8 +99,11 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
         ledgerPath: opts.ledgerPath,
         controlRepo,
         artifactsRoot: opts.artifactsRoot,
-        // Live state, not a snapshot — the poll below replaces `cosigns`.
+        // Live state, not a snapshot — the poll below replaces `cosigns` and
+        // `remoteEntries`; both are read at request time.
         getCosigns: opts.fetchCosigns ? () => cosigns ?? {} : undefined,
+        getRemoteEntries: opts.git ? () => remoteEntries : undefined,
+        cloudSync,
       })
     ) {
       return;
@@ -127,6 +149,13 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
     debounce = setTimeout(broadcastReload, 150);
   };
 
+  // A settled download writes into artifacts/runs/<id> (unwatched); nudge open
+  // pages to re-fetch so a `syncing` rail resolves to evidence without a manual
+  // refresh.
+  if (opts.downloadGh) {
+    cloudSync = new CloudArtifactSync({ controlRepo, gh: opts.downloadGh, onSettled: scheduleReload });
+  }
+
   const watchers: FSWatcher[] = [];
   /** Some platforms/filesystems can't watch; the page still serves and refreshes
    *  manually. Don't take the server down over it. */
@@ -157,34 +186,54 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
   mkdirSync(liveDir, { recursive: true });
   tryWatch(liveDir, scheduleReload);
 
-  // Co-sign poll — only when the CLI supplied a fetcher. A `gh` hiccup must
-  // never kill the server, so every call is guarded.
-  let cosignTimer: NodeJS.Timeout | undefined;
-  let cosignKickoff: NodeJS.Timeout | undefined;
-  if (opts.fetchCosigns) {
-    let last = JSON.stringify(cosigns ?? {});
-    const fetchCosigns = opts.fetchCosigns;
-    const pollOnce = (): void => {
+  // Live pollers — each supplied by the CLI (which owns the `gh`/`git`
+  // subprocess). A poller reads some live state and, when its serialized form
+  // changes since the last tick, applies it and reloads open pages. A `gh`/`git`
+  // hiccup must never kill the server, so each read is guarded — the last good
+  // state simply persists. All pollers share one cadence.
+  const pollers: Array<() => void> = [];
+  const addPoller = <T>(label: string, read: () => T, apply: (value: T) => void, initial: T): void => {
+    let last = JSON.stringify(initial);
+    pollers.push(() => {
       try {
-        const next = fetchCosigns();
+        const next = read();
         const serialized = JSON.stringify(next);
-        if (serialized !== last) {
-          last = serialized;
-          cosigns = next;
-          broadcastReload();
-        }
+        if (serialized === last) return;
+        last = serialized;
+        apply(next);
+        broadcastReload();
       } catch (err) {
-        console.error(`(co-sign poll failed — keeping last state: ${(err as Error).message})`);
+        console.error(`(${label} poll failed — keeping last state: ${(err as Error).message})`);
       }
+    });
+  };
+
+  if (opts.fetchCosigns) {
+    const fetchCosigns = opts.fetchCosigns;
+    addPoller("co-sign", fetchCosigns, (next) => {
+      cosigns = next;
+    }, cosigns ?? {});
+  }
+  if (opts.git) {
+    const git = opts.git;
+    addPoller("remote ledger", () => readRemoteLedger(git), (next) => {
+      remoteEntries = next;
+    }, remoteEntries);
+  }
+
+  // Poll once at startup, off the listen path so startup itself is never gated
+  // on `gh`/`git` — without this a fresh operator connect would show no cloud
+  // runs or co-sign state until the first interval tick (a whole minute).
+  let pollTimer: NodeJS.Timeout | undefined;
+  let pollKickoff: NodeJS.Timeout | undefined;
+  if (pollers.length > 0) {
+    const tick = (): void => {
+      for (const poll of pollers) poll();
     };
-    // Fetch once at startup, off the listen path so startup itself is never
-    // gated on `gh` — without this a fresh operator connect would show no
-    // co-sign state until the first interval tick (a whole minute). The fetch
-    // is still synchronous while it runs, like every poll tick.
-    cosignKickoff = setTimeout(pollOnce, 0);
-    cosignKickoff.unref();
-    cosignTimer = setInterval(pollOnce, cosignPollMs);
-    cosignTimer.unref();
+    pollKickoff = setTimeout(tick, 0);
+    pollKickoff.unref();
+    pollTimer = setInterval(tick, cosignPollMs);
+    pollTimer.unref();
   }
 
   return new Promise((resolve) => {
@@ -196,8 +245,8 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
 
       const close = (): Promise<void> => {
         clearInterval(heartbeat);
-        if (cosignTimer) clearInterval(cosignTimer);
-        if (cosignKickoff) clearTimeout(cosignKickoff);
+        if (pollTimer) clearInterval(pollTimer);
+        if (pollKickoff) clearTimeout(pollKickoff);
         if (debounce) clearTimeout(debounce);
         for (const w of watchers) w.close();
         for (const res of clients) res.end();

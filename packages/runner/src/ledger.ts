@@ -50,6 +50,19 @@ export interface LedgerEntry {
   timings?: PhaseTimings;
   /** A few capped lines of the evidence that decided the run (the gate output). */
   evidence?: string[];
+
+  // --- Cloud provenance (written by run.ts only when GITHUB_ACTIONS is set;
+  // recorded, never derived by readers). They let the operator pull a cloud
+  // run's evidence on demand — the run executed in Actions, so its artifacts
+  // live there, not on the runner. A cloud line missing these predates artifact
+  // sync and is permanently "no cloud artifact reference". ---
+
+  /** The Actions run that produced this line (`GITHUB_RUN_ID`) — one Actions
+   *  run holds one artifact per repo, so a download must also name the artifact. */
+  actionsRunId?: string;
+  /** The Actions artifact name holding this run's review set: `<task>-<repo>`,
+   *  the exact expression `agent-task.yml` uses for its upload. */
+  actionsArtifact?: string;
 }
 
 /** Statuses that count as the immune system killing a change before review. */
@@ -80,13 +93,19 @@ export function appendLedger(ledgerPath: string, entry: LedgerEntry): void {
   appendFileSync(ledgerPath, `${JSON.stringify(entry)}\n`);
 }
 
-export function readLedger(ledgerPath: string): LedgerEntry[] {
-  if (!existsSync(ledgerPath)) return [];
-  return readFileSync(ledgerPath, "utf8")
+/** Parse ledger JSONL text (a file's contents, or `git show` of a committed
+ *  copy). Split from readLedger so a remote ledger read can reuse it. */
+export function parseLedger(text: string): LedgerEntry[] {
+  return text
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => JSON.parse(line) as LedgerEntry);
+}
+
+export function readLedger(ledgerPath: string): LedgerEntry[] {
+  if (!existsSync(ledgerPath)) return [];
+  return parseLedger(readFileSync(ledgerPath, "utf8"));
 }
 
 export function fleetRecord(
