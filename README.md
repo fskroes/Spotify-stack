@@ -343,6 +343,13 @@ Artifact reads are limited to `diff.patch`, `verify.log`, `verdict.json`,
 `result.json`, and `pr-preview.md` beneath the configured `artifacts/` root.
 Traversal, symlink escapes, transcripts, and unknown files are rejected.
 
+The flat `artifacts/<task>/<repo>/` set is latest-run-wins; each run also
+archives its reviewable artifacts under `artifacts/runs/<runId>/` (newest 20
+kept) so a same-task rerun cannot destroy the evidence of a run still awaiting
+review. `/api/runs/:runId` serves the archive when it exists; for older runs
+whose shared set was replaced it answers `artifactsSuperseded: true` instead of
+pretending the run recorded nothing.
+
 Cloud synchronization is not automatic in v1. Actions commits ledger lines to
 `origin/main` and stores artifacts in Actions, while the server reads the runner
 machine's local checkout and `artifacts/`. Until a runner-owned sync command is

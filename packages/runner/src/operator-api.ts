@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
+import { REVIEW_ARTIFACTS } from "./artifacts.js";
 import { readLiveInflight, type InflightRecord } from "./inflight.js";
 import { readLedger, type LedgerEntry } from "./ledger.js";
 import type { Cosign } from "./ledger-html.js";
@@ -17,13 +18,8 @@ import { loadTask } from "./task.js";
 
 export const OPERATOR_API_PREFIX = "/api";
 
-const SAFE_ARTIFACTS = new Map<string, string>([
-  ["diff.patch", "text/x-diff; charset=utf-8"],
-  ["verify.log", "text/plain; charset=utf-8"],
-  ["verdict.json", "application/json; charset=utf-8"],
-  ["result.json", "application/json; charset=utf-8"],
-  ["pr-preview.md", "text/markdown; charset=utf-8"],
-]);
+/** The served allowlist is exactly the per-run archive set. */
+const SAFE_ARTIFACTS = REVIEW_ARTIFACTS;
 
 export interface OperatorApiOptions {
   ledgerPath: string;
@@ -271,23 +267,46 @@ export function handleOperatorApi(
       const ledger = entries();
       const completed = ledger.find((entry) => entry.runId === runId);
       if (completed) {
+        // The per-run archive (artifacts/runs/<runId>) is exact attribution:
+        // those files can belong to no other run. To the artifact routes it is
+        // just another task/repo pair, so its URLs need no new endpoints.
         let artifacts: ArtifactMetadata[] = [];
-        const hasInflightForTarget = entriesWithoutDuplicateInflight(ledger, readLiveInflight(opts.ledgerPath))
-          .some((record) => record.task === completed.task && record.repo === completed.repo);
-        const latestForTarget = ledger
-          .filter((entry) => entry.task === completed.task && entry.repo === completed.repo)
-          .sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts))[0];
-        // Artifacts are latest-run-wins. Never attach a newer run's files to an
-        // older ledger record merely because task and repo happen to match.
-        if (latestForTarget === completed && !hasInflightForTarget) {
-          try {
-            artifacts = listArtifacts(opts, completed.task, completed.repo);
-          } catch (err) {
-            if (!(err instanceof ApiError) || err.status !== 404) throw err;
+        let superseded = false;
+        try {
+          artifacts = listArtifacts(opts, "runs", runId);
+        } catch (err) {
+          if (!(err instanceof ApiError) || err.status !== 404) throw err;
+        }
+        if (artifacts.length === 0) {
+          const hasInflightForTarget = entriesWithoutDuplicateInflight(ledger, readLiveInflight(opts.ledgerPath))
+            .some((record) => record.task === completed.task && record.repo === completed.repo);
+          const latestForTarget = ledger
+            .filter((entry) => entry.task === completed.task && entry.repo === completed.repo)
+            .sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts))[0];
+          // The flat artifact set is latest-run-wins. Never attach a newer
+          // run's files to an older ledger record merely because task and repo
+          // happen to match.
+          if (latestForTarget === completed && !hasInflightForTarget) {
+            try {
+              artifacts = listArtifacts(opts, completed.task, completed.repo);
+            } catch (err) {
+              if (!(err instanceof ApiError) || err.status !== 404) throw err;
+            }
+          } else if (completed.mode === "local") {
+            // A local run that predates the per-run archive: a later run of
+            // the same task replaced the shared set, so this run's evidence is
+            // gone — say so instead of implying it never existed.
+            superseded = true;
           }
         }
         const cosign = completed.prUrl && opts.getCosigns ? opts.getCosigns()[completed.prUrl] : undefined;
-        json(res, 200, { state: "completed", run: completed, artifacts, ...(cosign ? { cosign } : {}) });
+        json(res, 200, {
+          state: "completed",
+          run: completed,
+          artifacts,
+          ...(superseded ? { artifactsSuperseded: true } : {}),
+          ...(cosign ? { cosign } : {}),
+        });
         return true;
       }
       const live = entriesWithoutDuplicateInflight(ledger, readLiveInflight(opts.ledgerPath)).find(

@@ -5,6 +5,7 @@ import path from "node:path";
 import picomatch from "picomatch";
 import { runVerify } from "@fleet/mcp-verify";
 import { createCliJudgeClient, judge, type JudgeClient, type Verdict } from "@fleet/judge";
+import { prepareRunArtifactsDir, REVIEW_ARTIFACTS } from "./artifacts.js";
 import { claudeEngine, mockEngine, type Engine } from "./engine.js";
 import { findRepo, type FleetRepo } from "./fleet.js";
 import { beginInflight, sweepInflight } from "./inflight.js";
@@ -50,6 +51,7 @@ export interface RunOptions {
 
 export interface RunResult {
   status: RunStatus;
+  runId: string;
   task: Task;
   repo: FleetRepo;
   workspace: string;
@@ -287,8 +289,14 @@ export async function run(opts: RunOptions): Promise<RunResult> {
   const artifactsDir = path.join(opts.controlRepo, "artifacts", task.id, repo.name);
   rmSync(artifactsDir, { recursive: true, force: true });
   mkdirSync(artifactsDir, { recursive: true });
-  const artifact = (name: string, content: string) =>
+  // Reviewable artifacts are additionally archived per run: a same-task rerun
+  // replaces the flat set above, but must never destroy the evidence of a run
+  // still awaiting review.
+  const runDir = prepareRunArtifactsDir(opts.controlRepo, runId);
+  const artifact = (name: string, content: string) => {
     writeFileSync(path.join(artifactsDir, name), content);
+    if (REVIEW_ARTIFACTS.has(name)) writeFileSync(path.join(runDir, name), content);
+  };
 
   // Reap what SIGKILL (and only SIGKILL) can still orphan, before staking a
   // claim of our own. The report server never does this: a GET stays
@@ -320,8 +328,8 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     const engine = makeEngine(opts, workspace, mcpConfigPath);
     const judgeOnce = makeJudge(opts);
 
-    const finish = (result: Omit<RunResult, "vetoes">, scopeOffenders?: string[]): RunResult => {
-      const full: RunResult = { ...result, vetoes };
+    const finish = (result: Omit<RunResult, "vetoes" | "runId">, scopeOffenders?: string[]): RunResult => {
+      const full: RunResult = { ...result, vetoes, runId };
       artifact("result.json", JSON.stringify({ ...full, task: task.id, repo: repo.name }, null, 2));
       appendLedger(ledgerPath, {
         ts: new Date().toISOString(),
@@ -370,7 +378,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     artifact("transcript.json", engineResult.transcript);
 
     let diff = stagedDiff(workspace);
-    const base: Omit<RunResult, "status" | "vetoes"> = {
+    const base: Omit<RunResult, "status" | "vetoes" | "runId"> = {
       task,
       repo,
       workspace,
