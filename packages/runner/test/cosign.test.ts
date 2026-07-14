@@ -91,11 +91,14 @@ describe("cosign merge gates", () => {
     expect(result.refusals[0].code).toBe("run-not-found");
   });
 
-  it("refuses cloud runs — their evidence is not on this runner", () => {
-    const result = cosign(input({ entries: [entry({ mode: "cloud" })] }));
-    expect(result.ok).toBe(false);
-    expect(result.refusals[0].code).toBe("cloud-run");
-    expect(result.refusals[0].detail).toContain("review on GitHub");
+  it("gates a cloud run exactly like a local one — mode is not a refusal", () => {
+    // The gate is mode-blind: a cloud run's evidence reaches the operator via
+    // the artifact sync, so an approved, mergeable cloud run merges here.
+    const { gh, calls } = ghStub();
+    const result = cosign(input({ entries: [entry({ mode: "cloud" })], gh }));
+    expect(result.ok).toBe(true);
+    expect(result.state).toBe("merged");
+    expect(calls).toContainEqual(["pr", "merge", PR_URL, "--squash", "--delete-branch"]);
   });
 
   it.each(["agent-failed", "verify-failed", "vetoed", "scope-violation", "engine-failed", "no-changes"])(
@@ -206,8 +209,8 @@ describe("cosign close", () => {
     expect(result.ok).toBe(true);
   });
 
-  it("still refuses to close a cloud run or a run without a PR", () => {
-    expect(cosign(input({ action: "close", reason: "r", entries: [entry({ mode: "cloud" })] })).refusals[0].code).toBe("cloud-run");
+  it("closes a cloud run like a local one, but still refuses a run without a PR", () => {
+    expect(cosign(input({ action: "close", reason: "r", entries: [entry({ mode: "cloud" })] })).ok).toBe(true);
     expect(cosign(input({ action: "close", reason: "r", entries: [entry({ prUrl: undefined })] })).refusals[0].code).toBe("no-pr");
   });
 
@@ -230,9 +233,9 @@ describe("cosign close", () => {
 
 describe("formatCosignResult", () => {
   it("renders a refusal with its code, detail, and run", () => {
-    const result = cosign(input({ entries: [entry({ mode: "cloud" })] }));
+    const result = cosign(input({ entries: [entry({ prUrl: undefined })] }));
     const text = formatCosignResult(result);
-    expect(text).toContain("cosign refused (cloud-run)");
+    expect(text).toContain("cosign refused (no-pr)");
     expect(text).toContain("004-upstream-failure-mode-tests on demo-feed-service");
   });
 

@@ -23,7 +23,6 @@ export type CosignAction = "merge" | "close";
 export interface CosignRefusal {
   code:
     | "run-not-found"
-    | "cloud-run"
     | "not-shipped"
     | "no-pr"
     | "already-merged"
@@ -112,13 +111,10 @@ export function cosign(input: CosignInput): CosignResult {
   base.task = entry.task;
   base.repo = entry.repo;
 
-  if (entry.mode !== "local") {
-    return refuse(base, {
-      code: "cloud-run",
-      detail: "ran in the cloud — its evidence is not on this runner; review on GitHub",
-    });
-  }
-
+  // The gate is mode-blind: a cloud run's evidence reaches the operator through
+  // the artifact sync (#35), and evidence adjacency is a UI invariant, not a
+  // CLI precondition — a ledger-approved, GitHub-mergeable run merges the same
+  // whether it ran here or in Actions.
   if (entry.status !== "approved") {
     const evidence = entry.reason ?? entry.evidence?.[0];
     return refuse(base, {

@@ -232,7 +232,7 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .metadata-list dt { color: var(--muted); font-size: 9.5px; }
 .metadata-list dd { overflow: hidden; margin: 0; color: var(--text-secondary); font-family: var(--mono); font-size: 9.5px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .cosign-decision { display: grid; gap: 7px; margin-top: 10px; padding-top: 11px; border-top: 1px solid var(--border-soft); }
-.cosign-decision .cosign-merge, .cosign-decision .cosign-close, .cosign-decision .cosign-run-again, .cosign-decision .cosign-review-github { width: 100%; }
+.cosign-decision .cosign-merge, .cosign-decision .cosign-close, .cosign-decision .cosign-run-again, .cosign-decision .cosign-review-github, .cosign-decision .cosign-retry { width: 100%; }
 .cosign-decision .cosign-close { color: var(--red); border-color: #613338; }
 .cosign-decision .cosign-close:hover { background: var(--red-soft); }
 .cosign-blocker { color: var(--muted); font-size: 9.5px; line-height: 1.5; }
@@ -243,6 +243,14 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .cosign-refusal > div { display: grid; min-width: 0; gap: 3px; }
 .cosign-refusal strong { font-size: 10px; font-weight: 650; }
 .cosign-refusal span { color: var(--text-secondary); font-size: 9.5px; line-height: 1.5; overflow-wrap: break-word; }
+.cosign-sync { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 8px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel-raised); }
+.cosign-sync svg { width: 13px; height: 13px; margin-top: 1px; color: var(--muted); }
+.cosign-sync.syncing svg { color: var(--accent); animation: spin 1.5s linear infinite; }
+.cosign-sync.retryable svg { color: var(--accent); }
+.cosign-sync.unavailable svg { color: var(--yellow); }
+.cosign-sync > div { display: grid; min-width: 0; gap: 3px; }
+.cosign-sync strong { font-size: 10px; font-weight: 650; }
+.cosign-sync span { color: var(--text-secondary); font-size: 9.5px; line-height: 1.5; overflow-wrap: break-word; }
 .artifact-list { margin: 0 -5px; }
 .artifact-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) 12px; align-items: center; gap: 6px; width: 100%; min-height: 35px; padding: 4px 5px; border: 0; border-radius: 3px; color: var(--text-secondary); background: transparent; text-align: left; cursor: pointer; }
 .artifact-row:hover { color: var(--text); background: var(--panel-hover); }
