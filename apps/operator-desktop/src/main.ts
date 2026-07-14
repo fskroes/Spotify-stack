@@ -412,17 +412,27 @@ function cosignFor(run: FleetRun): Cosign | undefined {
 }
 
 /** The merge gate's view of a run — the decision block, the queue's attention
- *  state, and the chip all judge the same input, so they can never disagree. */
+ *  state, and the chip all judge this same input (the decision block adds one
+ *  check of its own: a live runner connection). */
 function gateInput(run: FleetRun): MergeGateInput {
   return run.kind === "inflight"
     ? { kind: "inflight" }
     : { kind: "completed", mode: run.data.mode, status: run.data.status, prUrl: run.data.prUrl, cosignState: cosignFor(run)?.state };
 }
 
+/** One PR state as the UI tells it — label for the queue chip, detail for the
+ *  run-details row, icon and tone shared by both. */
+interface CosignChip {
+  label: string;
+  detail: string;
+  icon: string;
+  tone: string;
+}
+
 /** Everything the UI says about a PR state, in one place — the queue chip and
  *  the run-details row must never disagree. For shipped runs the decision
  *  dimension (co-sign) supersedes the pipeline dimension (approved). */
-const COSIGN_CHIP: Record<Cosign["state"], { label: string; detail: string; icon: string; tone: string }> = {
+const COSIGN_CHIP: Record<Cosign["state"], CosignChip> = {
   open: { label: "PR open", detail: "Open — awaiting co-sign", icon: "git-pull-request", tone: "warning" },
   merged: { label: "Merged", detail: "Merged", icon: "git-merge", tone: "success" },
   closed: { label: "Closed", detail: "Closed without merging", icon: "git-pull-request-closed", tone: "neutral" },
@@ -431,11 +441,11 @@ const COSIGN_CHIP: Record<Cosign["state"], { label: string; detail: string; icon
 /** An open PR splits by who can act on it: a local run the gate would accept
  *  is the operator's awaiting-review attention state; a cloud run's review
  *  lives on GitHub and the chip says so instead of implying an in-app action. */
-function cosignChip(run: FleetRun): { label: string; detail: string; icon: string; tone: string } | undefined {
+function cosignChip(run: FleetRun): CosignChip | undefined {
   const cosign = cosignFor(run);
   if (!cosign) return undefined;
   if (cosign.state === "open" && run.kind === "completed" && run.data.mode === "cloud") {
-    return { label: "PR open", detail: "Open — review on GitHub", icon: "git-pull-request", tone: "warning" };
+    return { ...COSIGN_CHIP.open, detail: "Open — review on GitHub" };
   }
   if (cosign.state === "open" && awaitingReview(gateInput(run))) {
     return { label: "Needs review", detail: "Open — awaiting your co-sign", icon: "git-pull-request", tone: "review" };
@@ -784,6 +794,21 @@ function prNumber(prUrl: string | undefined): string {
   return prUrl?.match(/\/pull\/(\d+)/)?.[1] ?? "?";
 }
 
+/** Open the selected run's PR in the browser — HTTPS only, opener severed.
+ *  Every open-the-PR affordance (header button, Review tab, decision block)
+ *  goes through here. */
+function openSelectedPr(): void {
+  const run = selectedRun();
+  if (run?.kind !== "completed" || !run.data.prUrl) return;
+  try {
+    const url = new URL(run.data.prUrl);
+    if (url.protocol !== "https:") throw new Error("Pull request URL is not HTTPS");
+    window.open(url, "_blank", "noopener");
+  } catch (error) {
+    toast(String(error), true);
+  }
+}
+
 /** Refusal `code` selects icon and tone only — the detail text is never touched. */
 function refusalPresentation(code: string): { icon: string; tone: "failure" | "neutral" } {
   if (code === "already-merged") return { icon: "git-merge", tone: "neutral" };
@@ -839,7 +864,7 @@ function renderCosignDecision(run: FleetRun | undefined): void {
       const github = document.createElement("button");
       github.className = "secondary compact cosign-review-github";
       github.innerHTML = `<i data-lucide="git-pull-request"></i><span>Review on GitHub</span>`;
-      github.addEventListener("click", () => $("#open-pr").click());
+      github.addEventListener("click", openSelectedPr);
       container.append(github);
     }
     if (run.kind === "completed" && cosignFor(run)?.state === "closed") {
@@ -1249,7 +1274,7 @@ function renderReview(): void {
       const open = document.createElement("button");
       open.className = "secondary compact";
       open.innerHTML = `<i data-lucide="git-pull-request"></i>Open PR`;
-      open.addEventListener("click", () => $("#open-pr").click());
+      open.addEventListener("click", openSelectedPr);
       notice.append(open);
     }
     container.append(notice);
@@ -1555,17 +1580,7 @@ $("#toggle-rail").addEventListener("click", () => {
   $("#toggle-rail").innerHTML = `<i data-lucide="${collapsed ? "panel-right-open" : "panel-right-close"}"></i>`;
   refreshIcons($("#toggle-rail"));
 });
-$("#open-pr").addEventListener("click", () => {
-  const run = selectedRun();
-  if (run?.kind !== "completed" || !run.data.prUrl) return;
-  try {
-    const url = new URL(run.data.prUrl);
-    if (url.protocol !== "https:") throw new Error("Pull request URL is not HTTPS");
-    window.open(url, "_blank", "noopener");
-  } catch (error) {
-    toast(String(error), true);
-  }
-});
+$("#open-pr").addEventListener("click", openSelectedPr);
 $("#close-artifact").addEventListener("click", () => { artifactPreview = null; $("#artifact-preview").hidden = true; $("#run-detail").hidden = !selectedRun(); $("#run-empty").hidden = Boolean(selectedRun()); artifactFrame.src = "about:blank"; });
 taskSelect.addEventListener("change", renderCatalog);
 repoSelect.addEventListener("change", renderCatalog);
