@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { cosign, findRun, formatCosignResult, MAX_REASON_LENGTH, type CosignInput } from "../src/cosign.js";
-import type { LedgerEntry } from "../src/ledger.js";
+import { MAX_REASON_LENGTH, type LedgerEntry } from "@fleet/contract";
+import { cosign, findRun, formatCosignResult, type CosignInput } from "../src/cosign.js";
 
 const PR_URL = "https://github.com/o/demo-feed-service/pull/12";
 

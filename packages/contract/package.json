@@ -1,0 +1,13 @@
+{
+  "name": "@fleet/contract",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The wire contract: everything the runner tells the operator, on any transport",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  }
+}

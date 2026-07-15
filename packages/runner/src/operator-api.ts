@@ -10,12 +10,24 @@ import {
 } from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
+import {
+  dedupeInflight,
+  type ArtifactMetadata,
+  type CatalogResponse,
+  type InflightResponse,
+  type LedgerEntry,
+  type LedgerResponse,
+  type OperatorRepo,
+  type OperatorTask,
+  type PrLiveState,
+  type RunDetailResponse,
+  type SyncState,
+} from "@fleet/contract";
 import { REVIEW_ARTIFACTS } from "./artifacts.js";
-import type { CloudArtifactSync, SyncState } from "./cloud-sync.js";
-import { readLiveInflight, type InflightRecord } from "./inflight.js";
-import { readLedger, type LedgerEntry } from "./ledger.js";
+import type { CloudArtifactSync } from "./cloud-sync.js";
+import { readLiveInflight } from "./inflight.js";
+import { readLedger } from "./ledger.js";
 import { unionLedgers } from "./ledger-union.js";
-import type { Cosign } from "./ledger-html.js";
 import { loadTask } from "./task.js";
 
 export const OPERATOR_API_PREFIX = "/api";
@@ -33,7 +45,7 @@ export interface OperatorApiOptions {
    * fields entirely rather than serving an empty map that reads as "nothing
    * is merged".
    */
-  getCosigns?: () => Record<string, Cosign>;
+  getCosigns?: () => Record<string, PrLiveState>;
   /**
    * The committed ledger on origin/main, refreshed by the serve poll. When set,
    * the API reads the *union* of the local ledger and this — so cloud runs
@@ -49,27 +61,6 @@ export interface OperatorApiOptions {
    * unavailable here (the CLI remains the power path).
    */
   cloudSync?: CloudArtifactSync;
-}
-
-export interface ArtifactMetadata {
-  name: string;
-  size: number;
-  modifiedAt: string;
-  url: string;
-  contentType: string;
-}
-
-export interface OperatorTask {
-  id: string;
-  title: string;
-  targets: string[];
-  risk: string;
-}
-
-export interface OperatorRepo {
-  name: string;
-  language: string;
-  defaultBranch: string;
 }
 
 interface RepoFile {
@@ -226,14 +217,6 @@ function repoCatalog(controlRepo: string): OperatorRepo[] {
   return [...repos.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function entriesWithoutDuplicateInflight(
-  entries: LedgerEntry[],
-  inflight: InflightRecord[],
-): InflightRecord[] {
-  const completed = new Set(entries.flatMap((entry) => (entry.runId ? [entry.runId] : [])));
-  return inflight.filter((record) => !completed.has(record.runId));
-}
-
 /**
  * Handle an operator API request. Returns false when the URL does not belong to
  * the API, allowing the caller to continue with HTML/SSE routing.
@@ -264,23 +247,29 @@ export function handleOperatorApi(
       }
       const cutoff = days === undefined ? undefined : Date.now() - days * 86_400_000;
       const filtered = cutoff === undefined ? entries() : entries().filter((entry) => Date.parse(entry.ts) >= cutoff);
-      json(res, 200, {
+      const ledgerResponse: LedgerResponse = {
         generatedAt: new Date().toISOString(),
         entries: filtered,
         ...(opts.getCosigns ? { cosigns: opts.getCosigns() } : {}),
-      });
+      };
+      json(res, 200, ledgerResponse);
       return true;
     }
 
     if (segments.length === 2 && segments[1] === "inflight") {
       const ledger = entries();
-      const runs = entriesWithoutDuplicateInflight(ledger, readLiveInflight(opts.ledgerPath));
-      json(res, 200, { generatedAt: new Date().toISOString(), runs });
+      const runs = dedupeInflight(ledger, readLiveInflight(opts.ledgerPath));
+      const inflightResponse: InflightResponse = { generatedAt: new Date().toISOString(), runs };
+      json(res, 200, inflightResponse);
       return true;
     }
 
     if (segments.length === 2 && segments[1] === "catalog") {
-      json(res, 200, { tasks: taskCatalog(opts.controlRepo), repos: repoCatalog(opts.controlRepo) });
+      const catalogResponse: CatalogResponse = {
+        tasks: taskCatalog(opts.controlRepo),
+        repos: repoCatalog(opts.controlRepo),
+      };
+      json(res, 200, catalogResponse);
       return true;
     }
 
@@ -301,6 +290,8 @@ export function handleOperatorApi(
           if (!(err instanceof ApiError) || err.status !== 404) throw err;
         }
         if (artifacts.length === 0 && completed.mode === "cloud") {
+          // (mode is an open string on the wire; "cloud" is the value this
+          // server itself writes, so the comparison stays exact.)
           // A cloud run's evidence lives in the Actions artifact, not on the
           // runner. Pull it on demand and report a structured sync state; the
           // flat latest-run-wins set is never a cloud run's, so never borrow it.
@@ -308,7 +299,7 @@ export function handleOperatorApi(
             ? opts.cloudSync.stateFor(completed)
             : { kind: "unavailable", reason: "cloud evidence sync is not enabled on this server" };
         } else if (artifacts.length === 0) {
-          const hasInflightForTarget = entriesWithoutDuplicateInflight(ledger, readLiveInflight(opts.ledgerPath))
+          const hasInflightForTarget = dedupeInflight(ledger, readLiveInflight(opts.ledgerPath))
             .some((record) => record.task === completed.task && record.repo === completed.repo);
           const latestForTarget = ledger
             .filter((entry) => entry.task === completed.task && entry.repo === completed.repo)
@@ -330,21 +321,23 @@ export function handleOperatorApi(
           }
         }
         const cosign = completed.prUrl && opts.getCosigns ? opts.getCosigns()[completed.prUrl] : undefined;
-        json(res, 200, {
+        const completedResponse: RunDetailResponse = {
           state: "completed",
           run: completed,
           artifacts,
           ...(superseded ? { artifactsSuperseded: true } : {}),
           ...(sync ? { sync } : {}),
           ...(cosign ? { cosign } : {}),
-        });
+        };
+        json(res, 200, completedResponse);
         return true;
       }
-      const live = entriesWithoutDuplicateInflight(ledger, readLiveInflight(opts.ledgerPath)).find(
+      const live = dedupeInflight(ledger, readLiveInflight(opts.ledgerPath)).find(
         (record) => record.runId === runId,
       );
       if (!live) throw new ApiError(404, "run not found");
-      json(res, 200, { state: "inflight", run: live, artifacts: [] });
+      const inflightDetail: RunDetailResponse = { state: "inflight", run: live, artifacts: [] };
+      json(res, 200, inflightDetail);
       return true;
     }
 

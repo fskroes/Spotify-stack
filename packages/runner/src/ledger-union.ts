@@ -14,7 +14,8 @@
  * Kept pure over an injected `git` runner, matching cosign.ts's `gh` seam, so
  * every path is testable without a real repo.
  */
-import { parseLedger, readLedger, type LedgerEntry } from "./ledger.js";
+import type { LedgerEntry } from "@fleet/contract";
+import { parseLedger, readLedger } from "./ledger.js";
 
 /** Runs `git` with the given args and returns stdout; throws on failure. */
 export type GitRunner = (args: string[]) => string;
@@ -48,11 +49,9 @@ export function readRemoteLedger(git: GitRunner, opts: RemoteLedgerOptions = {})
   } catch {
     return []; // no committed ledger on the branch yet, or the ref is missing
   }
-  try {
-    return parseLedger(raw);
-  } catch {
-    return []; // a truncated / malformed blob must not crash the reader
-  }
+  // parseLedger never throws: a truncated / malformed blob degrades to
+  // skipped lines, never a crashed reader.
+  return parseLedger(raw);
 }
 
 /**

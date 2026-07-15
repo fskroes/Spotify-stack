@@ -5,6 +5,7 @@
   "description": "fleet CLI: run tasks locally, dispatch them to GitHub Actions, and report status",
   "type": "module",
   "dependencies": {
+    "@fleet/contract": "workspace:*",
     "@fleet/runner": "workspace:*",
     "commander": "^14.0.0"
   }

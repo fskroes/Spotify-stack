@@ -8,65 +8,7 @@
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-
-/** Cumulative wall-clock spent in each pipeline phase (summed across judge retries). */
-export interface PhaseTimings {
-  agentMs: number;
-  verifyMs: number;
-  judgeMs: number;
-}
-
-export interface LedgerEntry {
-  /** ISO-8601 timestamp of the run's completion. */
-  ts: string;
-  task: string;
-  repo: string;
-  status: string;
-  /** Where the run executed. */
-  mode: "local" | "cloud";
-  /** Number of judge vetoes the run absorbed (including a final fatal one). */
-  vetoes: number;
-  /** For kills: the first violation/failure line — keeps the kill legible. */
-  reason?: string;
-  prUrl?: string;
-
-  // --- Enrichment (all optional; ledger lines written before this omit them,
-  // and readers must degrade gracefully). Records what the runner already
-  // computed so the ledger can be read on its own — no artifacts/ lookup, which
-  // is gitignored and latest-run-wins. ---
-
-  /** Ties this line to the run's in-flight record (`fleet/inflight/<pid>.json`).
-   *  A run's line is appended *before* its live record is unlinked, so a reader
-   *  scanning both drops any live row whose runId already reached the ledger —
-   *  otherwise a run finishing mid-read renders twice. */
-  runId?: string;
-  /** Human-readable task title, so ledger views need not resolve the task file. */
-  title?: string;
-  /** Short commit sha — present only when the run actually committed a change. */
-  sha?: string;
-  /** Total wall-clock duration of the run, in milliseconds. */
-  elapsedMs?: number;
-  /** Per-phase durations, in milliseconds. */
-  timings?: PhaseTimings;
-  /** A few capped lines of the evidence that decided the run (the gate output). */
-  evidence?: string[];
-
-  // --- Cloud provenance (written by run.ts only when GITHUB_ACTIONS is set;
-  // recorded, never derived by readers). They let the operator pull a cloud
-  // run's evidence on demand — the run executed in Actions, so its artifacts
-  // live there, not on the runner. A cloud line missing these predates artifact
-  // sync and is permanently "no cloud artifact reference". ---
-
-  /** The Actions run that produced this line (`GITHUB_RUN_ID`) — one Actions
-   *  run holds one artifact per repo, so a download must also name the artifact. */
-  actionsRunId?: string;
-  /** The Actions artifact name holding this run's review set: `<task>-<repo>`,
-   *  the exact expression `agent-task.yml` uses for its upload. */
-  actionsArtifact?: string;
-}
-
-/** Statuses that count as the immune system killing a change before review. */
-export const KILL_STATUSES = ["agent-failed", "verify-failed", "vetoed", "scope-violation"] as const;
+import { isKillStatus, parseLedgerJsonl, type LedgerEntry } from "@fleet/contract";
 
 export interface FleetRecord {
   days: number;
@@ -94,13 +36,17 @@ export function appendLedger(ledgerPath: string, entry: LedgerEntry): void {
 }
 
 /** Parse ledger JSONL text (a file's contents, or `git show` of a committed
- *  copy). Split from readLedger so a remote ledger read can reuse it. */
-export function parseLedger(text: string): LedgerEntry[] {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as LedgerEntry);
+ *  copy). Split from readLedger so a remote ledger read can reuse it.
+ *  Never throws: a corrupt or mistyped line is skipped with a warning — the
+ *  ledger is append-only and historical, and one bad line must not brick a
+ *  report or the operator's server. */
+export function parseLedger(text: string, log: (line: string) => void = console.warn): LedgerEntry[] {
+  const { entries, skipped } = parseLedgerJsonl(text);
+  for (const skip of skipped) {
+    const detail = skip.issues.map((issue) => (issue.path ? `${issue.path}: ${issue.message}` : issue.message)).join("; ");
+    log(`⚠ ledger line ${skip.line} skipped — ${detail}`);
+  }
+  return entries;
 }
 
 export function readLedger(ledgerPath: string): LedgerEntry[] {
@@ -118,7 +64,7 @@ export function fleetRecord(
 
   const count = (status: string) => windowed.filter((e) => e.status === status).length;
   const kills = windowed
-    .filter((e) => (KILL_STATUSES as readonly string[]).includes(e.status))
+    .filter((e) => isKillStatus(e.status))
     .sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
 
   return {

@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CloudArtifactSync, type AsyncGhRunner } from "../src/cloud-sync.js";
 import { runArtifactsDir } from "../src/artifacts.js";
-import type { LedgerEntry } from "../src/ledger.js";
+import type { LedgerEntry } from "@fleet/contract";
 
 const tmpDirs: string[] = [];
 function tmpRepo(): string {

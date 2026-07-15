@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import type { InflightRecord } from "@fleet/contract";
 import {
   beginInflight,
   inflightDir,
@@ -11,7 +12,6 @@ import {
   readInflight,
   readLiveInflight,
   sweepInflight,
-  type InflightRecord,
 } from "../src/inflight.js";
 import { AGENT_TIMEOUT_MS, STALE_AFTER_MS } from "../src/timeouts.js";
 

@@ -14,17 +14,13 @@
 import { type IncomingMessage, type ServerResponse, createServer, type Server } from "node:http";
 import { type FSWatcher, mkdirSync, watch } from "node:fs";
 import path from "node:path";
-import { readLedger, type LedgerEntry } from "./ledger.js";
+import type { LedgerEntry, PrLiveState } from "@fleet/contract";
+import { readLedger } from "./ledger.js";
 import { readRemoteLedger, type GitRunner } from "./ledger-union.js";
 import { CloudArtifactSync, type AsyncGhRunner } from "./cloud-sync.js";
 import { inflightDir, readLiveInflight } from "./inflight.js";
 import { handleOperatorApi } from "./operator-api.js";
-import {
-  type Cosign,
-  type RenderOptions,
-  LEDGER_EVENTS_PATH,
-  renderLedgerHtml,
-} from "./ledger-html.js";
+import { type RenderOptions, LEDGER_EVENTS_PATH, renderLedgerHtml } from "./ledger-html.js";
 
 export interface ServeLedgerOptions {
   /** Path to the watched ledger (fleet/ledger.jsonl). */
@@ -43,7 +39,7 @@ export interface ServeLedgerOptions {
    * CLI-supplied live co-sign fetch (owns `gh`). Undefined = offline, no poll.
    * Polled on an interval; when the result changes, open pages are reloaded.
    */
-  fetchCosigns?: () => Record<string, Cosign>;
+  fetchCosigns?: () => Record<string, PrLiveState>;
   /** Poll cadence in ms for the live pollers (co-sign + remote ledger). */
   cosignPollMs?: number;
   /**
@@ -82,7 +78,7 @@ export function serveLedger(opts: ServeLedgerOptions): Promise<ServeLedgerHandle
   // Open SSE responses. A reload is broadcast to all of them on ledger change.
   const clients = new Set<ServerResponse>();
   // Current co-sign state, refreshed by the poll (never known when offline).
-  let cosigns: Record<string, Cosign> | undefined = opts.fetchCosigns ? {} : undefined;
+  let cosigns: Record<string, PrLiveState> | undefined = opts.fetchCosigns ? {} : undefined;
   // Committed ledger on origin/main, refreshed by the poll (empty when offline).
   let remoteEntries: LedgerEntry[] = [];
   // Cloud artifact sync, built below once scheduleReload exists to notify it.

@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { appendLedger, type LedgerEntry } from "../src/ledger.js";
+import { dedupeInflight, Endpoints, type LedgerEntry } from "@fleet/contract";
+import { appendLedger } from "../src/ledger.js";
 import type { GitRunner } from "../src/ledger-union.js";
 import type { AsyncGhRunner } from "../src/cloud-sync.js";
 import { beginInflight } from "../src/inflight.js";
@@ -187,6 +188,56 @@ describe("serveLedger", () => {
       tasks: [{ id: "007-api", title: "Add operator API" }],
       repos: [{ name: "demo-api", language: "typescript", defaultBranch: "main" }],
     });
+  });
+
+  it("round-trip: every JSON endpoint parses against the wire contract", async () => {
+    // The drift alarm: the server is compile-time typed by @fleet/contract and
+    // the operator runtime-parses through it — this test closes the loop by
+    // parsing real HTTP responses with the same schemas the operator will use.
+    const { root, ledgerPath } = tmpControlRepo();
+    const dir = path.join(root, "artifacts", "007-api", "demo-api");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "diff.patch"), "diff --git a/a b/a\n");
+    appendLedger(ledgerPath, entry({
+      runId: "run-complete",
+      task: "007-api",
+      repo: "demo-api",
+      title: "Add operator API",
+      prUrl: "https://github.com/o/demo-api/pull/7",
+      sha: "abc1234",
+      elapsedMs: 60_000,
+      timings: { agentMs: 40_000, verifyMs: 15_000, judgeMs: 5_000 },
+      evidence: ["verify: all green"],
+    }));
+    const live = beginInflight({
+      ledgerPath,
+      runId: "run-live",
+      startedAt: new Date(),
+      task: "007-api",
+      repo: "demo-api",
+      title: "Add operator API",
+      log: () => {},
+    });
+
+    handle = await serveLedger({ ledgerPath, controlRepo: root, port: 0 });
+    const get = async (apiPath: string): Promise<unknown> => (await fetch(`${handle!.url}${apiPath}`)).json();
+
+    const ledger = await Endpoints.ledger.load(get);
+    const inflight = await Endpoints.inflight.load(get);
+    const completed = await Endpoints.run.load(get, "run-complete");
+    const liveDetail = await Endpoints.run.load(get, "run-live");
+    const catalog = await Endpoints.catalog.load(get);
+    const artifacts = await Endpoints.artifacts.load(get, "007-api", "demo-api");
+    live.clear();
+
+    expect(ledger.entries[0].runId).toBe("run-complete");
+    expect(inflight.runs[0].runId).toBe("run-live");
+    expect(completed.state).toBe("completed");
+    expect(liveDetail.state).toBe("inflight");
+    expect(catalog.tasks[0].id).toBe("007-api");
+    expect(artifacts.artifacts[0].name).toBe("diff.patch");
+    // The deduped in-flight list must never re-list a decided run.
+    expect(dedupeInflight(ledger.entries, inflight.runs).map((r) => r.runId)).toEqual(["run-live"]);
   });
 
   it("serves live co-sign state on ledger and run-detail JSON as soon as polling starts", async () => {

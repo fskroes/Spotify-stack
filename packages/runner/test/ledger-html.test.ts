@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderLedgerHtml } from "../src/ledger-html.js";
-import type { LedgerEntry } from "../src/ledger.js";
-import type { InflightRecord } from "../src/inflight.js";
+import type { InflightRecord, LedgerEntry } from "@fleet/contract";
 
 const NOW = new Date("2026-07-09T12:10:00.000Z");
 

@@ -5,9 +5,10 @@ import { Command } from "commander";
 import { run } from "@fleet/runner";
 import { loadTask } from "@fleet/runner/task";
 import { resolveOwner, targetRepos } from "@fleet/runner/fleet";
-import { defaultLedgerPath, fleetRecord, formatRecordLine, readLedger, type LedgerEntry } from "@fleet/runner/ledger";
+import type { LedgerEntry, PrLiveState } from "@fleet/contract";
+import { defaultLedgerPath, fleetRecord, formatRecordLine, readLedger } from "@fleet/runner/ledger";
 import { readUnionLedger } from "@fleet/runner/ledger-union";
-import { writeLedgerHtml, type Cosign } from "@fleet/runner/ledger-html";
+import { writeLedgerHtml } from "@fleet/runner/ledger-html";
 import { serveLedger } from "@fleet/runner/ledger-serve";
 import { cosign, formatCosignResult } from "@fleet/runner/cosign";
 
@@ -210,9 +211,9 @@ program
  * report time and only when asked (--cosign) — the auto-regenerated report
  * after each run stays offline. A PR gh can't resolve is simply omitted.
  */
-function fetchCosigns(entries: LedgerEntry[]): Record<string, Cosign> {
+function fetchCosigns(entries: LedgerEntry[]): Record<string, PrLiveState> {
   const urls = [...new Set(entries.filter((e) => e.status === "approved" && e.prUrl).map((e) => e.prUrl as string))];
-  const cosigns: Record<string, Cosign> = {};
+  const cosigns: Record<string, PrLiveState> = {};
   for (const url of urls) {
     try {
       const pr = JSON.parse(gh(["pr", "view", url, "--json", "state,mergedAt,mergedBy"])) as {
