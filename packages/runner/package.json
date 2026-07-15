@@ -2,7 +2,7 @@
   "name": "@fleet/runner",
   "version": "0.1.0",
   "private": true,
-  "description": "Per-repo agent runner: workspace → constrained Claude Code run → verify → judge loop → PR",
+  "description": "Per-repo agent runner: workspace \u2192 constrained Claude Code run \u2192 verify \u2192 judge loop \u2192 PR",
   "type": "module",
   "exports": {
     ".": "./src/run.ts",
@@ -17,6 +17,7 @@
     "./cosign": "./src/cosign.ts"
   },
   "dependencies": {
+    "@fleet/contract": "workspace:*",
     "@fleet/judge": "workspace:*",
     "@fleet/mcp-verify": "workspace:*",
     "picomatch": "^4.0.2",

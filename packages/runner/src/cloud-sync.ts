@@ -22,21 +22,12 @@
 import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import type { LedgerEntry, SyncState } from "@fleet/contract";
 import { REVIEW_ARTIFACTS, runArtifactsDir, runArtifactsRoot } from "./artifacts.js";
-import type { LedgerEntry } from "./ledger.js";
 
 /** Runs `gh` asynchronously (spawn-based, so a slow download never blocks the
  *  server's event loop) and resolves with stdout; rejects on a non-zero exit. */
 export type AsyncGhRunner = (args: string[]) => Promise<string>;
-
-/** The evidence state of a cloud run whose archive is not yet on the runner. */
-export type SyncState =
-  /** A download is in flight; re-open shortly. */
-  | { kind: "syncing" }
-  /** Permanent: no evidence will ever arrive — with the exact reason. */
-  | { kind: "unavailable"; reason: string }
-  /** Transient (gh/network) failure — will be retried on a later open. */
-  | { kind: "retryable"; detail: string };
 
 export interface CloudArtifactSyncOptions {
   controlRepo: string;

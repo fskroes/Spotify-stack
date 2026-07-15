@@ -12,44 +12,14 @@
  * Kept pure over an injected `gh` runner so every gate path is testable
  * without GitHub.
  */
-import type { LedgerEntry } from "./ledger.js";
-
-/** Longest --close reason accepted; it crosses an SSH boundary as one value. */
-export const MAX_REASON_LENGTH = 500;
-
-export type CosignAction = "merge" | "close";
-
-/** One named gate failure — `code` is stable for machines, `detail` for humans. */
-export interface CosignRefusal {
-  code:
-    | "run-not-found"
-    | "not-shipped"
-    | "no-pr"
-    | "already-merged"
-    | "already-closed"
-    | "conflicts"
-    | "not-mergeable"
-    | "merge-failed"
-    | "close-failed";
-  detail: string;
-}
-
-export interface CosignResult {
-  ok: boolean;
-  action: CosignAction;
-  runId: string;
-  task?: string;
-  repo?: string;
-  prUrl?: string;
-  /** Present on success. */
-  state?: "merged" | "closed";
-  /** Merge receipt fields, read back from GitHub after a merge. */
-  mergedSha?: string;
-  mergedBy?: string;
-  mergedAt?: string;
-  /** Why the gate refused — empty on success. */
-  refusals: CosignRefusal[];
-}
+import {
+  MAX_REASON_LENGTH,
+  type CosignAction,
+  type CosignRefusal,
+  type CosignResult,
+  type KnownCosignRefusalCode,
+  type LedgerEntry,
+} from "@fleet/contract";
 
 /** Runs `gh` with the given args and returns stdout; throws on failure. */
 export type GhRunner = (args: string[]) => string;
@@ -78,7 +48,12 @@ const BAD_MERGE_STATES: Record<string, string> = {
   DRAFT: "the PR is still a draft",
 };
 
-function refuse(base: Omit<CosignResult, "ok" | "refusals">, refusal: CosignRefusal): CosignResult {
+/** The writer stays strict: only codes the contract knows may be emitted here,
+ *  even though the wire type is an open string for tolerant readers. */
+function refuse(
+  base: Omit<CosignResult, "ok" | "refusals">,
+  refusal: CosignRefusal & { code: KnownCosignRefusalCode },
+): CosignResult {
   return { ...base, ok: false, refusals: [refusal] };
 }
 

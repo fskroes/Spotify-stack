@@ -11,7 +11,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { JudgeClient, Verdict } from "@fleet/judge";
-import { inflightDir, readInflight, type InflightRecord } from "../src/inflight.js";
+import type { InflightRecord } from "@fleet/contract";
+import { inflightDir, readInflight } from "../src/inflight.js";
 import { readLedger } from "../src/ledger.js";
 import { run } from "../src/run.js";
 

@@ -15,9 +15,16 @@
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { fleetRecord, KILL_STATUSES, readLedger, type LedgerEntry } from "./ledger.js";
+import {
+  dedupeInflight,
+  KILL_STATUSES,
+  type InflightRecord,
+  type LedgerEntry,
+  type PrLiveState,
+  type Stage as LiveStage,
+} from "@fleet/contract";
+import { fleetRecord, readLedger } from "./ledger.js";
 // Aliased: this module already has a `Stage` — the drawer timeline's row.
-import type { InflightRecord, Stage as LiveStage } from "./inflight.js";
 
 /** Nord palette — the design's colours, kept as named constants. */
 const C = {
@@ -44,17 +51,6 @@ interface Verdict {
   /** The pipeline gate a kill happened at, if any. */
   stage: "agent" | "scope" | "verify" | "judge" | null;
   kind: "shipped" | "killed" | "infra" | "neutral";
-}
-
-/**
- * The human co-sign state of a shipped PR, fetched live from GitHub at render
- * time (the ledger itself never records it — the merge happens after the run).
- */
-export interface Cosign {
-  state: "merged" | "open" | "closed";
-  mergedBy?: string;
-  /** ISO-8601 merge timestamp. */
-  mergedAt?: string;
 }
 
 /** Map a raw ledger status onto the design's verdict vocabulary. */
@@ -93,7 +89,7 @@ function badge(v: Verdict): string {
 }
 
 /** Colour + wording for a co-sign state, shared by the PR cell and the drawer. */
-function cosignLook(c: Cosign): { color: string; label: string } {
+function cosignLook(c: PrLiveState): { color: string; label: string } {
   switch (c.state) {
     case "merged":
       return { color: C.green, label: c.mergedBy ? `co-signed by ${c.mergedBy}` : "co-signed" };
@@ -101,11 +97,15 @@ function cosignLook(c: Cosign): { color: string; label: string } {
       return { color: C.yellow, label: "awaiting co-sign" };
     case "closed":
       return { color: C.red, label: "closed unmerged" };
+    default:
+      // Tolerant reader: a state this build doesn't know renders neutrally
+      // with the raw value, rather than failing the whole report.
+      return { color: C.gray, label: c.state };
   }
 }
 
 /** The pull-request cell: a link when we have one, otherwise a dash. */
-function prCell(url?: string, cosign?: Cosign): string {
+function prCell(url?: string, cosign?: PrLiveState): string {
   if (!url) return `<span style="color:${C.gray}">—</span>`;
   const m = url.match(/\/pull\/(\d+)/);
   const label = m ? `#${m[1]}` : "open";
@@ -198,8 +198,10 @@ function fmtElapsed(ms: number): string {
   return `${m}m ${String(s % 60).padStart(2, "0")}s`;
 }
 
-/** Pips for the five stages: walked ones filled, the current one lit and pulsing. */
-function stageTrack(stage: LiveStage): string {
+/** Pips for the five stages: walked ones filled, the current one lit and
+ *  pulsing. An unknown stage (a newer runner's vocabulary) lights nothing —
+ *  findIndex's -1 degrades to an all-pending track. */
+function stageTrack(stage: string): string {
   const at = LIVE_STAGES.findIndex((s) => s.id === stage);
   const pips = LIVE_STAGES.map((s, i) => {
     const done = i < at;
@@ -480,7 +482,7 @@ interface Stage {
 }
 
 /** The pipeline-trace timeline: which gate a run reached, and how long each took. */
-function renderTimeline(e: LedgerEntry, cosign?: Cosign): string {
+function renderTimeline(e: LedgerEntry, cosign?: PrLiveState): string {
   const stages: Stage[] = [
     { label: "Agent", sub: "produced a diff", color: C.red, ms: e.timings?.agentMs },
     { label: "Scope gate", sub: "declared-scope check", color: C.orange },
@@ -966,7 +968,7 @@ function dispatchCard(e: LedgerEntry): string {
 }
 
 /** The slide-over detail for one run — trace, evidence, what we do and don't record. */
-function renderDrawer(e: LedgerEntry, idx: number, cosign?: Cosign): string {
+function renderDrawer(e: LedgerEntry, idx: number, cosign?: PrLiveState): string {
   const v = verdictFor(e.status);
   const title = e.title ?? e.task;
   const meta = [e.task, e.repo, e.mode, e.ts.replace("T", " ").slice(0, 16)].join(" · ");
@@ -1037,11 +1039,11 @@ export interface RenderOptions {
   /** Stamped into the header; defaults to `now`. */
   generatedAt?: Date;
   /**
-   * Live co-sign state per PR URL (see `Cosign`). Supplied by the caller —
+   * Live co-sign state per PR URL (see `PrLiveState`). Supplied by the caller —
    * `fleet report --html --cosign` fetches it via gh; when absent the report
    * shows "shipped for review" and claims nothing about merges.
    */
-  cosigns?: Record<string, Cosign>;
+  cosigns?: Record<string, PrLiveState>;
   /**
    * Inject the live-reload client script (only `fleet report --serve` sets this).
    * When falsy the output is byte-identical to the static report — the committed
@@ -1116,16 +1118,12 @@ export function renderLedgerHtml(entries: LedgerEntry[], opts: RenderOptions = {
   const funnelNote = `${record.infra} infra (engine failures — not a verdict) · ${record.neutral} no-change (preconditions correctly not met) — excluded from the funnel.`;
   const funnel = renderFunnel(stages, decided, funnelNote);
 
-  // The Live lane. `finish()` appends the ledger line *before* it unlinks the
-  // in-flight record, so for a sub-millisecond window a run is both live and
-  // decided; `runId` is on both sides precisely so the reader can drop the live
-  // row instead of drawing the run twice. Matched against the whole ledger, not
-  // the window: a run finishing right now is always inside it anyway, and a
-  // narrow `--days` must not resurrect a ghost.
-  const decidedRunIds = new Set(entries.map((e) => e.runId).filter(Boolean));
-  const live = (opts.liveReload ? (opts.inflight ?? []) : [])
-    .filter((r) => !decidedRunIds.has(r.runId))
-    .sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+  // The Live lane, deduped against the whole ledger (not the window: a narrow
+  // `--days` must not resurrect a ghost). The briefly-both-live-and-decided
+  // invariant lives in the contract's dedupeInflight, shared with the API.
+  const live = dedupeInflight(entries, opts.liveReload ? (opts.inflight ?? []) : []).sort(
+    (a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt),
+  );
   const liveLane = live.length > 0 ? renderLiveLane(live, now) : "";
   const liveChip =
     live.length > 0

@@ -18,6 +18,7 @@
 import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { constants } from "node:os";
 import path from "node:path";
+import { InflightRecordSchema, type InflightRecord, type Stage } from "@fleet/contract";
 import { STALE_AFTER_MS } from "./timeouts.js";
 
 /**
@@ -33,34 +34,6 @@ import { STALE_AFTER_MS } from "./timeouts.js";
  * through the loop rewrites `stageSince`.
  */
 export { STALE_AFTER_MS };
-
-/**
- * Where a run currently is. Deliberately *not* the Funnel's bar list: `scope`
- * is a ~10ms glob check nobody will ever catch, and `shipping` (push + `gh pr
- * create`) is seconds long but renders as "judge" today, because the Funnel
- * counts the outcome rather than the phase.
- */
-export type Stage = "agent" | "scope" | "verify" | "judge" | "shipping";
-
-export interface InflightRecord {
-  v: 1;
-  /** Reconcile key: also written to the run's ledger line, so a reader can drop
-   *  a live row the ledger has already superseded. */
-  runId: string;
-  /** Liveness probe for the staleness sweep — `process.kill(pid, 0)`. */
-  pid: number;
-  startedAt: string;
-  task: string;
-  repo: string;
-  /** Carried, because no ledger line exists yet to read the title from. */
-  title: string;
-  stage: Stage;
-  /** 1-based pass through the agent→verify→judge loop, which is not monotonic. */
-  attempt: number;
-  /** The instant `stage` was entered. Not a heartbeat: writes happen only on
-   *  transitions, so a healthy ten-minute agent phase looks ten minutes stale. */
-  stageSince: string;
-}
 
 /** Both the runner and the report server locate the store from the ledger path. */
 export function inflightDir(ledgerPath: string): string {
@@ -81,7 +54,10 @@ export function readInflight(ledgerPath: string): InflightRecord[] {
   for (const name of names) {
     if (!name.endsWith(".json")) continue;
     try {
-      records.push(JSON.parse(readFileSync(path.join(dir, name), "utf8")) as InflightRecord);
+      const parsed = InflightRecordSchema.safeParse(JSON.parse(readFileSync(path.join(dir, name), "utf8")));
+      if (parsed.success) records.push(parsed.data);
+      // schema mismatch is skipped like a torn write: a foreign or future-
+      // versioned record must not crash the reader
     } catch {
       // torn or half-written; the next poll will see it whole
     }
