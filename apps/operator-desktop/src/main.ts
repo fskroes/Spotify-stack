@@ -200,12 +200,17 @@ app.innerHTML = `
         </div>
 
         <div id="run-detail" class="run-detail" hidden>
-          <section class="instrument-section">
+          <section class="pipeline-band">
+            <div class="section-heading"><span>Pipeline</span><small id="pipeline-sub"></small></div>
             <div id="pipeline" class="inst-track" aria-label="Run pipeline"></div>
+          </section>
+
+          <section class="spot-col">
+            <div class="section-heading"><span>Gate</span></div>
             <div id="gate-spotlight" class="gate-spot"></div>
           </section>
 
-          <section class="evidence-section">
+          <section class="ev-col">
             <div class="section-heading"><span>Gate evidence</span><small id="evidence-count"></small></div>
             <div id="evidence-log" class="evidence-log"></div>
           </section>
@@ -232,7 +237,7 @@ app.innerHTML = `
         <select id="repo-select" aria-label="Target repository" disabled><option value="">All matching repos</option></select>
         <label class="pr-toggle" title="Open a pull request on the target repo when the run is approved — untick for an artifacts-only dry run"><input id="local-run-pr" type="checkbox" checked disabled />PR</label>
         <button id="local-run" class="secondary compact" disabled title="Run on the remote runner"><i data-lucide="play"></i>Run</button>
-        <button id="dispatch-action" class="primary compact" disabled><i data-lucide="rocket"></i>Dispatch</button>
+        <button id="dispatch-action" class="primary compact" disabled><i data-lucide="rocket"></i>Dispatch<span class="commit-sweep"></span></button>
       </footer>
     </main>
 
@@ -372,6 +377,15 @@ let selectedKey = "";
  *  advanced since this snapshot fires the connector fill / check stamp / gate
  *  spotlight slide; a different run (or nothing changed) plays no advance. */
 let prevRunView: { key: string; states: string[]; spot: string } | null = null;
+/** The visible queue order the list last rendered, in order — the seam that lets
+ *  a poll-driven rebuild FLIP-animate the attention reorder: same set of rows in
+ *  a new order slides each moved row to its slot; a changed set (filter, connect)
+ *  or an unchanged order plays nothing. The queue's analogue of `prevRunView`. */
+let prevQueueKeys: string[] = [];
+/** The top command receipt the activity feed last rendered ({ts}:{command}) —
+ *  so a freshly-arrived receipt slides into the feed while a plain re-render of
+ *  the same top row stays still. Empty until the first render. */
+let prevTopReceipt = "";
 let review: ReviewState | null = null;
 /** Run key whose artifact list has actually loaded — before that, an empty
  *  `artifacts` means "still fetching", not "the run recorded nothing". */
@@ -635,6 +649,10 @@ function renderQueue(): void {
   // run out of the attention slot the moment its live state changes.
   runs.sort(queueOrder);
   const list = $("#queue-list");
+  const reduce = prefersReducedMotion();
+  // Capture the current rows' positions before the rebuild, for a FLIP reorder.
+  const firstRects = new Map<string, DOMRect>();
+  if (!reduce) list.querySelectorAll<HTMLElement>(".run-row[data-run-key]").forEach((el) => firstRects.set(el.dataset.runKey!, el.getBoundingClientRect()));
   list.replaceChildren();
   $("#all-count").textContent = String(runs.length);
   $("#attention-count").textContent = String(runs.filter(isAttention).length + (status.state === "stale" ? 1 : 0));
@@ -646,6 +664,7 @@ function renderQueue(): void {
     empty.className = "queue-empty";
     empty.innerHTML = `<i data-lucide="cable"></i><strong>Runner disconnected</strong><span>Select a profile and connect.</span>`;
     list.append(empty);
+    prevQueueKeys = [];
     refreshIcons(list);
     return;
   }
@@ -654,6 +673,7 @@ function renderQueue(): void {
     empty.className = "queue-empty compact-empty";
     empty.innerHTML = `<i data-lucide="check"></i><strong>Nothing needs attention</strong>`;
     list.append(empty);
+    prevQueueKeys = [];
     refreshIcons(list);
     return;
   }
@@ -697,7 +717,7 @@ function renderQueue(): void {
       title.textContent = runTitle(run);
       const meta = document.createElement("span");
       meta.textContent = `${run.data.task} · ${relativeTime(run.sortAt)}`;
-      main.append(title, meta);
+      main.append(title, meta, runTrack(run));
       const chip = cosignChip(run);
       const state = document.createElement("span");
       state.className = `run-row-state ${chip?.tone ?? statusTone(value)}`;
@@ -709,6 +729,25 @@ function renderQueue(): void {
     }
     list.append(section);
   }
+
+  // FLIP the attention reorder: a run that bubbled into (or out of) the attention
+  // cluster slides to its new slot instead of teleporting. Only a *pure* reorder
+  // animates — the same set of visible rows in a new order — so selecting a run or
+  // switching filters (which change the set) never triggers a slide. The queue's
+  // live-advance, the way the Run view's connectors fill: change made visible.
+  const nextKeys = [...list.querySelectorAll<HTMLElement>(".run-row[data-run-key]")].map((el) => el.dataset.runKey!);
+  if (!reduce) {
+    const sameSet = nextKeys.length === prevQueueKeys.length && nextKeys.every((key) => prevQueueKeys.includes(key));
+    if (sameSet && nextKeys.join(" ") !== prevQueueKeys.join(" ")) {
+      list.querySelectorAll<HTMLElement>(".run-row[data-run-key]").forEach((el) => {
+        const first = firstRects.get(el.dataset.runKey!);
+        if (!first) return;
+        const dy = first.top - el.getBoundingClientRect().top;
+        if (Math.abs(dy) > 1) el.animate([{ transform: `translateY(${dy}px)` }, { transform: "none" }], { duration: 440, easing: EASE_INOUT, fill: "both" });
+      });
+    }
+  }
+  prevQueueKeys = nextKeys;
   refreshIcons(list);
 }
 
@@ -733,6 +772,29 @@ function pipelineState(run: FleetRun, index: number): "passed" | "active" | "fai
  *  else "Approve" (the terminal gate). Kept short: the track labels are tiny. */
 function trackLabels(run: FleetRun): string[] {
   return ["Agent", "Scope", "Verify", "Judge", run.kind === "completed" && run.data.prUrl ? "PR" : "Approve"];
+}
+
+/** A queue row's miniature pipeline: the same `pipelineState` the Run view reads,
+ *  rendered as five 8px nodes with filling connectors between them. A compact
+ *  readout of where the run got to — the Instrument's language, at row scale. */
+function runTrack(run: FleetRun): HTMLElement {
+  const track = document.createElement("span");
+  track.className = "run-row-track";
+  for (let index = 0; index < 5; index += 1) {
+    if (index > 0) {
+      const connector = document.createElement("span");
+      connector.className = "mt-conn";
+      const fill = document.createElement("span");
+      fill.className = "mt-fill";
+      fill.style.transform = pipelineState(run, index - 1) === "passed" ? "scaleX(1)" : "scaleX(0)";
+      connector.append(fill);
+      track.append(connector);
+    }
+    const node = document.createElement("span");
+    node.className = `mt-node ${pipelineState(run, index)}`;
+    track.append(node);
+  }
+  return track;
 }
 
 /** The evidence transcript, in order — a completed run's recorded gate lines
@@ -891,6 +953,8 @@ function renderInstrument(run: FleetRun): void {
     if (!reduce && sameRun && state === "passed" && prevStates[index] !== "passed") toStamp.push(index);
   });
   refreshIcons(track);
+  const cleared = states.filter((state) => state === "passed").length;
+  $("#pipeline-sub").textContent = `${cleared} / ${states.length} gates cleared`;
   if (!reduce && !sameRun) {
     track.querySelectorAll<HTMLElement>(".inst-node-wrap").forEach((wrap, index) =>
       wrap.animate([{ opacity: 0, transform: "translateY(6px)" }, { opacity: 1, transform: "none" }], { duration: 300, delay: 45 * index, easing: EASE_OUT, fill: "both" }));
@@ -1118,11 +1182,63 @@ function syncActions(sync: SyncState, prUrl: string | undefined): HTMLButtonElem
  * runner's gate stays the real gate. A closed run gains "Run again", which
  * only prefills the launch form: launching stays an explicit human action.
  */
+type DecisionTone = "review" | "done" | "failure" | "neutral" | "live";
+interface DecisionHead {
+  tone: DecisionTone;
+  icon: string;
+  eyebrow: string;
+  title: string;
+  detail: string;
+}
+
+/** The co-sign beat, stated once and tinted to match: the rail's decision block
+ *  is the actionable half of the run's fate. Where the Run view's spotlight names
+ *  the *status* ("Awaiting your co-sign"), this names the *decision* ("Ready to
+ *  co-sign — squash-merge, or close with a reason") — a header over the buttons,
+ *  read from the same fate table so it never restates a status the contract owns. */
+function decisionHead(run: FleetRun): DecisionHead {
+  if (run.kind === "inflight") {
+    return { tone: "live", icon: "loader-circle", eyebrow: "Co-sign gate", title: "Not open yet", detail: "This run is still working on the runner — the co-sign gate opens once it ships a pull request." };
+  }
+  const cosign = cosignFor(run);
+  if (cosign?.state === "merged") {
+    return { tone: "done", icon: "git-merge", eyebrow: "Outcome", title: "Merged", detail: cosign.mergedBy ? `Co-signed by ${cosign.mergedBy} — squash-merged into the base branch.` : "Squash-merged into the base branch." };
+  }
+  if (cosign?.state === "closed") {
+    return { tone: "neutral", icon: "git-pull-request-closed", eyebrow: "Outcome", title: "Closed", detail: "Closed without merging — the reason was posted to the pull request." };
+  }
+  if (awaitingReview(gateInput(run))) {
+    return { tone: "review", icon: "git-pull-request", eyebrow: "Your move", title: "Ready to co-sign", detail: `PR #${prNumber(run.data.prUrl)} is open with every gate green. Squash-merge, or close it with a reason.` };
+  }
+  const facts = runFacts(run.data.status);
+  if (facts?.diedAt || facts?.kind === "infra" || facts?.kind === "killed") {
+    return { tone: "failure", icon: "x-circle", eyebrow: "Blocked", title: "Nothing to co-sign", detail: "This run stopped at a gate — no pull request was opened. Fix the cause and run it again." };
+  }
+  if (run.data.status === "no-changes") {
+    return { tone: "neutral", icon: "circle", eyebrow: "Outcome", title: "No changes", detail: run.data.reason ?? "The agent made no changes — nothing to review or ship." };
+  }
+  return { tone: "done", icon: "check-circle-2", eyebrow: "Outcome", title: "Approved", detail: "Every gate passed." };
+}
+
 function renderCosignDecision(run: FleetRun | undefined): void {
   const container = $("#cosign-decision");
   container.replaceChildren();
   container.hidden = !run;
   if (!run) return;
+
+  // The tonal spotlight card: the header names the decision, the body carries the
+  // mechanics — buttons, a witnessed refusal, a cloud run's evidence-sync, or the
+  // blocking reason. Every append below targets `body`, so the block reads as one
+  // card tinted to the run's fate.
+  const head = decisionHead(run);
+  const card = document.createElement("div");
+  card.className = `decision-spot ${head.tone}`;
+  card.innerHTML = `<div class="decision-spot-head"><i data-lucide="${head.icon}"></i><span class="decision-spot-eyebrow"></span></div><div class="decision-spot-title"></div><p class="decision-spot-detail"></p><div class="decision-spot-actions"></div>`;
+  card.querySelector(".decision-spot-eyebrow")!.textContent = head.eyebrow;
+  card.querySelector(".decision-spot-title")!.textContent = head.title;
+  card.querySelector(".decision-spot-detail")!.textContent = head.detail;
+  const body = card.querySelector<HTMLElement>(".decision-spot-actions")!;
+  container.append(card);
 
   const refusal = cosignRefusals[run.key];
   if (refusal) {
@@ -1139,7 +1255,7 @@ function renderCosignDecision(run: FleetRun | undefined): void {
       line.textContent = detail;
       block.querySelector("div")!.append(line);
     }
-    container.append(block);
+    body.append(block);
   }
 
   const blocker = status.state !== "connected" && !previewMode
@@ -1160,7 +1276,7 @@ function renderCosignDecision(run: FleetRun | undefined): void {
         ?? (artifactsLoadedFor === run.key
           ? { kind: "unavailable", reason: "the synced cloud artifact held no reviewable diff" }
           : { kind: "syncing" });
-      container.append(syncBlock(sync), ...syncActions(sync, run.data.prUrl));
+      body.append(syncBlock(sync), ...syncActions(sync, run.data.prUrl));
       refreshIcons(container);
       return;
     }
@@ -1170,14 +1286,14 @@ function renderCosignDecision(run: FleetRun | undefined): void {
     const reason = document.createElement("div");
     reason.className = "cosign-blocker";
     reason.textContent = blocker;
-    container.append(reason);
+    body.append(reason);
     if (run.kind === "completed" && cosignFor(run)?.state === "closed") {
       const again = document.createElement("button");
       again.className = "secondary compact cosign-run-again";
       again.disabled = busy;
       again.innerHTML = `<i data-lucide="rotate-ccw"></i><span>Run again</span>`;
       again.addEventListener("click", () => prefillLaunchForm(run));
-      container.append(again);
+      body.append(again);
     }
   } else {
     const number = prNumber(run.kind === "completed" ? run.data.prUrl : undefined);
@@ -1197,7 +1313,7 @@ function renderCosignDecision(run: FleetRun | undefined): void {
       ? "Working…"
       : `${refusal?.action === "close" ? "Retry close" : "Close"} PR #${number} with a reason`;
     close.addEventListener("click", () => openCloseConfirm(run.key));
-    container.append(merge, close);
+    body.append(merge, close);
   }
   refreshIcons(container);
 }
@@ -1411,6 +1527,7 @@ function renderActivity(): void {
     empty.className = "rail-empty";
     empty.textContent = "No remote commands";
     list.append(empty);
+    prevTopReceipt = "";
     return;
   }
   for (const receipt of receipts) {
@@ -1435,6 +1552,18 @@ function renderActivity(): void {
     details.append(output);
     list.append(details);
   }
+  // A freshly-arrived receipt slides into the top of the feed; a plain re-render
+  // of the same top row (every poll) stays still. Keyed on the top receipt's
+  // timestamp+command so only a genuinely new command animates.
+  const top = receipts[0];
+  const signature = top ? `${top.timestamp}:${top.command}` : "";
+  if (!prefersReducedMotion() && signature && prevTopReceipt && signature !== prevTopReceipt) {
+    (list.firstElementChild as HTMLElement | null)?.animate(
+      [{ opacity: 0, transform: "translateY(-8px)" }, { opacity: 1, transform: "none" }],
+      { duration: 320, easing: EASE_OUT, fill: "both" },
+    );
+  }
+  prevTopReceipt = signature;
   refreshIcons(list);
 }
 
@@ -1641,6 +1770,21 @@ function setBusy(next: boolean): void {
   renderConnection();
   renderCatalog();
   renderCosignDecision(selectedRun());
+}
+
+/** Launching a run is the app's highest-intent act — give it weight: a shine
+ *  sweeps across the button while it settles under the press (Dispatch carries the
+ *  sweep; Run, a lighter settle). Zero-dep WAAPI, reduced-motion silent. */
+function commitCeremony(button: HTMLElement): void {
+  if (prefersReducedMotion()) return;
+  button.querySelector<HTMLElement>(".commit-sweep")?.animate(
+    [{ transform: "translateX(-120%)" }, { transform: "translateX(120%)" }],
+    { duration: 520, easing: EASE_INOUT },
+  );
+  button.animate(
+    [{ transform: "scale(1)" }, { transform: "scale(0.96)", offset: 0.35 }, { transform: "scale(1.02)", offset: 0.7 }, { transform: "scale(1)" }],
+    { duration: 520, easing: EASE_SETTLE },
+  );
 }
 
 function showProfile(profile?: HostProfile): void {
@@ -1909,8 +2053,8 @@ $("#disconnect").addEventListener("click", async () => {
     $("#ledger-empty").hidden = false;
   } finally { setBusy(false); renderAll(); }
 });
-$("#dispatch-action").addEventListener("click", () => void runAction("dispatch"));
-$("#local-run").addEventListener("click", () => void runAction("localRun"));
+$("#dispatch-action").addEventListener("click", () => { commitCeremony($("#dispatch-action")); void runAction("dispatch"); });
+$("#local-run").addEventListener("click", () => { commitCeremony($("#local-run")); void runAction("localRun"); });
 $("#clear-activity").addEventListener("click", () => { results = []; renderActivity(); });
 $("#toggle-rail").addEventListener("click", () => {
   const collapsed = workbench.classList.toggle("rail-collapsed");
