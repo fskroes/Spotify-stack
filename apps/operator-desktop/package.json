@@ -12,6 +12,7 @@
     "tauri:build": "tauri build"
   },
   "dependencies": {
+    "@fleet/contract": "workspace:*",
     "@tauri-apps/api": "^2.8.0",
     "lucide": "^0.468.0"
   },

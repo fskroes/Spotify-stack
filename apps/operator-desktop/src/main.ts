@@ -34,6 +34,19 @@ import {
   X,
   XCircle,
 } from "lucide";
+import {
+  Endpoints,
+  parseCosignStdout,
+  type ArtifactMetadata,
+  type CatalogResponse,
+  type CosignResult,
+  type InflightRecord,
+  type LedgerEntry,
+  type PrLiveState,
+  type SyncState,
+  type WireGet,
+  WireParseError,
+} from "@fleet/contract";
 import { fleetRevision, ledgerRefreshDecision, refreshedLedgerUrl } from "./ledger-refresh";
 import { parsePatch, type DiffFile, type ParsedDiff } from "./diff-parser";
 import {
@@ -41,10 +54,18 @@ import {
   closeReasonProblem,
   MAX_REASON_LENGTH,
   mergeBlocker,
-  parseCosignResult,
-  type CosignResult,
   type MergeGateInput,
 } from "./cosign-result";
+import { ingestInflight, ingestLedger, type InflightIngest, type LedgerIngest } from "./ingest";
+import {
+  PREVIEW_CATALOG,
+  PREVIEW_PATCH,
+  PREVIEW_SYNC_STATES,
+  previewArtifacts,
+  previewCosigns,
+  previewInflight,
+  previewLedgerEntries,
+} from "./preview-fixtures";
 import "./styles.css";
 
 interface HostProfile {
@@ -79,64 +100,9 @@ interface RemoteCommandResult {
 /** A command receipt; cosign receipts also carry the runner's structured result. */
 type Receipt = RemoteCommandResult & { cosign?: CosignResult };
 
-interface Catalog {
-  tasks: Array<{ id: string; title: string; targets: string[]; risk: string }>;
-  repos: Array<{ name: string; language: string; defaultBranch: string }>;
-}
-
-interface LedgerEntry {
-  ts: string;
-  runId?: string;
-  task: string;
-  repo: string;
-  status: string;
-  mode: "local" | "cloud";
-  vetoes: number;
-  reason?: string;
-  prUrl?: string;
-  title?: string;
-  sha?: string;
-  elapsedMs?: number;
-  timings?: { agentMs: number; verifyMs: number; judgeMs: number };
-  evidence?: string[];
-}
-
-interface InflightRecord {
-  runId: string;
-  startedAt: string;
-  task: string;
-  repo: string;
-  title: string;
-  stage: "agent" | "scope" | "verify" | "judge" | "shipping";
-  attempt: number;
-  stageSince: string;
-}
-
-interface ArtifactMetadata {
-  name: string;
-  size: number;
-  modifiedAt: string;
-  url: string;
-  contentType: string;
-}
-
-/** Live PR merge state keyed by PR URL — present only while the serve polls GitHub (--cosign). */
-interface Cosign {
-  state: "open" | "merged" | "closed";
-  mergedBy?: string;
-  mergedAt?: string;
-}
-
-/** A cloud run's evidence-sync state, mirrored verbatim from the runner's
- *  operator API (#35). A cloud run keeps its diff in the GitHub Actions
- *  artifact, fetched on demand; this appears on a `/runs` payload only while
- *  that archive is not yet (or never) on the runner. It drives both the Review
- *  tab's syncing/retryable/unavailable copy and the "no synced evidence, no
- *  co-sign button" invariant in the decision rail. */
-type SyncState =
-  | { kind: "syncing" }
-  | { kind: "unavailable"; reason: string }
-  | { kind: "retryable"; detail: string };
+/** The wire shapes — LedgerEntry, InflightRecord, ArtifactMetadata, the co-sign
+ *  map value (PrLiveState), and a cloud run's evidence SyncState — all come from
+ *  @fleet/contract now, the one declaration of what the runner tells the operator. */
 
 type FleetRun =
   | { kind: "completed"; key: string; sortAt: string; data: LedgerEntry }
@@ -175,7 +141,10 @@ app.innerHTML = `
 
       <div class="queue-heading">
         <span>Runs</span>
-        <button id="refresh-runs" class="icon-button" title="Refresh runs" aria-label="Refresh runs"><i data-lucide="refresh-cw"></i></button>
+        <div class="queue-heading-actions">
+          <small id="unreadable-count" class="unreadable-count" hidden></small>
+          <button id="refresh-runs" class="icon-button" title="Refresh runs" aria-label="Refresh runs"><i data-lucide="refresh-cw"></i></button>
+        </div>
       </div>
       <div id="queue-list" class="queue-list"></div>
 
@@ -199,10 +168,16 @@ app.innerHTML = `
         </div>
       </header>
 
-      <div id="connection-banner" class="connection-banner" hidden>
-        <i data-lucide="wifi-off"></i>
-        <div><strong>Runner connection lost</strong><span id="stale-detail">Remote state may be out of date.</span></div>
-        <button id="reconnect" class="secondary compact"><i data-lucide="refresh-cw"></i>Reconnect</button>
+      <div class="banner-stack">
+        <div id="connection-banner" class="connection-banner" hidden>
+          <i data-lucide="wifi-off"></i>
+          <div><strong>Runner connection lost</strong><span id="stale-detail">Remote state may be out of date.</span></div>
+          <button id="reconnect" class="secondary compact"><i data-lucide="refresh-cw"></i>Reconnect</button>
+        </div>
+        <div id="wire-banner" class="connection-banner wire-banner" hidden>
+          <i data-lucide="alert-circle"></i>
+          <div><strong>Runner sent data this build can't read</strong><span id="wire-detail"></span></div>
+        </div>
       </div>
 
       <nav class="workspace-tabs" aria-label="Workspace views">
@@ -367,9 +342,9 @@ const previewMode = import.meta.env.DEV && new URLSearchParams(window.location.s
 
 let profiles: HostProfile[] = [];
 let status: ConnectionStatus = disconnectedStatus();
-let catalog: Catalog | null = null;
+let catalog: CatalogResponse | null = null;
 let runs: FleetRun[] = [];
-let cosigns: Record<string, Cosign> = {};
+let cosigns: Record<string, PrLiveState> = {};
 let artifacts: ArtifactMetadata[] = [];
 let results: Receipt[] = [];
 /** Witnessed cosign refusals (merge and close) by run key — first-class state,
@@ -396,6 +371,14 @@ let queueFilter: QueueFilter = "all";
 let workspaceView: WorkspaceView = "run";
 let lastUpdated: Date | null = null;
 let busy = false;
+/** The last refresh envelope the runner sent that this build couldn't read —
+ *  endpoint and field path from the contract, banner-ready. Set when a refresh
+ *  envelope's container is malformed; the last-good runs stay rendered and
+ *  timestamped underneath, and the next clean refresh clears it. */
+let wireError: WireParseError | null = null;
+/** How many individual records the last refresh had to skip — a bad ledger
+ *  entry or live row is dropped, not fatal, and this owns up to the gap. */
+let unreadableRecords = 0;
 
 function disconnectedStatus(): ConnectionStatus {
   return { profileId: null, state: "disconnected", localPort: null, url: null, command: null, exitStatus: null, outputTail: "", startedAt: null };
@@ -426,7 +409,7 @@ function runRepo(run: FleetRun): string {
 }
 
 /** Live merge state for a run's PR, when known. Runs without a PR have none. */
-function cosignFor(run: FleetRun): Cosign | undefined {
+function cosignFor(run: FleetRun): PrLiveState | undefined {
   return run.kind === "completed" && run.data.prUrl ? cosigns[run.data.prUrl] : undefined;
 }
 
@@ -451,7 +434,10 @@ interface CosignChip {
 /** Everything the UI says about a PR state, in one place — the queue chip and
  *  the run-details row must never disagree. For shipped runs the decision
  *  dimension (co-sign) supersedes the pipeline dimension (approved). */
-const COSIGN_CHIP: Record<Cosign["state"], CosignChip> = {
+// PrLiveState.state is an open string on the wire (a newer runner may report a
+// state this build doesn't know); an unknown state simply has no chip, and the
+// run falls back to its pipeline-status treatment.
+const COSIGN_CHIP: Record<string, CosignChip> = {
   open: { label: "PR open", detail: "Open — awaiting co-sign", icon: "git-pull-request", tone: "warning" },
   merged: { label: "Merged", detail: "Merged", icon: "git-merge", tone: "success" },
   closed: { label: "Closed", detail: "Closed without merging", icon: "git-pull-request-closed", tone: "neutral" },
@@ -1095,7 +1081,7 @@ async function executeCosign(key: string, action: "merge" | "close", reason?: st
             ? { kind: "cosignMerge", runId: run.data.runId }
             : { kind: "cosignClose", runId: run.data.runId, reason },
         });
-    result.cosign = parseCosignResult(result.stdoutTail) ?? undefined;
+    result.cosign = parseCosignStdout(result.stdoutTail) ?? undefined;
     results.unshift(result);
     if (result.cosign?.ok && result.cosign.state === "merged") {
       cosigns[run.data.prUrl] = {
@@ -1234,30 +1220,6 @@ function renderView(): void {
   $("#ledger-view").toggleAttribute("hidden", workspaceView !== "ledger");
   renderReview();
 }
-
-const PREVIEW_PATCH = [
-  "diff --git a/src/lib/feed.js b/src/lib/feed.js",
-  "index 2f1c4aa..9be01c3 100644",
-  "--- a/src/lib/feed.js",
-  "+++ b/src/lib/feed.js",
-  "@@ -12,7 +12,8 @@ export function buildFeed(source) {",
-  "   const entries = source.items",
-  "-    .map((item) => renderEntry(item));",
-  "+    .filter((item) => item.id)",
-  "+    .map((item) => renderEntry(item));",
-  "   return wrap(entries);",
-  " }",
-  "diff --git a/tests/feed.test.js b/tests/feed.test.js",
-  "new file mode 100644",
-  "index 0000000..fd87402",
-  "--- /dev/null",
-  "+++ b/tests/feed.test.js",
-  "@@ -0,0 +1,4 @@",
-  '+import test from "node:test";',
-  "+",
-  '+test("buildFeed skips items without an id", () => {',
-  "+});",
-].join("\n");
 
 /** Fetch and parse the selected run's diff.patch once per run; every state the
  *  tab can show (loading, parsed, honest refusals) renders from `review`. */
@@ -1410,9 +1372,29 @@ function renderReview(): void {
   refreshIcons(container);
 }
 
+/** The two contract-failure surfaces: a banner when a whole refresh envelope
+ *  was unreadable (endpoint + field path, last-good data still on screen and
+ *  timestamped), and a count when individual records had to be skipped. */
+function renderWireStatus(): void {
+  $("#wire-banner").toggleAttribute("hidden", !wireError);
+  if (wireError) {
+    const ago = lastUpdated ? relativeTime(lastUpdated.toISOString()) : null;
+    const since = ago === null
+      ? "no prior data to fall back on"
+      : ago === "now"
+        ? "showing last-good data from just now"
+        : `showing last-good data from ${ago} ago`;
+    $("#wire-detail").textContent = `${wireError.message} — ${since}.`;
+  }
+  const count = $("#unreadable-count");
+  count.toggleAttribute("hidden", unreadableRecords === 0);
+  count.textContent = `${unreadableRecords} ${unreadableRecords === 1 ? "record" : "records"} unreadable`;
+}
+
 function renderAll(): void {
   renderProfiles();
   renderConnection();
+  renderWireStatus();
   renderCatalog();
   renderQueue();
   renderSelectedRun();
@@ -1449,9 +1431,10 @@ function showProfile(profile?: HostProfile): void {
   profileDialog.showModal();
 }
 
-async function operatorGet<T>(path: string): Promise<T> {
-  return invoke<T>("operator_get", { path });
-}
+/** The contract's transport: fetch a path over the SSH-forwarded runner and
+ *  return its decoded JSON body, untyped. Every envelope is parsed from here on
+ *  through the contract (`Endpoints.*` / the ingest layer), never trusted raw. */
+const operatorGet: WireGet = (path) => invoke<unknown>("operator_get", { path });
 
 function refreshLedgerFrame(): void {
   if (!status.url) return;
@@ -1462,10 +1445,25 @@ function refreshLedgerFrame(): void {
 
 async function refreshFleetData(): Promise<void> {
   if (previewMode) return loadPreviewData();
-  const [ledger, inflight] = await Promise.all([
-    operatorGet<{ generatedAt: string; entries: LedgerEntry[]; cosigns?: Record<string, Cosign> }>("/api/ledger"),
-    operatorGet<{ generatedAt: string; runs: InflightRecord[] }>("/api/inflight"),
+  const [ledgerRaw, inflightRaw] = await Promise.all([
+    operatorGet(Endpoints.ledger.path),
+    operatorGet(Endpoints.inflight.path),
   ]);
+  let ledger: LedgerIngest;
+  let inflight: InflightIngest;
+  try {
+    ledger = ingestLedger(ledgerRaw);
+    inflight = ingestInflight(inflightRaw);
+  } catch (error) {
+    if (!(error instanceof WireParseError)) throw error;
+    // A malformed refresh envelope: keep the last-good runs on screen — still
+    // timestamped from their own refresh — and name the seam that broke.
+    wireError = error;
+    renderAll();
+    return;
+  }
+  wireError = null;
+  unreadableRecords = ledger.unreadable + inflight.unreadable;
   cosigns = ledger.cosigns ?? {};
   const completed: FleetRun[] = ledger.entries.map((entry, index) => ({ kind: "completed", key: entry.runId ?? `ledger-${entry.ts}-${entry.task}-${entry.repo}-${index}`, sortAt: entry.ts, data: entry }));
   const live: FleetRun[] = inflight.runs.map((entry) => ({ kind: "inflight", key: entry.runId, sortAt: entry.startedAt, data: entry }));
@@ -1502,12 +1500,12 @@ async function loadArtifactsForSelected(): Promise<void> {
       next = nextSync ? [] : previewArtifacts();
     } else if (run.data.runId) {
       try {
-        const detail = await operatorGet<{ artifacts: ArtifactMetadata[]; artifactsSuperseded?: boolean; sync?: SyncState }>(
-          `/api/runs/${encodeURIComponent(run.data.runId)}`,
-        );
+        const detail = await Endpoints.run.load(operatorGet, run.data.runId);
         next = detail.artifacts;
-        nextSuperseded = detail.artifactsSuperseded === true;
-        nextSync = detail.sync ?? null;
+        if (detail.state === "completed") {
+          nextSuperseded = detail.artifactsSuperseded === true;
+          nextSync = detail.sync ?? null;
+        }
       } catch {
         next = null;
       }
@@ -1585,10 +1583,10 @@ async function connect(): Promise<void> {
   }
 }
 
-async function waitForCatalog(): Promise<Catalog> {
+async function waitForCatalog(): Promise<CatalogResponse> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 16; attempt += 1) {
-    try { return await operatorGet<Catalog>("/api/catalog"); }
+    try { return await Endpoints.catalog.load(operatorGet); }
     catch (error) { lastError = error; await new Promise((resolve) => window.setTimeout(resolve, 500)); }
   }
   throw lastError;
@@ -1620,35 +1618,10 @@ function loadPreviewData(): void {
   const now = Date.now();
   profiles = [{ id: "preview", name: "Production runner", sshTarget: "fleet@runner", remoteRepoPath: "/srv/spotify-stack", remoteCommandPrefix: "", remotePort: 4173, preferredLocalPort: null }];
   status = { profileId: "preview", state: "connected", localPort: 49152, url: null, command: "ssh fleet@runner [forward localhost:49152] fleet report --serve --cosign", exitStatus: null, outputTail: "Fleet Ledger live at http://127.0.0.1:4173", startedAt: now - 3_600_000 };
-  catalog = {
-    tasks: [{ id: "004-upstream-failure-mode-tests", title: "Cover upstream failure modes", targets: ["demo-feed-service"], risk: "low" }, { id: "onramp-1-feed-tests", title: "Add feed builder tests", targets: ["demo-feed-service"], risk: "low" }],
-    repos: [{ name: "demo-feed-service", language: "javascript", defaultBranch: "main" }, { name: "demo-ts-service", language: "typescript", defaultBranch: "main" }],
-  };
-  const entries: LedgerEntry[] = [
-    { ts: new Date(now - 12 * 60_000).toISOString(), runId: "approved", task: "004-upstream-failure-mode-tests", repo: "demo-feed-service", status: "approved", mode: "cloud", vetoes: 0, title: "Cover upstream failure modes", elapsedMs: 186_421, prUrl: "https://github.com/example/repo/pull/42", sha: "8df31c2", evidence: ["Scope contract passed for 4 changed files", "VERIFY PASSED", "npm run test passed (42 tests)", "Judge approved with no violations"] },
-    { ts: new Date(now - 9 * 60_000).toISOString(), runId: "cloud-syncing", task: "004-upstream-failure-mode-tests", repo: "demo-feed-service", status: "approved", mode: "cloud", vetoes: 0, title: "Guard empty upstream payloads", elapsedMs: 158_004, prUrl: "https://github.com/example/repo/pull/50", sha: "a10f4c9", evidence: ["Scope contract passed for 3 changed files", "VERIFY PASSED", "Judge approved with no violations"] },
-    { ts: new Date(now - 33 * 60_000).toISOString(), runId: "cloud-gone", task: "002-dedupe-feed-items", repo: "demo-feed-service", status: "approved", mode: "cloud", vetoes: 0, title: "Dedupe feed items on ingest", elapsedMs: 201_887, prUrl: "https://github.com/example/repo/pull/51", sha: "c74be02", evidence: ["Scope contract passed", "VERIFY PASSED", "Judge approved with no violations"] },
-    { ts: new Date(now - 51 * 60_000).toISOString(), runId: "cloud-retry", task: "003-add-agent-badge", repo: "demo-ts-service", status: "approved", mode: "cloud", vetoes: 0, title: "Add agent badge", elapsedMs: 96_512, prUrl: "https://github.com/example/repo/pull/52", sha: "e0b91d4", evidence: ["Scope contract passed", "VERIFY PASSED", "Judge approved with no violations"] },
-    { ts: new Date(now - 25 * 60_000).toISOString(), runId: "review-me", task: "onramp-1-feed-tests", repo: "demo-feed-service", status: "approved", mode: "local", vetoes: 0, title: "Harden feed pagination", elapsedMs: 141_380, prUrl: "https://github.com/example/repo/pull/44", sha: "3e91d0a", evidence: ["Scope contract passed for 2 changed files", "VERIFY PASSED", "npm run test passed (17 tests)", "Judge approved with no violations"] },
-    { ts: new Date(now - 2 * 3_600_000).toISOString(), runId: "shipped", task: "onramp-1-feed-tests", repo: "demo-feed-service", status: "approved", mode: "local", vetoes: 0, title: "Add feed builder tests", elapsedMs: 121_204, prUrl: "https://github.com/example/repo/pull/38", sha: "1fa9b04", evidence: ["Scope contract passed", "VERIFY PASSED", "Judge approved with no violations"] },
-    { ts: new Date(now - 47 * 60_000).toISOString(), runId: "failed", task: "onramp-1-feed-tests", repo: "demo-feed-service", status: "verify-failed", mode: "local", vetoes: 0, title: "Add feed builder tests", elapsedMs: 74_902, reason: "npm run test failed: expected 3 items, received 4", evidence: ["Scope contract passed", "VERIFY FAILED", "expected 3 items, received 4"] },
-    { ts: new Date(now - 3 * 3_600_000).toISOString(), runId: "rejected", task: "004-upstream-failure-mode-tests", repo: "demo-feed-service", status: "approved", mode: "local", vetoes: 0, title: "Cover upstream failure modes", elapsedMs: 156_733, prUrl: "https://github.com/example/repo/pull/40", sha: "b7e22d1", evidence: ["Scope contract passed", "VERIFY PASSED", "Judge approved with no violations"] },
-    { ts: new Date(now - 4 * 3_600_000).toISOString(), runId: "noop", task: "003-add-agent-badge", repo: "demo-ts-service", status: "no-changes", mode: "cloud", vetoes: 0, title: "Add agent badge", elapsedMs: 23_511, evidence: ["Task precondition is already satisfied", "NO_CHANGES_NEEDED"] },
-    { ts: new Date(now - 26 * 3_600_000).toISOString(), runId: "vetoed", task: "002-dedupe-feed-items", repo: "demo-feed-service", status: "vetoed", mode: "cloud", vetoes: 3, title: "Dedupe feed items on ingest", elapsedMs: 224_007, reason: "Change regenerated the entire lockfile", evidence: ["Scope contract passed", "VERIFY PASSED", "Judge veto: regenerated the entire lockfile"] },
-  ];
-  const live: InflightRecord = { runId: "live", startedAt: new Date(now - 6 * 60_000).toISOString(), task: "004-upstream-failure-mode-tests", repo: "demo-ts-service", title: "Cover upstream failure modes", stage: "verify", attempt: 1, stageSince: new Date(now - 70_000).toISOString() };
-  cosigns = {
-    "https://github.com/example/repo/pull/42": { state: "open" },
-    // Cloud runs whose evidence is still syncing / gone / retrying — open PRs,
-    // but the "no synced evidence, no button" invariant governs the rail.
-    "https://github.com/example/repo/pull/50": { state: "open" },
-    "https://github.com/example/repo/pull/51": { state: "open" },
-    "https://github.com/example/repo/pull/52": { state: "open" },
-    "https://github.com/example/repo/pull/44": { state: "open" },
-    "https://github.com/example/repo/pull/38": { state: "merged", mergedBy: "fernando", mergedAt: new Date(now - 90 * 60_000).toISOString() },
-    // A closed run: exercises the "Run again" prefill path in the preview.
-    "https://github.com/example/repo/pull/40": { state: "closed" },
-  };
+  catalog = PREVIEW_CATALOG;
+  const entries = previewLedgerEntries(now);
+  const live = previewInflight(now);
+  cosigns = previewCosigns(now);
   runs = [
     { kind: "inflight", key: live.runId, sortAt: live.startedAt, data: live },
     ...entries.map((entry) => ({ kind: "completed" as const, key: entry.runId!, sortAt: entry.ts, data: entry })),
@@ -1662,28 +1635,11 @@ function loadPreviewData(): void {
   lastUpdated = new Date(now - 18_000);
 }
 
-/** Preview-only: the cloud runs that stand in for each evidence-sync state, so
- *  the dev preview exercises the syncing/unavailable/retryable rail and Review
- *  copy. A cloud run not listed here is "synced" — it shows the diff and the
- *  co-sign buttons exactly like a local run. */
+/** Preview-only: the evidence-sync state a cloud run stands in for, or null for
+ *  a synced run (diff and co-sign buttons render exactly like a local one). */
 function previewSyncState(run: FleetRun): SyncState | null {
   if (run.kind !== "completed") return null;
-  const states: Record<string, SyncState> = {
-    "cloud-syncing": { kind: "syncing" },
-    "cloud-gone": { kind: "unavailable", reason: "the run's artifact is no longer on GitHub (expired past retention, or never uploaded)" },
-    "cloud-retry": { kind: "retryable", detail: "artifact download failed: gh: server error (HTTP 500)" },
-  };
-  return states[run.data.runId ?? ""] ?? null;
-}
-
-function previewArtifacts(): ArtifactMetadata[] {
-  const stamp = new Date().toISOString();
-  return [
-    { name: "diff.patch", size: 8421, modifiedAt: stamp, url: "/api/artifacts/x/y/diff.patch", contentType: "text/x-diff" },
-    { name: "verify.log", size: 1632, modifiedAt: stamp, url: "/api/artifacts/x/y/verify.log", contentType: "text/plain" },
-    { name: "verdict.json", size: 421, modifiedAt: stamp, url: "/api/artifacts/x/y/verdict.json", contentType: "application/json" },
-    { name: "pr-preview.md", size: 2104, modifiedAt: stamp, url: "/api/artifacts/x/y/pr-preview.md", contentType: "text/markdown" },
-  ];
+  return PREVIEW_SYNC_STATES[run.data.runId ?? ""] ?? null;
 }
 
 document.querySelectorAll<HTMLButtonElement>(".queue-filter").forEach((button) => button.addEventListener("click", () => {
@@ -1715,6 +1671,8 @@ $("#disconnect").addEventListener("click", async () => {
     artifactSync = null;
     review = null;
     cosignRefusals = {};
+    wireError = null;
+    unreadableRecords = 0;
     ledgerRevision = "";
     ledgerFrame.src = "about:blank";
     ledgerFrame.hidden = true;
