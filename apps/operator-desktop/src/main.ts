@@ -35,6 +35,7 @@ import {
   XCircle,
 } from "lucide";
 import {
+  dedupeInflight,
   Endpoints,
   parseCosignStdout,
   type ArtifactMetadata,
@@ -1466,8 +1467,13 @@ async function refreshFleetData(): Promise<void> {
   unreadableRecords = ledger.unreadable + inflight.unreadable;
   cosigns = ledger.cosigns ?? {};
   const completed: FleetRun[] = ledger.entries.map((entry, index) => ({ kind: "completed", key: entry.runId ?? `ledger-${entry.ts}-${entry.task}-${entry.repo}-${index}`, sortAt: entry.ts, data: entry }));
-  const live: FleetRun[] = inflight.runs.map((entry) => ({ kind: "inflight", key: entry.runId, sortAt: entry.startedAt, data: entry }));
-  const nextRevision = fleetRevision(ledger.entries, inflight.runs);
+  // Enforce the one-row-per-run invariant at ingestion rather than trusting the
+  // producer (ADR-0001): a run whose ledger line has landed is decided, so drop
+  // its still-live inflight row instead of drawing it twice. The runner's
+  // /api/inflight already dedupes, but the operator owns its own render.
+  const liveRuns = dedupeInflight(ledger.entries, inflight.runs);
+  const live: FleetRun[] = liveRuns.map((entry) => ({ kind: "inflight", key: entry.runId, sortAt: entry.startedAt, data: entry }));
+  const nextRevision = fleetRevision(ledger.entries, liveRuns);
   const ledgerChanged = ledgerRefreshDecision(ledgerRevision, nextRevision);
   ledgerRevision = nextRevision;
   runs = [...live, ...completed].sort(queueOrder);
