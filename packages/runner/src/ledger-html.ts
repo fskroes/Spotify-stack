@@ -17,11 +17,16 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   dedupeInflight,
-  KILL_STATUSES,
+  isKillStatus,
+  runFacts,
+  TERMINAL_STAGES,
   type InflightRecord,
   type LedgerEntry,
   type PrLiveState,
+  type RunKind,
+  type RunStatus,
   type Stage as LiveStage,
+  type TerminalStage,
 } from "@fleet/contract";
 import { fleetRecord, readLedger } from "./ledger.js";
 // Aliased: this module already has a `Stage` — the drawer timeline's row.
@@ -48,32 +53,52 @@ const C = {
 interface Verdict {
   label: string;
   color: string;
-  /** The pipeline gate a kill happened at, if any. */
-  stage: "agent" | "scope" | "verify" | "judge" | null;
-  kind: "shipped" | "killed" | "infra" | "neutral";
+  /** The pipeline gate a kill died at, if any (from the contract's fate table). */
+  diedAt: TerminalStage | null;
+  kind: RunKind;
 }
 
-/** Map a raw ledger status onto the design's verdict vocabulary. */
+/**
+ * This report's presentation for each status — a badge label and a colour from
+ * the dark palette above, nothing more. The domain facts (`kind`, the gate a
+ * kill died at) are *not* restated here: they come from `@fleet/contract`'s
+ * RUN_FACTS. `satisfies Record<RunStatus, …>` makes a new or renamed status a
+ * compile error until this table gives it a look.
+ */
+const STATUS_LOOK = {
+  approved: { label: "SHIPPED", color: C.green },
+  "no-changes": { label: "NO-CHANGE", color: C.gray },
+  "agent-failed": { label: "KILLED · AGENT", color: C.red },
+  "verify-failed": { label: "KILLED · VERIFY", color: C.blue },
+  vetoed: { label: "VETOED · JUDGE", color: C.purple },
+  "scope-violation": { label: "KILLED · SCOPE", color: C.orange },
+  "engine-failed": { label: "INFRA", color: C.gray },
+} as const satisfies Record<RunStatus, { label: string; color: string }>;
+
+/** Map a raw ledger status onto the report's verdict vocabulary. Tolerant: a
+ *  status this build doesn't know renders neutrally with its raw name. */
 function verdictFor(status: string): Verdict {
-  switch (status) {
-    case "approved":
-      return { label: "SHIPPED", color: C.green, stage: null, kind: "shipped" };
-    case "vetoed":
-      return { label: "VETOED · JUDGE", color: C.purple, stage: "judge", kind: "killed" };
-    case "verify-failed":
-      return { label: "KILLED · VERIFY", color: C.blue, stage: "verify", kind: "killed" };
-    case "scope-violation":
-      return { label: "KILLED · SCOPE", color: C.orange, stage: "scope", kind: "killed" };
-    case "agent-failed":
-      return { label: "KILLED · AGENT", color: C.red, stage: "agent", kind: "killed" };
-    case "engine-failed":
-      return { label: "INFRA", color: C.gray, stage: null, kind: "infra" };
-    case "no-changes":
-      return { label: "NO-CHANGE", color: C.gray, stage: null, kind: "neutral" };
-    default:
-      return { label: status.toUpperCase(), color: C.muted, stage: null, kind: "neutral" };
+  const facts = runFacts(status);
+  const look = (STATUS_LOOK as Record<string, { label: string; color: string }>)[status];
+  if (!facts || !look) {
+    return { label: status.toUpperCase(), color: C.muted, diedAt: null, kind: "neutral" };
   }
+  return { label: look.label, color: look.color, diedAt: facts.diedAt, kind: facts.kind };
 }
+
+/** The verdict filter dropdown's wording — this surface's own presentation
+ *  (title case, distinct from the STATUS_LOOK badges), in a curated order.
+ *  `satisfies Record<RunStatus, string>` keeps the option set exhaustive over
+ *  the vocabulary: a new status is a compile error until it gets a filter entry. */
+const VERDICT_FILTER_LABELS = {
+  approved: "Shipped",
+  vetoed: "Vetoed · judge",
+  "verify-failed": "Killed · verify",
+  "scope-violation": "Killed · scope",
+  "agent-failed": "Killed · agent",
+  "engine-failed": "Infra",
+  "no-changes": "No-change",
+} as const satisfies Record<RunStatus, string>;
 
 const esc = (s: string): string =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string);
@@ -320,7 +345,7 @@ function computeTrendDays(entries: LedgerEntry[], now: Date, days = 14): TrendDa
       const t = Date.parse(e.ts);
       if (t < dayStart || t >= dayStart + dayMs) continue;
       if (e.status === "approved") shipped += 1;
-      else if ((KILL_STATUSES as readonly string[]).includes(e.status)) killed += 1;
+      else if (isKillStatus(e.status)) killed += 1;
       else other += 1;
     }
     return { iso, shipped, killed, other };
@@ -490,13 +515,6 @@ function renderTimeline(e: LedgerEntry, cosign?: PrLiveState): string {
     { label: "Judge", sub: "LLM diff review", color: C.purple, ms: e.timings?.judgeMs },
     { label: "Human review", sub: "the merge button", color: C.green },
   ];
-  const deathIdx: Record<string, number> = {
-    "agent-failed": 0,
-    "scope-violation": 1,
-    "verify-failed": 2,
-    vetoed: 3,
-  };
-
   // Special cases that don't map onto the linear gate walk.
   if (e.status === "engine-failed") {
     return `<div style="font-family:var(--mono);font-size:12px;color:${C.gray};padding:9px 0">infra — the engine crashed mid-run; no verdict was reached.</div>`;
@@ -507,7 +525,10 @@ function renderTimeline(e: LedgerEntry, cosign?: PrLiveState): string {
 
   const dot = (bg: string, halo: string): string =>
     `<span style="width:10px;height:10px;border-radius:50%;background:${bg};flex:none;box-shadow:0 0 0 3px ${halo}"></span>`;
-  const d = deathIdx[e.status]; // undefined for approved
+  // Where this run died on the gate walk, from the contract's fate table:
+  // TERMINAL_STAGES (agent·scope·verify·judge) lines up 1:1 with stages[0..3].
+  const diedAt = runFacts(e.status)?.diedAt;
+  const d = diedAt ? TERMINAL_STAGES.indexOf(diedAt) : undefined; // undefined for approved
 
   return stages
     .map((s, i) => {
@@ -807,7 +828,7 @@ function computePatterns(kills: LedgerEntry[]): { byReason: ReasonBar[]; byTask:
       taskAgg.set(k.task, agg);
     }
     agg.kills += 1;
-    const stage = verdictFor(k.status).stage ?? "other";
+    const stage = verdictFor(k.status).diedAt ?? "other";
     agg.stages.set(stage, (agg.stages.get(stage) ?? 0) + 1);
   }
   const byTask = [...taskAgg.values()]
@@ -831,7 +852,7 @@ function patternsFlag(byTask: TaskOffender[], kills: LedgerEntry[]): string | un
   if (!top || top.kills < 3 || top.domStageCount * 2 < top.kills) return undefined;
   const topReason = topReasonFor(
     kills.filter((k) => k.task === top.task),
-    kills.find((k) => k.task === top.task && (verdictFor(k.status).stage ?? "other") === top.domStage)?.status ?? "",
+    kills.find((k) => k.task === top.task && (verdictFor(k.status).diedAt ?? "other") === top.domStage)?.status ?? "",
   );
   const reasonClause = topReason ? ` (top reason: “${topReason}”)` : "";
   return `${top.task} (${top.title}) was killed ${top.kills}× in this window — ${top.domStageCount} of them at the ${top.domStage} gate${reasonClause}. Repeated kills at one gate usually mean the task prompt or that gate's constraint needs tightening.`;
@@ -1191,17 +1212,9 @@ export function renderLedgerHtml(entries: LedgerEntry[], opts: RenderOptions = {
     `<tr><td colspan="7" style="padding:26px 22px;font-family:var(--mono);font-size:12px;color:${C.gray}">No runs in the last ${days} days.${entries.length > 0 ? " Widen the window (--days) to see older entries." : " The ledger is empty — every fleet run appends one line here."}</td></tr>`;
 
   const verdictFilterOpts = [
-    ["all", "All verdicts"],
-    ["approved", "Shipped"],
-    ["vetoed", "Vetoed · judge"],
-    ["verify-failed", "Killed · verify"],
-    ["scope-violation", "Killed · scope"],
-    ["agent-failed", "Killed · agent"],
-    ["engine-failed", "Infra"],
-    ["no-changes", "No-change"],
-  ]
-    .map(([value, label]) => `<option value="${value}">${label}</option>`)
-    .join("");
+    `<option value="all">All verdicts</option>`,
+    ...Object.entries(VERDICT_FILTER_LABELS).map(([value, label]) => `<option value="${value}">${label}</option>`),
+  ].join("");
 
   const selectStyle = `background:${C.panel};border:1px solid rgba(236,239,244,0.12);color:${C.muted};font-size:12px;padding:8px 11px;border-radius:6px;outline:none`;
   const stamp = generatedAt.toISOString().slice(0, 16).replace("T", " ");
