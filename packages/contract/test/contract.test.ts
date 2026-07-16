@@ -4,11 +4,16 @@ import {
   Endpoints,
   InflightRecordSchema,
   isKillStatus,
+  KILL_STATUSES,
   LedgerEntrySchema,
   LedgerResponseSchema,
   parseCosignStdout,
   parseLedgerJsonl,
   parseWire,
+  RUN_FACTS,
+  RUN_KINDS,
+  RUN_STATUSES,
+  runFacts,
   RunDetailResponseSchema,
   safeParseWire,
   WireParseError,
@@ -75,6 +80,34 @@ describe("tolerant reading", () => {
     expect(bad.ok).toBe(false);
     const v2 = InflightRecordSchema.safeParse({ ...inflight(), v: 2 });
     expect(v2.success).toBe(false);
+  });
+});
+
+describe("run fate vocabulary", () => {
+  it("states domain facts for every status, exhaustively", () => {
+    expect(RUN_STATUSES.length).toBe(7);
+    for (const s of RUN_STATUSES) {
+      const facts = RUN_FACTS[s];
+      expect(RUN_KINDS).toContain(facts.kind);
+      // A kill died at a gate; anything else died nowhere.
+      expect(facts.kind === "killed" ? facts.diedAt !== null : facts.diedAt === null).toBe(true);
+    }
+  });
+
+  it("derives the kill set from the fate table — it cannot drift", () => {
+    expect([...KILL_STATUSES].sort()).toEqual(["agent-failed", "scope-violation", "verify-failed", "vetoed"]);
+    for (const s of RUN_STATUSES) {
+      expect(isKillStatus(s)).toBe(RUN_FACTS[s].kind === "killed");
+    }
+  });
+
+  it("looks up facts tolerantly — undefined for a status this build does not know", () => {
+    expect(runFacts("approved")).toEqual({ kind: "shipped", diedAt: null });
+    expect(runFacts("agent-failed")).toEqual({ kind: "killed", diedAt: "agent" });
+    expect(runFacts("vetoed")?.diedAt).toBe("judge");
+    expect(runFacts("engine-failed")?.kind).toBe("infra");
+    expect(runFacts("quarantined")).toBeUndefined();
+    expect(isKillStatus("quarantined")).toBe(false);
   });
 });
 

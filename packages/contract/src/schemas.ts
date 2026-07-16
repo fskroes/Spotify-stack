@@ -19,11 +19,82 @@ import { z } from "zod";
 
 // --- Run vocabulary (known values for narrowing; never enforced by parsing) ---
 
-/** Statuses that count as the immune system killing a change before review. */
-export const KILL_STATUSES = ["agent-failed", "verify-failed", "vetoed", "scope-violation"] as const;
-export type KillStatus = (typeof KILL_STATUSES)[number];
+/**
+ * Every way a run can end — the single enumeration of run statuses. `run.ts`
+ * infers its `RunStatus` from this, and both report surfaces (the ledger HTML
+ * and the operator) key their presentation off it. `status` still travels the
+ * wire as a plain string (tolerant reader): a newer runner may end a run in a
+ * way this reader has never heard of, and that must degrade, not reject.
+ */
+export const RUN_STATUSES = [
+  "approved", // diff approved; PR created unless dry-run
+  "no-changes", // precondition not met — agent correctly did nothing
+  "agent-failed", // agent produced no diff without declaring NO_CHANGES_NEEDED
+  "verify-failed", // deterministic verification red after the agent finished
+  "vetoed", // judge vetoed and retries were exhausted
+  "scope-violation", // diff touched files outside the task's scope contract
+  "engine-failed", // the engine process crashed mid-run (e.g. on a judge-retry resume)
+] as const;
+export type RunStatus = (typeof RUN_STATUSES)[number];
+
+/**
+ * The coarse fate a status rolls up to — what funnel math and the trend bars
+ * count:
+ *  - `shipped`: a change survived the filter and became a PR (`approved`)
+ *  - `killed`:  the immune system stopped a bad change (the four kills)
+ *  - `infra`:   the run itself broke, so there is no verdict on the change
+ *  - `neutral`: there was nothing to decide (`no-changes`)
+ */
+export const RUN_KINDS = ["shipped", "killed", "infra", "neutral"] as const;
+export type RunKind = (typeof RUN_KINDS)[number];
+
+/**
+ * The pipeline gate a *killed* run died at — where the change was stopped.
+ * Deliberately distinct from the in-flight `stage` (STAGES, where a live run is
+ * *now*): this is past-tense and exists only for kills, so `shipping` — which a
+ * run only reaches once it has already passed every gate — is not a member.
+ */
+export const TERMINAL_STAGES = ["agent", "scope", "verify", "judge"] as const;
+export type TerminalStage = (typeof TERMINAL_STAGES)[number];
+
+/** The domain facts a status carries — true regardless of the surface reading it. */
+export interface RunFacts {
+  kind: RunKind;
+  /** The gate a kill died at; `null` for non-kills (nothing was stopped). */
+  diedAt: TerminalStage | null;
+}
+
+/**
+ * The one status → facts table. Typed with `satisfies Record<RunStatus,
+ * RunFacts>`, so adding a value to RUN_STATUSES (or renaming one) is a compile
+ * error here until its facts are stated — no status can slip through a
+ * forgotten `default:` branch on any surface that keys off this.
+ */
+export const RUN_FACTS = {
+  approved: { kind: "shipped", diedAt: null },
+  "no-changes": { kind: "neutral", diedAt: null },
+  "agent-failed": { kind: "killed", diedAt: "agent" },
+  "verify-failed": { kind: "killed", diedAt: "verify" },
+  vetoed: { kind: "killed", diedAt: "judge" },
+  "scope-violation": { kind: "killed", diedAt: "scope" },
+  "engine-failed": { kind: "infra", diedAt: null },
+} as const satisfies Record<RunStatus, RunFacts>;
+
+/** The facts for a status this build knows, else `undefined` — the tolerant
+ *  lookup a reader uses when `status` may carry a value it has never heard of. */
+export function runFacts(status: string): RunFacts | undefined {
+  return (RUN_FACTS as Record<string, RunFacts>)[status];
+}
+
+/** The four statuses that count as the immune system killing a change before
+ *  review — derived from the fate table (`kind === "killed"`), so the kill set
+ *  can never drift from the facts. */
+export type KillStatus = { [K in RunStatus]: (typeof RUN_FACTS)[K]["kind"] extends "killed" ? K : never }[RunStatus];
+export const KILL_STATUSES: readonly KillStatus[] = RUN_STATUSES.filter(
+  (s): s is KillStatus => RUN_FACTS[s].kind === "killed",
+);
 export function isKillStatus(status: string): status is KillStatus {
-  return (KILL_STATUSES as readonly string[]).includes(status);
+  return runFacts(status)?.kind === "killed";
 }
 
 /** Where the run executed. */

@@ -38,12 +38,17 @@ import {
   dedupeInflight,
   Endpoints,
   parseCosignStdout,
+  runFacts,
+  STAGES,
+  TERMINAL_STAGES,
   type ArtifactMetadata,
   type CatalogResponse,
   type CosignResult,
   type InflightRecord,
   type LedgerEntry,
   type PrLiveState,
+  type RunStatus,
+  type Stage,
   type SyncState,
   type WireGet,
   WireParseError,
@@ -458,8 +463,10 @@ function cosignChip(run: FleetRun): CosignChip | undefined {
 
 function isAttention(run: FleetRun): boolean {
   if (run.kind !== "completed") return false;
-  return ["agent-failed", "verify-failed", "vetoed", "scope-violation", "engine-failed"].includes(run.data.status)
-    || awaitingReview(gateInput(run));
+  // A kill or an infra failure both want the operator's eye — read the fate from
+  // the contract's table rather than re-listing the statuses.
+  const kind = runFacts(run.data.status)?.kind;
+  return kind === "killed" || kind === "infra" || awaitingReview(gateInput(run));
 }
 
 /** Attention-first queue order: runs that need the operator (failures and
@@ -468,21 +475,48 @@ function queueOrder(a: FleetRun, b: FleetRun): number {
   return Number(isAttention(b)) - Number(isAttention(a)) || Date.parse(b.sortAt) - Date.parse(a.sortAt);
 }
 
+/** `statusTone`/`statusLabel` paint a value that may be a terminal run status,
+ *  a live pipeline stage, or a PR state ("shipped"/"merged"/"running") — so they
+ *  take a plain string and lean on the contract's vocabulary. The run-status
+ *  tones come from the fate table (`kind`), so nothing here restates a fact the
+ *  contract owns; only the PR-state and live extras are named locally. */
 function statusTone(value: string): "success" | "failure" | "working" | "warning" | "neutral" {
-  if (["approved", "shipped", "merged"].includes(value)) return "success";
-  if (["agent-failed", "verify-failed", "vetoed", "scope-violation"].includes(value)) return "failure";
-  if (["agent", "scope", "verify", "judge", "shipping", "running"].includes(value)) return "working";
-  if (value === "engine-failed") return "warning";
+  const kind = runFacts(value)?.kind;
+  if (kind === "killed") return "failure";
+  if (kind === "infra") return "warning";
+  if (kind === "shipped" || value === "shipped" || value === "merged") return "success";
+  if ((STAGES as readonly string[]).includes(value) || value === "running") return "working";
   return "neutral";
 }
 
+/** Operator wording for each terminal status — sentence case, distinct from the
+ *  ledger report's uppercase badges. `satisfies Record<RunStatus, string>` makes
+ *  a status the contract adds a compile error until it is given a label here. */
+const STATUS_LABELS = {
+  approved: "Approved",
+  "no-changes": "No changes",
+  "agent-failed": "Agent failed",
+  "verify-failed": "Verify failed",
+  vetoed: "Vetoed",
+  "scope-violation": "Scope violation",
+  "engine-failed": "Runner error",
+} as const satisfies Record<RunStatus, string>;
+
+/** Operator wording for the live pipeline stages a run passes through (STAGES). */
+const STAGE_LABELS: Record<Stage, string> = {
+  agent: "Agent working",
+  scope: "Scope gate",
+  verify: "Verifying",
+  judge: "Judging",
+  shipping: "Opening PR",
+};
+
 function statusLabel(value: string): string {
-  const labels: Record<string, string> = {
-    agent: "Agent working", scope: "Scope gate", verify: "Verifying", judge: "Judging", shipping: "Opening PR",
-    approved: "Approved", "agent-failed": "Agent failed", "verify-failed": "Verify failed", vetoed: "Vetoed",
-    "scope-violation": "Scope violation", "engine-failed": "Runner error", "no-changes": "No changes",
-  };
-  return labels[value] ?? value.replaceAll("-", " ");
+  return (
+    (STATUS_LABELS as Record<string, string>)[value] ??
+    (STAGE_LABELS as Record<string, string>)[value] ??
+    value.replaceAll("-", " ")
+  );
 }
 
 function statusIcon(value: string): string {
@@ -665,14 +699,16 @@ function renderQueue(): void {
 }
 
 function pipelineState(run: FleetRun, index: number): "passed" | "active" | "failed" | "pending" | "skipped" {
-  const stages = ["agent", "scope", "verify", "judge", "shipping"];
   if (run.kind === "inflight") {
-    const current = stages.indexOf(run.data.stage);
+    const current = (STAGES as readonly string[]).indexOf(run.data.stage);
     return index < current ? "passed" : index === current ? "active" : "pending";
   }
-  const failureStage: Record<string, number> = { "agent-failed": 0, "engine-failed": 0, "scope-violation": 1, "verify-failed": 2, vetoed: 3 };
-  if (run.data.status in failureStage) {
-    const failed = failureStage[run.data.status];
+  // Which gate the run failed at, from the contract's fate table: TERMINAL_STAGES
+  // (agent·scope·verify·judge) lines up with STAGES[0..3]. Infra (the engine
+  // crashed) has no gate, so it is shown failing at the first one.
+  const facts = runFacts(run.data.status);
+  const failed = facts?.diedAt ? TERMINAL_STAGES.indexOf(facts.diedAt) : facts?.kind === "infra" ? 0 : undefined;
+  if (failed !== undefined) {
     return index < failed ? "passed" : index === failed ? "failed" : "pending";
   }
   if (run.data.status === "no-changes") return index === 0 ? "passed" : "skipped";

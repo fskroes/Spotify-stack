@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import picomatch from "picomatch";
+import { type RunStatus } from "@fleet/contract";
 import { runVerify } from "@fleet/mcp-verify";
 import { createCliJudgeClient, judge, type JudgeClient, type Verdict } from "@fleet/judge";
 import { prepareRunArtifactsDir, REVIEW_ARTIFACTS } from "./artifacts.js";
@@ -21,14 +22,9 @@ interface VerifyResult {
   summary: string;
 }
 
-export type RunStatus =
-  | "approved" // diff approved; PR created unless dry-run
-  | "no-changes" // precondition not met — agent correctly did nothing
-  | "agent-failed" // agent produced no diff without declaring NO_CHANGES_NEEDED
-  | "verify-failed" // deterministic verification red after the agent finished
-  | "vetoed" // judge vetoed and retries were exhausted
-  | "scope-violation" // diff touched files outside the task's scope contract
-  | "engine-failed"; // the engine process crashed mid-run (e.g. on a judge-retry resume)
+/** The seven ways a run can end — owned by `@fleet/contract` (RUN_STATUSES),
+ *  re-exported here so the runner's existing importers keep their entry point. */
+export type { RunStatus };
 
 export interface RunOptions {
   controlRepo: string;
