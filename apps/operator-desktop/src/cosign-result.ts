@@ -1,62 +1,27 @@
 /**
  * The app side of the runner's cosign contract (fleet cosign --json, PR #19).
  *
- * The runner prints one structured JSON result line, but the channel around it
- * is noisy: pnpm's script banner precedes it and lifecycle errors can trail it
- * — the judge CLI has already been broken once by hook-leaked stdout. So the
- * contract here is "the last line that parses as a cosign result", scanned
- * from the end, never "the last line".
+ * The wire shapes — CosignResult, CosignRefusal, the reason cap — and the
+ * stdout-line extraction (parseCosignStdout) now live in @fleet/contract, the
+ * one declaration of the runner→operator seam. What stays here is the operator
+ * gate logic that reads those shapes: the merge blocker, the awaiting-review
+ * derivation, and the close-reason check the dialog runs before an SSH round-trip.
  */
+import { MAX_REASON_LENGTH } from "@fleet/contract";
 
-export type CosignRefusalCode =
-  | "run-not-found"
-  | "not-shipped"
-  | "no-pr"
-  | "already-merged"
-  | "already-closed"
-  | "conflicts"
-  | "not-mergeable"
-  | "merge-failed"
-  | "close-failed";
+export { MAX_REASON_LENGTH };
+export type { CosignRefusal, CosignResult } from "@fleet/contract";
 
-export interface CosignRefusal {
-  code: CosignRefusalCode;
-  detail: string;
-}
-
-export interface CosignResult {
-  ok: boolean;
-  action: "merge" | "close";
-  runId: string;
-  task?: string;
-  repo?: string;
-  prUrl?: string;
-  state?: "merged" | "closed";
-  mergedSha?: string;
-  mergedBy?: string;
-  mergedAt?: string;
-  refusals: CosignRefusal[];
-}
-
-function isCosignResult(value: unknown): value is CosignResult {
-  if (typeof value !== "object" || value === null) return false;
-  const result = value as Record<string, unknown>;
-  return (
-    typeof result.ok === "boolean" &&
-    (result.action === "merge" || result.action === "close") &&
-    typeof result.runId === "string" &&
-    Array.isArray(result.refusals)
-  );
-}
-
-/** What the merge gate needs to know about a run — mirrors FleetRun's shape. */
+/** What the merge gate needs to know about a run — mirrors FleetRun's shape.
+ *  `mode` and `cosignState` stay open strings: a newer runner may speak PR
+ *  states or run modes this build has never heard of, and the gate degrades. */
 export interface MergeGateInput {
   kind: "inflight" | "completed";
-  mode?: "local" | "cloud";
+  mode?: string;
   status?: string;
   prUrl?: string;
   /** Live PR state from the serve's co-sign polling; undefined until it lands. */
-  cosignState?: "open" | "merged" | "closed";
+  cosignState?: string;
 }
 
 /**
@@ -92,10 +57,6 @@ export function awaitingReview(run: MergeGateInput): boolean {
   return run.kind === "completed" && mergeBlocker(run) === null;
 }
 
-/** Mirrors the CLI's --reason cap — a reason accepted by the form is never
- *  rejected after the fact by the runner. */
-export const MAX_REASON_LENGTH = 500;
-
 /**
  * Why this close reason cannot be dispatched — null when the trimmed reason
  * satisfies the runner's contract (present, at most MAX_REASON_LENGTH chars).
@@ -108,22 +69,6 @@ export function closeReasonProblem(reason: string): string | null {
   if (trimmed.length > MAX_REASON_LENGTH) {
     const over = trimmed.length - MAX_REASON_LENGTH;
     return `The reason is ${over} character${over === 1 ? "" : "s"} over the ${MAX_REASON_LENGTH}-character cap.`;
-  }
-  return null;
-}
-
-/** The last line of `output` that parses as a cosign result, or null. */
-export function parseCosignResult(output: string): CosignResult | null {
-  const lines = output.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line.startsWith("{")) continue;
-    try {
-      const parsed: unknown = JSON.parse(line);
-      if (isCosignResult(parsed)) return parsed;
-    } catch {
-      /* not the result line — keep scanning */
-    }
   }
   return null;
 }

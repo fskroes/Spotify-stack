@@ -4,85 +4,11 @@ import {
   closeReasonProblem,
   MAX_REASON_LENGTH,
   mergeBlocker,
-  parseCosignResult,
 } from "../src/cosign-result.js";
 
-// Structurally verbatim from a real capture (2026-07-14): `pnpm fleet cosign
-// <runId> --merge --json` against an already-merged shipped run. pnpm's script
-// banner precedes the JSON — the contract is "the last JSON line of the
-// output", never "the last line". Private identifiers scrubbed per the
-// public-repo policy; shape and ordering untouched.
-const REAL_REFUSAL_OUTPUT = [
-  "> spotify-stack@0.1.0 fleet /srv/spotify-stack",
-  "> tsx packages/cli/src/index.ts cosign 9c69a13d-37fb-483a-8424-5c5f3faaee56 --merge --json",
-  "",
-  '{"action":"merge","runId":"9c69a13d-37fb-483a-8424-5c5f3faaee56","task":"onramp-1-feed-tests","repo":"demo-feed-service","prUrl":"https://github.com/example/demo-feed-service/pull/1","ok":false,"refusals":[{"code":"already-merged","detail":"the PR is already merged"}]}',
-].join("\n");
-
-const SUCCESS_LINE =
-  '{"action":"merge","runId":"9c69a13d-37fb-483a-8424-5c5f3faaee56","task":"onramp-1-feed-tests","repo":"demo-feed-service","prUrl":"https://github.com/example/demo-feed-service/pull/1","ok":true,"state":"merged","mergedSha":"8df31c2","mergedBy":"operator","mergedAt":"2026-07-14T09:12:44Z","refusals":[]}';
-
-describe("parseCosignResult", () => {
-  it("reads the structured refusal from real pnpm-bannered output", () => {
-    const result = parseCosignResult(REAL_REFUSAL_OUTPUT);
-
-    expect(result).not.toBeNull();
-    expect(result!.ok).toBe(false);
-    expect(result!.action).toBe("merge");
-    expect(result!.runId).toBe("9c69a13d-37fb-483a-8424-5c5f3faaee56");
-    expect(result!.refusals).toEqual([
-      { code: "already-merged", detail: "the PR is already merged" },
-    ]);
-  });
-
-  it("reads the merge receipt fields from a success line", () => {
-    const result = parseCosignResult(`${SUCCESS_LINE}\n`);
-
-    expect(result).toMatchObject({
-      ok: true,
-      state: "merged",
-      mergedSha: "8df31c2",
-      mergedBy: "operator",
-      mergedAt: "2026-07-14T09:12:44Z",
-      refusals: [],
-    });
-  });
-
-  it("takes the last JSON line when noise follows the result", () => {
-    // Hook-leaked stdout has broken JSON.parse before (the judge CLI); the
-    // parser scans from the end for the last line that is a cosign result.
-    const output = `${SUCCESS_LINE}\n ELIFECYCLE  Command failed with exit code 1.\n`;
-
-    expect(parseCosignResult(output)?.state).toBe("merged");
-  });
-
-  it("returns null when no line is a cosign result", () => {
-    expect(parseCosignResult("")).toBeNull();
-    expect(parseCosignResult("ssh: connect to host runner port 22: timed out")).toBeNull();
-    // JSON, but not the cosign contract — e.g. a stray verdict object.
-    expect(parseCosignResult('{"verdict":"approve"}')).toBeNull();
-  });
-
-  it("reads a close result the same way it reads a merge", () => {
-    // Same channel, same pnpm banner — the close path shares the parser.
-    const closed = [
-      "> spotify-stack@0.1.0 fleet /srv/spotify-stack",
-      "> tsx packages/cli/src/index.ts cosign 9c69a13d-37fb-483a-8424-5c5f3faaee56 --close --reason 'stale approach' --json",
-      "",
-      '{"action":"close","runId":"9c69a13d-37fb-483a-8424-5c5f3faaee56","task":"onramp-1-feed-tests","repo":"demo-feed-service","prUrl":"https://github.com/example/demo-feed-service/pull/1","ok":true,"state":"closed","refusals":[]}',
-    ].join("\n");
-
-    expect(parseCosignResult(closed)).toMatchObject({ ok: true, action: "close", state: "closed" });
-
-    const refused =
-      '{"action":"close","runId":"9c69a13d-37fb-483a-8424-5c5f3faaee56","ok":false,"refusals":[{"code":"already-merged","detail":"the PR is already merged"}]}';
-    expect(parseCosignResult(refused)).toMatchObject({
-      ok: false,
-      action: "close",
-      refusals: [{ code: "already-merged", detail: "the PR is already merged" }],
-    });
-  });
-});
+// The stdout-line extraction (parseCosignStdout) now lives in @fleet/contract
+// and is covered by its own contract test; this file keeps the operator gate
+// logic that reads the parsed result.
 
 describe("closeReasonProblem", () => {
   it("requires a reason — it is the PR comment", () => {
