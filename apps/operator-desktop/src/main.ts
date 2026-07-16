@@ -200,9 +200,9 @@ app.innerHTML = `
         </div>
 
         <div id="run-detail" class="run-detail" hidden>
-          <section class="pipeline-section">
-            <div class="section-heading"><span>Pipeline</span><small id="pipeline-summary"></small></div>
-            <ol id="pipeline" class="pipeline"></ol>
+          <section class="instrument-section">
+            <div id="pipeline" class="inst-track" aria-label="Run pipeline"></div>
+            <div id="gate-spotlight" class="gate-spot"></div>
           </section>
 
           <section class="evidence-section">
@@ -331,6 +331,15 @@ const LUCIDE_ICONS = {
 
 createIcons({ icons: LUCIDE_ICONS });
 
+// Motion register for the Run view (map #16 flagship): strong custom curves —
+// the built-in easings are too weak to read as intentional. ease-out for
+// entrances, ease-in-out for on-screen movement, a subtle back-out for stamps.
+// Every WAAPI call is guarded by prefersReducedMotion(); the CSS honours it too.
+const EASE_OUT = "cubic-bezier(0.23, 1, 0.32, 1)";
+const EASE_INOUT = "cubic-bezier(0.77, 0, 0.175, 1)";
+const EASE_SETTLE = "cubic-bezier(0.34, 1.4, 0.64, 1)";
+const prefersReducedMotion = (): boolean => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
 const $ = <T extends HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const workbench = $(".workbench");
 const profileSelect = $("#profile-select") as HTMLSelectElement;
@@ -358,6 +367,11 @@ let results: Receipt[] = [];
  *  off "open". The result's `action` names which verb was refused. */
 let cosignRefusals: Record<string, CosignResult> = {};
 let selectedKey = "";
+/** The pipeline state the Run view last rendered for the selected run — the
+ *  seam that lets a poll-driven rebuild still animate: same run + a stage that
+ *  advanced since this snapshot fires the connector fill / check stamp / gate
+ *  spotlight slide; a different run (or nothing changed) plays no advance. */
+let prevRunView: { key: string; states: string[]; spot: string } | null = null;
 let review: ReviewState | null = null;
 /** Run key whose artifact list has actually loaded — before that, an empty
  *  `artifacts` means "still fetching", not "the run recorded nothing". */
@@ -715,6 +729,216 @@ function pipelineState(run: FleetRun, index: number): "passed" | "active" | "fai
   return "passed";
 }
 
+/** The five pipeline labels — the last reads "PR" once a pull request exists,
+ *  else "Approve" (the terminal gate). Kept short: the track labels are tiny. */
+function trackLabels(run: FleetRun): string[] {
+  return ["Agent", "Scope", "Verify", "Judge", run.kind === "completed" && run.data.prUrl ? "PR" : "Approve"];
+}
+
+/** The evidence transcript, in order — a completed run's recorded gate lines
+ *  (or its reason), or a synthesised pair for a run still live on the runner. */
+function runEvidence(run: FleetRun): string[] {
+  return run.kind === "completed"
+    ? run.data.evidence ?? (run.data.reason ? [run.data.reason] : [])
+    : [
+        `${statusLabel(run.data.stage)} since ${new Date(run.data.stageSince).toLocaleTimeString()}`,
+        `Attempt ${run.data.attempt} is active on the remote runner`,
+      ];
+}
+
+type SpotTone = "live" | "review" | "failure" | "done" | "neutral";
+/** The gate the operator's eye should land on, and how to say it. `key` is the
+ *  identity the render diffs on — when it changes the card slides in anew. */
+interface Spotlight {
+  key: string;
+  eyebrow: string;
+  title: string;
+  detail: string;
+  tone: SpotTone;
+  icon: string;
+}
+
+/** The Instrument's focus: the live gate while a run is in flight, the gate it
+ *  *stopped at* when it failed, and the outcome (awaiting co-sign / merged /
+ *  closed / approved / no-changes) once it is decided. One derivation, read
+ *  from the contract's fate table so it never restates a status the contract
+ *  owns — the pipeline track shows every gate; this names the one that matters. */
+function spotlightFor(run: FleetRun): Spotlight {
+  if (run.kind === "inflight") {
+    return {
+      key: `live:${run.data.stage}`,
+      eyebrow: "Live gate",
+      title: statusLabel(run.data.stage),
+      detail: `Attempt ${run.data.attempt} · active since ${new Date(run.data.stageSince).toLocaleTimeString()}`,
+      tone: "live",
+      icon: "loader-circle",
+    };
+  }
+  const data = run.data;
+  if (awaitingReview(gateInput(run))) {
+    return {
+      key: "review",
+      eyebrow: "Your move",
+      title: "Awaiting your co-sign",
+      detail: `PR #${prNumber(data.prUrl)} open · verify green · judge approved`,
+      tone: "review",
+      icon: "git-pull-request",
+    };
+  }
+  const cosign = cosignFor(run);
+  if (cosign?.state === "merged") {
+    return {
+      key: "merged",
+      eyebrow: "Outcome",
+      title: "Merged",
+      detail: cosign.mergedBy ? `Co-signed by ${cosign.mergedBy}` : "Squash-merged into the base branch",
+      tone: "done",
+      icon: "git-merge",
+    };
+  }
+  if (cosign?.state === "closed") {
+    return {
+      key: "closed",
+      eyebrow: "Outcome",
+      title: "Closed",
+      detail: "Closed without merging — reason posted to the PR",
+      tone: "neutral",
+      icon: "git-pull-request-closed",
+    };
+  }
+  const facts = runFacts(data.status);
+  if (facts?.diedAt || facts?.kind === "infra" || facts?.kind === "killed") {
+    // The evidence line for the gate it died at, when the run recorded one.
+    const line = (facts?.diedAt ? data.evidence?.find((entry) => new RegExp(facts.diedAt!, "i").test(entry)) : undefined)
+      ?? data.reason
+      ?? "No gate evidence recorded.";
+    return {
+      key: `fail:${data.status}`,
+      eyebrow: "Stopped at",
+      title: statusLabel(data.status),
+      detail: line,
+      tone: "failure",
+      icon: facts?.kind === "infra" ? "alert-circle" : "x-circle",
+    };
+  }
+  if (data.status === "no-changes") {
+    return {
+      key: "nochanges",
+      eyebrow: "Outcome",
+      title: "No changes",
+      detail: data.reason ?? "The agent made no changes — nothing to verify or ship.",
+      tone: "neutral",
+      icon: "circle",
+    };
+  }
+  return {
+    key: "approved",
+    eyebrow: "Outcome",
+    title: statusLabel(data.status),
+    detail: `${duration(data.elapsedMs)} · verify green · judge approved`,
+    tone: "done",
+    icon: "check-circle-2",
+  };
+}
+
+/**
+ * Direction B — the Instrument. The horizontal pipeline is the hero: connectors
+ * *fill* left-to-right as gates pass, and a spotlight card foregrounds the one
+ * gate in play. Rendered from state on every poll like the rest of the shell,
+ * but diffed against `prevRunView`: a stage that advanced since the last render
+ * of the *same* run animates (connector fill, check stamp, spotlight slide),
+ * while a freshly selected run staggers its whole composition in, and an
+ * unchanged re-render is silent. All motion is reduced-motion aware.
+ */
+function renderInstrument(run: FleetRun): void {
+  const states = [0, 1, 2, 3, 4].map((index) => pipelineState(run, index));
+  const spot = spotlightFor(run);
+  const sameRun = prevRunView?.key === selectedKey;
+  const prevStates = sameRun ? prevRunView!.states : [];
+  const reduce = prefersReducedMotion();
+  const labels = trackLabels(run);
+
+  // ── The pipeline track: nodes, filling connectors, labels ──
+  const track = $("#pipeline");
+  track.replaceChildren();
+  const toStamp: number[] = [];
+  states.forEach((state, index) => {
+    if (index > 0) {
+      const connector = document.createElement("div");
+      connector.className = "inst-conn";
+      const fill = document.createElement("div");
+      fill.className = "inst-conn-fill";
+      const filled = states[index - 1] === "passed";
+      fill.style.transform = filled ? "scaleX(1)" : "scaleX(0)";
+      connector.append(fill);
+      track.append(connector);
+      if (!reduce && sameRun && filled && prevStates[index - 1] !== "passed") {
+        fill.animate([{ transform: "scaleX(0)" }, { transform: "scaleX(1)" }], { duration: 440, easing: EASE_INOUT, fill: "both" });
+      }
+    }
+    const wrap = document.createElement("div");
+    wrap.className = "inst-node-wrap";
+    wrap.dataset.idx = String(index);
+    const node = document.createElement("div");
+    node.className = `inst-node ${state}`;
+    const icon = state === "passed" ? "check" : state === "failed" ? "x-circle" : state === "active" ? "loader-circle" : "circle";
+    node.innerHTML = `<i data-lucide="${icon}"></i>`;
+    const label = document.createElement("div");
+    label.className = `inst-label ${state === "pending" || state === "skipped" ? "" : "on"}`;
+    label.textContent = labels[index];
+    wrap.append(node, label);
+    track.append(wrap);
+    if (!reduce && sameRun && state === "passed" && prevStates[index] !== "passed") toStamp.push(index);
+  });
+  refreshIcons(track);
+  if (!reduce && !sameRun) {
+    track.querySelectorAll<HTMLElement>(".inst-node-wrap").forEach((wrap, index) =>
+      wrap.animate([{ opacity: 0, transform: "translateY(6px)" }, { opacity: 1, transform: "none" }], { duration: 300, delay: 45 * index, easing: EASE_OUT, fill: "both" }));
+  }
+  for (const index of toStamp) {
+    const svg = track.querySelector(`.inst-node-wrap[data-idx="${index}"] .inst-node svg`);
+    svg?.animate([{ transform: "scale(0.4)", opacity: "0.4" }, { transform: "scale(1)", opacity: "1" }], { duration: 300, easing: EASE_SETTLE, fill: "both" });
+  }
+
+  // ── The gate spotlight ──
+  const spotEl = $("#gate-spotlight");
+  spotEl.className = `gate-spot ${spot.tone}`;
+  spotEl.innerHTML = `<div class="gate-spot-head"><i data-lucide="${spot.icon}"></i><span class="gate-spot-eyebrow"></span></div><h3 class="gate-spot-title"></h3><p class="gate-spot-detail"></p>`;
+  spotEl.querySelector(".gate-spot-eyebrow")!.textContent = spot.eyebrow;
+  spotEl.querySelector(".gate-spot-title")!.textContent = spot.title;
+  spotEl.querySelector(".gate-spot-detail")!.textContent = spot.detail;
+  refreshIcons(spotEl);
+  if (!reduce && (!sameRun || prevRunView!.spot !== spot.key)) {
+    spotEl.animate([{ opacity: 0, transform: "translateX(10px)" }, { opacity: 1, transform: "none" }], { duration: 280, easing: EASE_OUT, fill: "both" });
+  }
+
+  // ── The evidence transcript: secondary context under the spotlight ──
+  const evidence = runEvidence(run);
+  $("#evidence-count").textContent = `${evidence.length} ${evidence.length === 1 ? "line" : "lines"}`;
+  const log = $("#evidence-log");
+  log.replaceChildren();
+  if (evidence.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "evidence-empty";
+    empty.textContent = "No gate evidence recorded.";
+    log.append(empty);
+  } else {
+    evidence.forEach((line, index) => {
+      const row = document.createElement("div");
+      row.className = "evidence-line";
+      const number = document.createElement("span");
+      number.textContent = String(index + 1).padStart(2, "0");
+      const content = document.createElement("code");
+      content.textContent = line;
+      row.append(number, content);
+      log.append(row);
+      if (!reduce && !sameRun) row.animate([{ opacity: 0, transform: "translateY(5px)" }, { opacity: 1, transform: "none" }], { duration: 240, delay: 60 + 30 * index, easing: EASE_OUT, fill: "both" });
+    });
+  }
+
+  prevRunView = { key: selectedKey, states, spot: spot.key };
+}
+
 function renderSelectedRun(): void {
   const run = selectedRun();
   const previewOpen = Boolean(run && artifactPreview?.runKey === run.key);
@@ -724,6 +948,7 @@ function renderSelectedRun(): void {
 
   if (!run) {
     artifactPreview = null;
+    prevRunView = null;
     artifactFrame.src = "about:blank";
     $("#selected-repo").textContent = "Fleet";
     $("#selected-title").textContent = "Ledger";
@@ -749,44 +974,7 @@ function renderSelectedRun(): void {
   $("#open-pr").toggleAttribute("hidden", run.kind !== "completed" || !run.data.prUrl);
   $("#rail-run-state").textContent = statusLabel(value);
 
-  const stageNames = ["Agent", "Scope", "Verify", "Judge", run.kind === "completed" && run.data.prUrl ? "Pull request" : "Approve"];
-  const pipeline = $("#pipeline");
-  pipeline.replaceChildren();
-  stageNames.forEach((name, index) => {
-    const state = pipelineState(run, index);
-    const item = document.createElement("li");
-    item.className = state;
-    const icon = state === "passed" ? "check" : state === "failed" ? "x-circle" : state === "active" ? "loader-circle" : "circle";
-    item.innerHTML = `<span class="stage-icon"><i data-lucide="${icon}"></i></span><strong>${name}</strong><small>${state === "passed" ? "Passed" : state === "failed" ? "Stopped" : state === "active" ? "Running" : state === "skipped" ? "Skipped" : "Waiting"}</small>`;
-    pipeline.append(item);
-  });
-  refreshIcons(pipeline);
-  $("#pipeline-summary").textContent = run.kind === "inflight" ? `Attempt ${run.data.attempt}` : duration(run.data.elapsedMs);
-
-  const evidence = run.kind === "completed" ? run.data.evidence ?? (run.data.reason ? [run.data.reason] : []) : [
-    `${statusLabel(run.data.stage)} since ${new Date(run.data.stageSince).toLocaleTimeString()}`,
-    `Attempt ${run.data.attempt} is active on the remote runner`,
-  ];
-  $("#evidence-count").textContent = `${evidence.length} ${evidence.length === 1 ? "line" : "lines"}`;
-  const log = $("#evidence-log");
-  log.replaceChildren();
-  if (evidence.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "evidence-empty";
-    empty.textContent = "No gate evidence recorded.";
-    log.append(empty);
-  } else {
-    evidence.forEach((line, index) => {
-      const row = document.createElement("div");
-      row.className = "evidence-line";
-      const number = document.createElement("span");
-      number.textContent = String(index + 1).padStart(2, "0");
-      const content = document.createElement("code");
-      content.textContent = line;
-      row.append(number, content);
-      log.append(row);
-    });
-  }
+  renderInstrument(run);
   renderMetadata(run);
 }
 
