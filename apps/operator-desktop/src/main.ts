@@ -200,12 +200,17 @@ app.innerHTML = `
         </div>
 
         <div id="run-detail" class="run-detail" hidden>
-          <section class="pipeline-section">
-            <div class="section-heading"><span>Pipeline</span><small id="pipeline-summary"></small></div>
-            <ol id="pipeline" class="pipeline"></ol>
+          <section class="pipeline-band">
+            <div class="section-heading"><span>Pipeline</span><small id="pipeline-sub"></small></div>
+            <div id="pipeline" class="inst-track" aria-label="Run pipeline"></div>
           </section>
 
-          <section class="evidence-section">
+          <section class="gate-band-sec">
+            <div class="section-heading"><span>Gate</span></div>
+            <div id="gate-spotlight" class="gate-spot"></div>
+          </section>
+
+          <section class="ev-sec">
             <div class="section-heading"><span>Gate evidence</span><small id="evidence-count"></small></div>
             <div id="evidence-log" class="evidence-log"></div>
           </section>
@@ -232,7 +237,7 @@ app.innerHTML = `
         <select id="repo-select" aria-label="Target repository" disabled><option value="">All matching repos</option></select>
         <label class="pr-toggle" title="Open a pull request on the target repo when the run is approved — untick for an artifacts-only dry run"><input id="local-run-pr" type="checkbox" checked disabled />PR</label>
         <button id="local-run" class="secondary compact" disabled title="Run on the remote runner"><i data-lucide="play"></i>Run</button>
-        <button id="dispatch-action" class="primary compact" disabled><i data-lucide="rocket"></i>Dispatch</button>
+        <button id="dispatch-action" class="primary compact" disabled><i data-lucide="rocket"></i>Dispatch<span class="commit-sweep"></span></button>
       </footer>
     </main>
 
@@ -331,6 +336,15 @@ const LUCIDE_ICONS = {
 
 createIcons({ icons: LUCIDE_ICONS });
 
+// Motion register for the Run view (map #16 flagship): strong custom curves —
+// the built-in easings are too weak to read as intentional. ease-out for
+// entrances, ease-in-out for on-screen movement, a subtle back-out for stamps.
+// Every WAAPI call is guarded by prefersReducedMotion(); the CSS honours it too.
+const EASE_OUT = "cubic-bezier(0.23, 1, 0.32, 1)";
+const EASE_INOUT = "cubic-bezier(0.77, 0, 0.175, 1)";
+const EASE_SETTLE = "cubic-bezier(0.34, 1.4, 0.64, 1)";
+const prefersReducedMotion = (): boolean => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
 const $ = <T extends HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const workbench = $(".workbench");
 const profileSelect = $("#profile-select") as HTMLSelectElement;
@@ -358,6 +372,20 @@ let results: Receipt[] = [];
  *  off "open". The result's `action` names which verb was refused. */
 let cosignRefusals: Record<string, CosignResult> = {};
 let selectedKey = "";
+/** The pipeline state the Run view last rendered for the selected run — the
+ *  seam that lets a poll-driven rebuild still animate: same run + a stage that
+ *  advanced since this snapshot fires the connector fill / check stamp / gate
+ *  spotlight slide; a different run (or nothing changed) plays no advance. */
+let prevRunView: { key: string; states: string[]; spot: string } | null = null;
+/** The visible queue order the list last rendered, in order — the seam that lets
+ *  a poll-driven rebuild FLIP-animate the attention reorder: same set of rows in
+ *  a new order slides each moved row to its slot; a changed set (filter, connect)
+ *  or an unchanged order plays nothing. The queue's analogue of `prevRunView`. */
+let prevQueueKeys: string[] = [];
+/** The top command receipt the activity feed last rendered ({ts}:{command}) —
+ *  so a freshly-arrived receipt slides into the feed while a plain re-render of
+ *  the same top row stays still. Empty until the first render. */
+let prevTopReceipt = "";
 let review: ReviewState | null = null;
 /** Run key whose artifact list has actually loaded — before that, an empty
  *  `artifacts` means "still fetching", not "the run recorded nothing". */
@@ -621,6 +649,10 @@ function renderQueue(): void {
   // run out of the attention slot the moment its live state changes.
   runs.sort(queueOrder);
   const list = $("#queue-list");
+  const reduce = prefersReducedMotion();
+  // Capture the current rows' positions before the rebuild, for a FLIP reorder.
+  const firstRects = new Map<string, DOMRect>();
+  if (!reduce) list.querySelectorAll<HTMLElement>(".run-row[data-run-key]").forEach((el) => firstRects.set(el.dataset.runKey!, el.getBoundingClientRect()));
   list.replaceChildren();
   $("#all-count").textContent = String(runs.length);
   $("#attention-count").textContent = String(runs.filter(isAttention).length + (status.state === "stale" ? 1 : 0));
@@ -632,6 +664,7 @@ function renderQueue(): void {
     empty.className = "queue-empty";
     empty.innerHTML = `<i data-lucide="cable"></i><strong>Runner disconnected</strong><span>Select a profile and connect.</span>`;
     list.append(empty);
+    prevQueueKeys = [];
     refreshIcons(list);
     return;
   }
@@ -640,6 +673,7 @@ function renderQueue(): void {
     empty.className = "queue-empty compact-empty";
     empty.innerHTML = `<i data-lucide="check"></i><strong>Nothing needs attention</strong>`;
     list.append(empty);
+    prevQueueKeys = [];
     refreshIcons(list);
     return;
   }
@@ -683,7 +717,7 @@ function renderQueue(): void {
       title.textContent = runTitle(run);
       const meta = document.createElement("span");
       meta.textContent = `${run.data.task} · ${relativeTime(run.sortAt)}`;
-      main.append(title, meta);
+      main.append(title, meta, runTrack(run));
       const chip = cosignChip(run);
       const state = document.createElement("span");
       state.className = `run-row-state ${chip?.tone ?? statusTone(value)}`;
@@ -695,6 +729,25 @@ function renderQueue(): void {
     }
     list.append(section);
   }
+
+  // FLIP the attention reorder: a run that bubbled into (or out of) the attention
+  // cluster slides to its new slot instead of teleporting. Only a *pure* reorder
+  // animates — the same set of visible rows in a new order — so selecting a run or
+  // switching filters (which change the set) never triggers a slide. The queue's
+  // live-advance, the way the Run view's connectors fill: change made visible.
+  const nextKeys = [...list.querySelectorAll<HTMLElement>(".run-row[data-run-key]")].map((el) => el.dataset.runKey!);
+  if (!reduce) {
+    const sameSet = nextKeys.length === prevQueueKeys.length && nextKeys.every((key) => prevQueueKeys.includes(key));
+    if (sameSet && nextKeys.join(" ") !== prevQueueKeys.join(" ")) {
+      list.querySelectorAll<HTMLElement>(".run-row[data-run-key]").forEach((el) => {
+        const first = firstRects.get(el.dataset.runKey!);
+        if (!first) return;
+        const dy = first.top - el.getBoundingClientRect().top;
+        if (Math.abs(dy) > 1) el.animate([{ transform: `translateY(${dy}px)` }, { transform: "none" }], { duration: 440, easing: EASE_INOUT, fill: "both" });
+      });
+    }
+  }
+  prevQueueKeys = nextKeys;
   refreshIcons(list);
 }
 
@@ -715,6 +768,315 @@ function pipelineState(run: FleetRun, index: number): "passed" | "active" | "fai
   return "passed";
 }
 
+/** The five pipeline labels — the last reads "PR" once a pull request exists,
+ *  else "Approve" (the terminal gate). Kept short: the track labels are tiny. */
+function trackLabels(run: FleetRun): string[] {
+  return ["Agent", "Scope", "Verify", "Judge", run.kind === "completed" && run.data.prUrl ? "PR" : "Approve"];
+}
+
+/** A queue row's miniature pipeline: the same `pipelineState` the Run view reads,
+ *  rendered as five 8px nodes with filling connectors between them. A compact
+ *  readout of where the run got to — the Instrument's language, at row scale. */
+function runTrack(run: FleetRun): HTMLElement {
+  const track = document.createElement("span");
+  track.className = "run-row-track";
+  for (let index = 0; index < 5; index += 1) {
+    if (index > 0) {
+      const connector = document.createElement("span");
+      connector.className = "mt-conn";
+      const fill = document.createElement("span");
+      fill.className = "mt-fill";
+      fill.style.transform = pipelineState(run, index - 1) === "passed" ? "scaleX(1)" : "scaleX(0)";
+      connector.append(fill);
+      track.append(connector);
+    }
+    const node = document.createElement("span");
+    node.className = `mt-node ${pipelineState(run, index)}`;
+    track.append(node);
+  }
+  return track;
+}
+
+/** The evidence transcript, in order — a completed run's recorded gate lines
+ *  (or its reason), or a synthesised pair for a run still live on the runner. */
+function runEvidence(run: FleetRun): string[] {
+  return run.kind === "completed"
+    ? run.data.evidence ?? (run.data.reason ? [run.data.reason] : [])
+    : [
+        `${statusLabel(run.data.stage)} since ${new Date(run.data.stageSince).toLocaleTimeString()}`,
+        `Attempt ${run.data.attempt} is active on the remote runner`,
+      ];
+}
+
+type SpotTone = "live" | "review" | "failure" | "done" | "neutral";
+/** The gate the operator's eye should land on, and how to say it. `key` is the
+ *  identity the render diffs on — when it changes the card slides in anew. */
+interface Spotlight {
+  key: string;
+  eyebrow: string;
+  title: string;
+  detail: string;
+  tone: SpotTone;
+  icon: string;
+}
+
+/** The Instrument's focus: the live gate while a run is in flight, the gate it
+ *  *stopped at* when it failed, and the outcome (awaiting co-sign / merged /
+ *  closed / approved / no-changes) once it is decided. One derivation, read
+ *  from the contract's fate table so it never restates a status the contract
+ *  owns — the pipeline track shows every gate; this names the one that matters. */
+function spotlightFor(run: FleetRun): Spotlight {
+  if (run.kind === "inflight") {
+    return {
+      key: `live:${run.data.stage}`,
+      eyebrow: "Live gate",
+      title: statusLabel(run.data.stage),
+      detail: `Attempt ${run.data.attempt} · active since ${new Date(run.data.stageSince).toLocaleTimeString()}`,
+      tone: "live",
+      icon: "loader-circle",
+    };
+  }
+  const data = run.data;
+  if (awaitingReview(gateInput(run))) {
+    return {
+      key: "review",
+      eyebrow: "Your move",
+      title: "Awaiting your co-sign",
+      detail: `PR #${prNumber(data.prUrl)} open · verify green · judge approved`,
+      tone: "review",
+      icon: "git-pull-request",
+    };
+  }
+  const cosign = cosignFor(run);
+  if (cosign?.state === "merged") {
+    return {
+      key: "merged",
+      eyebrow: "Outcome",
+      title: "Merged",
+      detail: cosign.mergedBy ? `Co-signed by ${cosign.mergedBy}` : "Squash-merged into the base branch",
+      tone: "done",
+      icon: "git-merge",
+    };
+  }
+  if (cosign?.state === "closed") {
+    return {
+      key: "closed",
+      eyebrow: "Outcome",
+      title: "Closed",
+      detail: "Closed without merging — reason posted to the PR",
+      tone: "neutral",
+      icon: "git-pull-request-closed",
+    };
+  }
+  const facts = runFacts(data.status);
+  if (facts?.diedAt || facts?.kind === "infra" || facts?.kind === "killed") {
+    // The evidence line for the gate it died at, when the run recorded one.
+    const line = (facts?.diedAt ? data.evidence?.find((entry) => new RegExp(facts.diedAt!, "i").test(entry)) : undefined)
+      ?? data.reason
+      ?? "No gate evidence recorded.";
+    return {
+      key: `fail:${data.status}`,
+      eyebrow: "Stopped at",
+      title: statusLabel(data.status),
+      detail: line,
+      tone: "failure",
+      icon: facts?.kind === "infra" ? "alert-circle" : "x-circle",
+    };
+  }
+  if (data.status === "no-changes") {
+    return {
+      key: "nochanges",
+      eyebrow: "Outcome",
+      title: "No changes",
+      detail: data.reason ?? "The agent made no changes — nothing to verify or ship.",
+      tone: "neutral",
+      icon: "circle",
+    };
+  }
+  return {
+    key: "approved",
+    eyebrow: "Outcome",
+    title: statusLabel(data.status),
+    detail: `${duration(data.elapsedMs)} · verify green · judge approved`,
+    tone: "done",
+    icon: "check-circle-2",
+  };
+}
+
+type ReadoutTone = "ok" | "bad" | "working" | "neutral";
+/** One telemetry pill in the gate band's base — a fact about *this* run, toned
+ *  so verify-green / stopped-red land at a glance. `ok`/`bad`/`working` carry a
+ *  redundant icon (✓/✗/spinner) over colour; `neutral` facts stay quiet text. */
+interface GateReadout {
+  label: string;
+  value: string;
+  tone: ReadoutTone;
+}
+
+/** The gate band's readout strip, derived from the run — never a fixed grid, so
+ *  it shows exactly what a state has (an in-flight run's stage/attempt, a
+ *  failure's stopped-at + duration, a shipped run's verify/judge/co-sign). Reads
+ *  the gates from `pipelineState` and the fate from the contract, so it never
+ *  restates a status the contract owns. */
+function gateReadouts(run: FleetRun): GateReadout[] {
+  if (run.kind === "inflight") {
+    return [
+      { label: "Stage", value: statusLabel(run.data.stage), tone: "working" },
+      { label: "Attempt", value: String(run.data.attempt), tone: "neutral" },
+      { label: "Elapsed", value: relativeTime(run.data.startedAt), tone: "neutral" },
+    ];
+  }
+  const data = run.data;
+  const facts = runFacts(data.status);
+  if (facts?.diedAt || facts?.kind === "infra" || facts?.kind === "killed") {
+    const out: GateReadout[] = [{ label: "Stopped at", value: statusLabel(data.status), tone: "bad" }];
+    if (data.vetoes) out.push({ label: "Vetoes", value: String(data.vetoes), tone: "bad" });
+    out.push({ label: "Duration", value: duration(data.elapsedMs), tone: "neutral" });
+    out.push({ label: "Mode", value: data.mode, tone: "neutral" });
+    return out;
+  }
+  if (data.status === "no-changes") {
+    return [
+      { label: "Diff", value: "Empty", tone: "neutral" },
+      { label: "Duration", value: duration(data.elapsedMs), tone: "neutral" },
+      { label: "Mode", value: data.mode, tone: "neutral" },
+    ];
+  }
+  // A clean run: verify green, judge approved, plus the decision facts it carries.
+  const out: GateReadout[] = [
+    { label: "Verify", value: "Green", tone: "ok" },
+    { label: "Judge", value: "Approved", tone: "ok" },
+    { label: "Duration", value: duration(data.elapsedMs), tone: "neutral" },
+  ];
+  if (data.sha) out.push({ label: "Commit", value: data.sha, tone: "neutral" });
+  const cosign = cosignFor(run);
+  if (cosign?.state === "merged" && cosign.mergedBy) out.push({ label: "Co-signed", value: cosign.mergedBy, tone: "neutral" });
+  else if (cosign?.state === "closed") out.push({ label: "PR", value: "Closed", tone: "neutral" });
+  else if (data.prUrl) out.push({ label: "PR", value: `#${prNumber(data.prUrl)}`, tone: "neutral" });
+  return out;
+}
+
+/**
+ * Direction B — the Instrument. The horizontal pipeline is the hero: connectors
+ * *fill* left-to-right as gates pass, and a spotlight card foregrounds the one
+ * gate in play. Rendered from state on every poll like the rest of the shell,
+ * but diffed against `prevRunView`: a stage that advanced since the last render
+ * of the *same* run animates (connector fill, check stamp, spotlight slide),
+ * while a freshly selected run staggers its whole composition in, and an
+ * unchanged re-render is silent. All motion is reduced-motion aware.
+ */
+function renderInstrument(run: FleetRun): void {
+  const states = [0, 1, 2, 3, 4].map((index) => pipelineState(run, index));
+  const spot = spotlightFor(run);
+  const sameRun = prevRunView?.key === selectedKey;
+  const prevStates = sameRun ? prevRunView!.states : [];
+  const reduce = prefersReducedMotion();
+  const labels = trackLabels(run);
+
+  // ── The pipeline track: nodes, filling connectors, labels ──
+  const track = $("#pipeline");
+  track.replaceChildren();
+  const toStamp: number[] = [];
+  states.forEach((state, index) => {
+    if (index > 0) {
+      const connector = document.createElement("div");
+      connector.className = "inst-conn";
+      const fill = document.createElement("div");
+      fill.className = "inst-conn-fill";
+      const filled = states[index - 1] === "passed";
+      fill.style.transform = filled ? "scaleX(1)" : "scaleX(0)";
+      connector.append(fill);
+      track.append(connector);
+      if (!reduce && sameRun && filled && prevStates[index - 1] !== "passed") {
+        fill.animate([{ transform: "scaleX(0)" }, { transform: "scaleX(1)" }], { duration: 440, easing: EASE_INOUT, fill: "both" });
+      }
+    }
+    const wrap = document.createElement("div");
+    wrap.className = "inst-node-wrap";
+    wrap.dataset.idx = String(index);
+    const node = document.createElement("div");
+    node.className = `inst-node ${state}`;
+    const icon = state === "passed" ? "check" : state === "failed" ? "x-circle" : state === "active" ? "loader-circle" : "circle";
+    node.innerHTML = `<i data-lucide="${icon}"></i>`;
+    const label = document.createElement("div");
+    label.className = `inst-label ${state === "pending" || state === "skipped" ? "" : "on"}`;
+    label.textContent = labels[index];
+    wrap.append(node, label);
+    track.append(wrap);
+    if (!reduce && sameRun && state === "passed" && prevStates[index] !== "passed") toStamp.push(index);
+  });
+  refreshIcons(track);
+  const cleared = states.filter((state) => state === "passed").length;
+  $("#pipeline-sub").textContent = `${cleared} / ${states.length} gates cleared`;
+  if (!reduce && !sameRun) {
+    track.querySelectorAll<HTMLElement>(".inst-node-wrap").forEach((wrap, index) =>
+      wrap.animate([{ opacity: 0, transform: "translateY(6px)" }, { opacity: 1, transform: "none" }], { duration: 300, delay: 45 * index, easing: EASE_OUT, fill: "both" }));
+  }
+  for (const index of toStamp) {
+    const svg = track.querySelector(`.inst-node-wrap[data-idx="${index}"] .inst-node svg`);
+    svg?.animate([{ transform: "scale(0.4)", opacity: "0.4" }, { transform: "scale(1)", opacity: "1" }], { duration: 300, easing: EASE_SETTLE, fill: "both" });
+  }
+
+  // ── The gate band: a full-width banner — tone badge + eyebrow/title/detail,
+  //    over a flex strip of status-icon telemetry pills read from the run. ──
+  const spotEl = $("#gate-spotlight");
+  spotEl.className = `gate-spot ${spot.tone}`;
+  spotEl.innerHTML = `<div class="gate-spot-body"><span class="gate-spot-badge"><i data-lucide="${spot.icon}"></i></span><span class="gate-spot-main"><span class="gate-spot-eyebrow"></span><h3 class="gate-spot-title"></h3><p class="gate-spot-detail"></p></span></div><div class="gate-spot-pills"></div>`;
+  spotEl.querySelector(".gate-spot-eyebrow")!.textContent = spot.eyebrow;
+  spotEl.querySelector(".gate-spot-title")!.textContent = spot.title;
+  spotEl.querySelector(".gate-spot-detail")!.textContent = spot.detail;
+  const pills = spotEl.querySelector(".gate-spot-pills")!;
+  for (const readout of gateReadouts(run)) {
+    const pill = document.createElement("span");
+    pill.className = `gate-pill ${readout.tone}`;
+    const pillIcon = readout.tone === "ok" ? "check" : readout.tone === "bad" ? "x" : readout.tone === "working" ? "loader-circle" : null;
+    if (pillIcon) {
+      const iconWrap = document.createElement("span");
+      iconWrap.className = "gate-pill-ic";
+      iconWrap.innerHTML = `<i data-lucide="${pillIcon}"></i>`;
+      pill.append(iconWrap);
+    }
+    const key = document.createElement("span");
+    key.className = "gate-pill-k";
+    key.textContent = readout.label;
+    const value = document.createElement("span");
+    value.className = "gate-pill-v";
+    value.textContent = readout.value;
+    pill.append(key, value);
+    pills.append(pill);
+  }
+  refreshIcons(spotEl);
+  if (!reduce && (!sameRun || prevRunView!.spot !== spot.key)) {
+    spotEl.animate([{ opacity: 0, transform: "translateX(10px)" }, { opacity: 1, transform: "none" }], { duration: 280, easing: EASE_OUT, fill: "both" });
+  }
+
+  // ── The evidence transcript: secondary context under the spotlight ──
+  const evidence = runEvidence(run);
+  $("#evidence-count").textContent = `${evidence.length} ${evidence.length === 1 ? "line" : "lines"}`;
+  const log = $("#evidence-log");
+  log.replaceChildren();
+  if (evidence.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "evidence-empty";
+    empty.textContent = "No gate evidence recorded.";
+    log.append(empty);
+  } else {
+    evidence.forEach((line, index) => {
+      const row = document.createElement("div");
+      row.className = "evidence-line";
+      const number = document.createElement("span");
+      number.textContent = String(index + 1).padStart(2, "0");
+      const content = document.createElement("code");
+      content.textContent = line;
+      row.append(number, content);
+      log.append(row);
+      if (!reduce && !sameRun) row.animate([{ opacity: 0, transform: "translateY(5px)" }, { opacity: 1, transform: "none" }], { duration: 240, delay: 60 + 30 * index, easing: EASE_OUT, fill: "both" });
+    });
+  }
+
+  prevRunView = { key: selectedKey, states, spot: spot.key };
+}
+
 function renderSelectedRun(): void {
   const run = selectedRun();
   const previewOpen = Boolean(run && artifactPreview?.runKey === run.key);
@@ -724,6 +1086,7 @@ function renderSelectedRun(): void {
 
   if (!run) {
     artifactPreview = null;
+    prevRunView = null;
     artifactFrame.src = "about:blank";
     $("#selected-repo").textContent = "Fleet";
     $("#selected-title").textContent = "Ledger";
@@ -749,44 +1112,7 @@ function renderSelectedRun(): void {
   $("#open-pr").toggleAttribute("hidden", run.kind !== "completed" || !run.data.prUrl);
   $("#rail-run-state").textContent = statusLabel(value);
 
-  const stageNames = ["Agent", "Scope", "Verify", "Judge", run.kind === "completed" && run.data.prUrl ? "Pull request" : "Approve"];
-  const pipeline = $("#pipeline");
-  pipeline.replaceChildren();
-  stageNames.forEach((name, index) => {
-    const state = pipelineState(run, index);
-    const item = document.createElement("li");
-    item.className = state;
-    const icon = state === "passed" ? "check" : state === "failed" ? "x-circle" : state === "active" ? "loader-circle" : "circle";
-    item.innerHTML = `<span class="stage-icon"><i data-lucide="${icon}"></i></span><strong>${name}</strong><small>${state === "passed" ? "Passed" : state === "failed" ? "Stopped" : state === "active" ? "Running" : state === "skipped" ? "Skipped" : "Waiting"}</small>`;
-    pipeline.append(item);
-  });
-  refreshIcons(pipeline);
-  $("#pipeline-summary").textContent = run.kind === "inflight" ? `Attempt ${run.data.attempt}` : duration(run.data.elapsedMs);
-
-  const evidence = run.kind === "completed" ? run.data.evidence ?? (run.data.reason ? [run.data.reason] : []) : [
-    `${statusLabel(run.data.stage)} since ${new Date(run.data.stageSince).toLocaleTimeString()}`,
-    `Attempt ${run.data.attempt} is active on the remote runner`,
-  ];
-  $("#evidence-count").textContent = `${evidence.length} ${evidence.length === 1 ? "line" : "lines"}`;
-  const log = $("#evidence-log");
-  log.replaceChildren();
-  if (evidence.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "evidence-empty";
-    empty.textContent = "No gate evidence recorded.";
-    log.append(empty);
-  } else {
-    evidence.forEach((line, index) => {
-      const row = document.createElement("div");
-      row.className = "evidence-line";
-      const number = document.createElement("span");
-      number.textContent = String(index + 1).padStart(2, "0");
-      const content = document.createElement("code");
-      content.textContent = line;
-      row.append(number, content);
-      log.append(row);
-    });
-  }
+  renderInstrument(run);
   renderMetadata(run);
 }
 
@@ -930,11 +1256,63 @@ function syncActions(sync: SyncState, prUrl: string | undefined): HTMLButtonElem
  * runner's gate stays the real gate. A closed run gains "Run again", which
  * only prefills the launch form: launching stays an explicit human action.
  */
+type DecisionTone = "review" | "done" | "failure" | "neutral" | "live";
+interface DecisionHead {
+  tone: DecisionTone;
+  icon: string;
+  eyebrow: string;
+  title: string;
+  detail: string;
+}
+
+/** The co-sign beat, stated once and tinted to match: the rail's decision block
+ *  is the actionable half of the run's fate. Where the Run view's spotlight names
+ *  the *status* ("Awaiting your co-sign"), this names the *decision* ("Ready to
+ *  co-sign — squash-merge, or close with a reason") — a header over the buttons,
+ *  read from the same fate table so it never restates a status the contract owns. */
+function decisionHead(run: FleetRun): DecisionHead {
+  if (run.kind === "inflight") {
+    return { tone: "live", icon: "loader-circle", eyebrow: "Co-sign gate", title: "Not open yet", detail: "This run is still working on the runner — the co-sign gate opens once it ships a pull request." };
+  }
+  const cosign = cosignFor(run);
+  if (cosign?.state === "merged") {
+    return { tone: "done", icon: "git-merge", eyebrow: "Outcome", title: "Merged", detail: cosign.mergedBy ? `Co-signed by ${cosign.mergedBy} — squash-merged into the base branch.` : "Squash-merged into the base branch." };
+  }
+  if (cosign?.state === "closed") {
+    return { tone: "neutral", icon: "git-pull-request-closed", eyebrow: "Outcome", title: "Closed", detail: "Closed without merging — the reason was posted to the pull request." };
+  }
+  if (awaitingReview(gateInput(run))) {
+    return { tone: "review", icon: "git-pull-request", eyebrow: "Your move", title: "Ready to co-sign", detail: `PR #${prNumber(run.data.prUrl)} is open with every gate green. Squash-merge, or close it with a reason.` };
+  }
+  const facts = runFacts(run.data.status);
+  if (facts?.diedAt || facts?.kind === "infra" || facts?.kind === "killed") {
+    return { tone: "failure", icon: "x-circle", eyebrow: "Blocked", title: "Nothing to co-sign", detail: "This run stopped at a gate — no pull request was opened. Fix the cause and run it again." };
+  }
+  if (run.data.status === "no-changes") {
+    return { tone: "neutral", icon: "circle", eyebrow: "Outcome", title: "No changes", detail: run.data.reason ?? "The agent made no changes — nothing to review or ship." };
+  }
+  return { tone: "done", icon: "check-circle-2", eyebrow: "Outcome", title: "Approved", detail: "Every gate passed." };
+}
+
 function renderCosignDecision(run: FleetRun | undefined): void {
   const container = $("#cosign-decision");
   container.replaceChildren();
   container.hidden = !run;
   if (!run) return;
+
+  // The tonal spotlight card: the header names the decision, the body carries the
+  // mechanics — buttons, a witnessed refusal, a cloud run's evidence-sync, or the
+  // blocking reason. Every append below targets `body`, so the block reads as one
+  // card tinted to the run's fate.
+  const head = decisionHead(run);
+  const card = document.createElement("div");
+  card.className = `decision-spot ${head.tone}`;
+  card.innerHTML = `<div class="decision-spot-head"><i data-lucide="${head.icon}"></i><span class="decision-spot-eyebrow"></span></div><div class="decision-spot-title"></div><p class="decision-spot-detail"></p><div class="decision-spot-actions"></div>`;
+  card.querySelector(".decision-spot-eyebrow")!.textContent = head.eyebrow;
+  card.querySelector(".decision-spot-title")!.textContent = head.title;
+  card.querySelector(".decision-spot-detail")!.textContent = head.detail;
+  const body = card.querySelector<HTMLElement>(".decision-spot-actions")!;
+  container.append(card);
 
   const refusal = cosignRefusals[run.key];
   if (refusal) {
@@ -951,7 +1329,7 @@ function renderCosignDecision(run: FleetRun | undefined): void {
       line.textContent = detail;
       block.querySelector("div")!.append(line);
     }
-    container.append(block);
+    body.append(block);
   }
 
   const blocker = status.state !== "connected" && !previewMode
@@ -972,7 +1350,7 @@ function renderCosignDecision(run: FleetRun | undefined): void {
         ?? (artifactsLoadedFor === run.key
           ? { kind: "unavailable", reason: "the synced cloud artifact held no reviewable diff" }
           : { kind: "syncing" });
-      container.append(syncBlock(sync), ...syncActions(sync, run.data.prUrl));
+      body.append(syncBlock(sync), ...syncActions(sync, run.data.prUrl));
       refreshIcons(container);
       return;
     }
@@ -982,14 +1360,14 @@ function renderCosignDecision(run: FleetRun | undefined): void {
     const reason = document.createElement("div");
     reason.className = "cosign-blocker";
     reason.textContent = blocker;
-    container.append(reason);
+    body.append(reason);
     if (run.kind === "completed" && cosignFor(run)?.state === "closed") {
       const again = document.createElement("button");
       again.className = "secondary compact cosign-run-again";
       again.disabled = busy;
       again.innerHTML = `<i data-lucide="rotate-ccw"></i><span>Run again</span>`;
       again.addEventListener("click", () => prefillLaunchForm(run));
-      container.append(again);
+      body.append(again);
     }
   } else {
     const number = prNumber(run.kind === "completed" ? run.data.prUrl : undefined);
@@ -1009,7 +1387,7 @@ function renderCosignDecision(run: FleetRun | undefined): void {
       ? "Working…"
       : `${refusal?.action === "close" ? "Retry close" : "Close"} PR #${number} with a reason`;
     close.addEventListener("click", () => openCloseConfirm(run.key));
-    container.append(merge, close);
+    body.append(merge, close);
   }
   refreshIcons(container);
 }
@@ -1223,6 +1601,7 @@ function renderActivity(): void {
     empty.className = "rail-empty";
     empty.textContent = "No remote commands";
     list.append(empty);
+    prevTopReceipt = "";
     return;
   }
   for (const receipt of receipts) {
@@ -1247,6 +1626,18 @@ function renderActivity(): void {
     details.append(output);
     list.append(details);
   }
+  // A freshly-arrived receipt slides into the top of the feed; a plain re-render
+  // of the same top row (every poll) stays still. Keyed on the top receipt's
+  // timestamp+command so only a genuinely new command animates.
+  const top = receipts[0];
+  const signature = top ? `${top.timestamp}:${top.command}` : "";
+  if (!prefersReducedMotion() && signature && prevTopReceipt && signature !== prevTopReceipt) {
+    (list.firstElementChild as HTMLElement | null)?.animate(
+      [{ opacity: 0, transform: "translateY(-8px)" }, { opacity: 1, transform: "none" }],
+      { duration: 320, easing: EASE_OUT, fill: "both" },
+    );
+  }
+  prevTopReceipt = signature;
   refreshIcons(list);
 }
 
@@ -1453,6 +1844,21 @@ function setBusy(next: boolean): void {
   renderConnection();
   renderCatalog();
   renderCosignDecision(selectedRun());
+}
+
+/** Launching a run is the app's highest-intent act — give it weight: a shine
+ *  sweeps across the button while it settles under the press (Dispatch carries the
+ *  sweep; Run, a lighter settle). Zero-dep WAAPI, reduced-motion silent. */
+function commitCeremony(button: HTMLElement): void {
+  if (prefersReducedMotion()) return;
+  button.querySelector<HTMLElement>(".commit-sweep")?.animate(
+    [{ transform: "translateX(-120%)" }, { transform: "translateX(120%)" }],
+    { duration: 520, easing: EASE_INOUT },
+  );
+  button.animate(
+    [{ transform: "scale(1)" }, { transform: "scale(0.96)", offset: 0.35 }, { transform: "scale(1.02)", offset: 0.7 }, { transform: "scale(1)" }],
+    { duration: 520, easing: EASE_SETTLE },
+  );
 }
 
 function showProfile(profile?: HostProfile): void {
@@ -1721,8 +2127,8 @@ $("#disconnect").addEventListener("click", async () => {
     $("#ledger-empty").hidden = false;
   } finally { setBusy(false); renderAll(); }
 });
-$("#dispatch-action").addEventListener("click", () => void runAction("dispatch"));
-$("#local-run").addEventListener("click", () => void runAction("localRun"));
+$("#dispatch-action").addEventListener("click", () => { commitCeremony($("#dispatch-action")); void runAction("dispatch"); });
+$("#local-run").addEventListener("click", () => { commitCeremony($("#local-run")); void runAction("localRun"); });
 $("#clear-activity").addEventListener("click", () => { results = []; renderActivity(); });
 $("#toggle-rail").addEventListener("click", () => {
   const collapsed = workbench.classList.toggle("rail-collapsed");
