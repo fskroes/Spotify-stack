@@ -205,12 +205,12 @@ app.innerHTML = `
             <div id="pipeline" class="inst-track" aria-label="Run pipeline"></div>
           </section>
 
-          <section class="spot-col">
+          <section class="gate-band-sec">
             <div class="section-heading"><span>Gate</span></div>
             <div id="gate-spotlight" class="gate-spot"></div>
           </section>
 
-          <section class="ev-col">
+          <section class="ev-sec">
             <div class="section-heading"><span>Gate evidence</span><small id="evidence-count"></small></div>
             <div id="evidence-log" class="evidence-log"></div>
           </section>
@@ -903,6 +903,59 @@ function spotlightFor(run: FleetRun): Spotlight {
   };
 }
 
+type ReadoutTone = "ok" | "bad" | "working" | "neutral";
+/** One telemetry pill in the gate band's base — a fact about *this* run, toned
+ *  so verify-green / stopped-red land at a glance. `ok`/`bad`/`working` carry a
+ *  redundant icon (✓/✗/spinner) over colour; `neutral` facts stay quiet text. */
+interface GateReadout {
+  label: string;
+  value: string;
+  tone: ReadoutTone;
+}
+
+/** The gate band's readout strip, derived from the run — never a fixed grid, so
+ *  it shows exactly what a state has (an in-flight run's stage/attempt, a
+ *  failure's stopped-at + duration, a shipped run's verify/judge/co-sign). Reads
+ *  the gates from `pipelineState` and the fate from the contract, so it never
+ *  restates a status the contract owns. */
+function gateReadouts(run: FleetRun): GateReadout[] {
+  if (run.kind === "inflight") {
+    return [
+      { label: "Stage", value: statusLabel(run.data.stage), tone: "working" },
+      { label: "Attempt", value: String(run.data.attempt), tone: "neutral" },
+      { label: "Elapsed", value: relativeTime(run.data.startedAt), tone: "neutral" },
+    ];
+  }
+  const data = run.data;
+  const facts = runFacts(data.status);
+  if (facts?.diedAt || facts?.kind === "infra" || facts?.kind === "killed") {
+    const out: GateReadout[] = [{ label: "Stopped at", value: statusLabel(data.status), tone: "bad" }];
+    if (data.vetoes) out.push({ label: "Vetoes", value: String(data.vetoes), tone: "bad" });
+    out.push({ label: "Duration", value: duration(data.elapsedMs), tone: "neutral" });
+    out.push({ label: "Mode", value: data.mode, tone: "neutral" });
+    return out;
+  }
+  if (data.status === "no-changes") {
+    return [
+      { label: "Diff", value: "Empty", tone: "neutral" },
+      { label: "Duration", value: duration(data.elapsedMs), tone: "neutral" },
+      { label: "Mode", value: data.mode, tone: "neutral" },
+    ];
+  }
+  // A clean run: verify green, judge approved, plus the decision facts it carries.
+  const out: GateReadout[] = [
+    { label: "Verify", value: "Green", tone: "ok" },
+    { label: "Judge", value: "Approved", tone: "ok" },
+    { label: "Duration", value: duration(data.elapsedMs), tone: "neutral" },
+  ];
+  if (data.sha) out.push({ label: "Commit", value: data.sha, tone: "neutral" });
+  const cosign = cosignFor(run);
+  if (cosign?.state === "merged" && cosign.mergedBy) out.push({ label: "Co-signed", value: cosign.mergedBy, tone: "neutral" });
+  else if (cosign?.state === "closed") out.push({ label: "PR", value: "Closed", tone: "neutral" });
+  else if (data.prUrl) out.push({ label: "PR", value: `#${prNumber(data.prUrl)}`, tone: "neutral" });
+  return out;
+}
+
 /**
  * Direction B — the Instrument. The horizontal pipeline is the hero: connectors
  * *fill* left-to-right as gates pass, and a spotlight card foregrounds the one
@@ -964,13 +1017,34 @@ function renderInstrument(run: FleetRun): void {
     svg?.animate([{ transform: "scale(0.4)", opacity: "0.4" }, { transform: "scale(1)", opacity: "1" }], { duration: 300, easing: EASE_SETTLE, fill: "both" });
   }
 
-  // ── The gate spotlight ──
+  // ── The gate band: a full-width banner — tone badge + eyebrow/title/detail,
+  //    over a flex strip of status-icon telemetry pills read from the run. ──
   const spotEl = $("#gate-spotlight");
   spotEl.className = `gate-spot ${spot.tone}`;
-  spotEl.innerHTML = `<div class="gate-spot-head"><i data-lucide="${spot.icon}"></i><span class="gate-spot-eyebrow"></span></div><h3 class="gate-spot-title"></h3><p class="gate-spot-detail"></p>`;
+  spotEl.innerHTML = `<div class="gate-spot-body"><span class="gate-spot-badge"><i data-lucide="${spot.icon}"></i></span><span class="gate-spot-main"><span class="gate-spot-eyebrow"></span><h3 class="gate-spot-title"></h3><p class="gate-spot-detail"></p></span></div><div class="gate-spot-pills"></div>`;
   spotEl.querySelector(".gate-spot-eyebrow")!.textContent = spot.eyebrow;
   spotEl.querySelector(".gate-spot-title")!.textContent = spot.title;
   spotEl.querySelector(".gate-spot-detail")!.textContent = spot.detail;
+  const pills = spotEl.querySelector(".gate-spot-pills")!;
+  for (const readout of gateReadouts(run)) {
+    const pill = document.createElement("span");
+    pill.className = `gate-pill ${readout.tone}`;
+    const pillIcon = readout.tone === "ok" ? "check" : readout.tone === "bad" ? "x" : readout.tone === "working" ? "loader-circle" : null;
+    if (pillIcon) {
+      const iconWrap = document.createElement("span");
+      iconWrap.className = "gate-pill-ic";
+      iconWrap.innerHTML = `<i data-lucide="${pillIcon}"></i>`;
+      pill.append(iconWrap);
+    }
+    const key = document.createElement("span");
+    key.className = "gate-pill-k";
+    key.textContent = readout.label;
+    const value = document.createElement("span");
+    value.className = "gate-pill-v";
+    value.textContent = readout.value;
+    pill.append(key, value);
+    pills.append(pill);
+  }
   refreshIcons(spotEl);
   if (!reduce && (!sameRun || prevRunView!.spot !== spot.key)) {
     spotEl.animate([{ opacity: 0, transform: "translateX(10px)" }, { opacity: 1, transform: "none" }], { duration: 280, easing: EASE_OUT, fill: "both" });

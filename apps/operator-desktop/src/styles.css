@@ -155,15 +155,15 @@ button svg { width: 15px; height: 15px; flex: 0 0 auto; }
 .run-empty h2 { margin: 0; color: var(--text-secondary); font-size: 13px; font-weight: 600; }
 .run-empty p, .ledger-empty span { margin: 0; font-size: 10px; }
 .ledger-empty strong { color: var(--text-secondary); font-size: 12px; }
-/* The Run view earns the middle pane's full width: a full-width pipeline band on
-   top, then the gate spotlight and the evidence transcript side by side beneath.
-   #run-view manages its own scroll so each column scrolls independently; below
-   ~1180px the three sections stack back into a single readable column. */
+/* The Run view earns the middle pane's full width by stacking full-width bands:
+   the pipeline hero on top, the gate band (a banner over a telemetry pill strip),
+   then the evidence transcript. #run-view hides its overflow; .run-detail owns the
+   single scroll so the bands read as one column at any width. */
 #run-view { overflow: hidden; }
-.run-detail { height: 100%; display: grid; grid-template-columns: minmax(300px, 0.82fr) minmax(0, 1.18fr); grid-template-rows: auto minmax(0, 1fr); }
-.pipeline-band { grid-column: 1 / -1; padding: 20px 26px 24px; border-bottom: 1px solid var(--border); overflow: auto; }
-.spot-col { grid-column: 1; grid-row: 2; padding: 18px; border-right: 1px solid var(--border); overflow: auto; }
-.ev-col { grid-column: 2; grid-row: 2; padding: 18px; overflow: auto; }
+.run-detail { height: 100%; display: flex; flex-direction: column; overflow: auto; }
+.pipeline-band { padding: 20px 26px 22px; border-bottom: 1px solid var(--border); }
+.gate-band-sec { padding: 18px 26px; border-bottom: 1px solid var(--border); }
+.ev-sec { padding: 18px 26px 26px; }
 .section-heading { margin-bottom: 14px; color: var(--text-secondary); font-size: 10px; font-weight: 650; text-transform: uppercase; }
 .section-heading small { color: var(--muted); font-size: 9.5px; font-weight: 450; text-transform: none; }
 /* ── Direction B, the Instrument: an elevated horizontal pipeline whose
@@ -182,22 +182,44 @@ button svg { width: 15px; height: 15px; flex: 0 0 auto; }
 .inst-label.on { color: var(--text-secondary); }
 .inst-conn { flex: 1; height: 2px; margin-top: 14px; overflow: hidden; background: var(--border); border-radius: 2px; }
 .inst-conn-fill { width: 100%; height: 100%; background: #35654d; transform-origin: left; }
-.gate-spot { width: 100%; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-raised); }
-.gate-spot-head { display: flex; align-items: center; gap: 7px; }
-.gate-spot-head svg { width: 14px; height: 14px; color: var(--muted); }
+/* The gate band: a full-width banner (tone badge + eyebrow/title/detail) over a
+   flex strip of status-icon telemetry pills. The one loud focal object under the
+   quiet circle pipeline. */
+.gate-spot { width: 100%; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-raised); overflow: hidden; }
+.gate-spot-body { display: flex; align-items: flex-start; gap: 14px; padding: 16px 18px; }
+.gate-spot-badge { display: grid; place-items: center; width: 44px; height: 44px; flex: 0 0 auto; border: 1px solid var(--border); border-radius: 11px; color: var(--text-secondary); background: var(--panel); }
+.gate-spot-badge svg { width: 20px; height: 20px; }
+.gate-spot-main { flex: 1; min-width: 0; }
 .gate-spot-eyebrow { color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
-.gate-spot-title { margin: 3px 0 0 21px; color: var(--text); font-size: 13.5px; font-weight: 600; }
-.gate-spot-detail { margin: 4px 0 0 21px; color: var(--text-secondary); font-family: var(--mono); font-size: 10px; line-height: 1.5; overflow-wrap: break-word; }
-.gate-spot.live { border-color: #71473f; background: linear-gradient(180deg, var(--accent-soft), #191412); }
-.gate-spot.live .gate-spot-head svg { color: var(--accent); animation: spin 1.5s linear infinite; }
+.gate-spot-title { margin: 6px 0 4px; color: var(--text); font-size: 18px; font-weight: 640; letter-spacing: -.01em; text-wrap: balance; }
+.gate-spot-detail { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; overflow-wrap: break-word; }
+.gate-spot-pills { display: flex; flex-wrap: wrap; gap: 7px; padding: 12px 18px 14px; border-top: 1px solid var(--border-soft); background: var(--panel); }
+.gate-pill { display: inline-flex; align-items: center; gap: 7px; padding: 6px 11px; border: 1px solid var(--border); border-radius: 20px; background: var(--panel-raised); font-size: 11.5px; }
+.gate-pill-ic { display: inline-grid; place-items: center; }
+.gate-pill-ic svg { width: 12px; height: 12px; }
+.gate-pill-k { color: var(--muted); font-size: 9px; font-weight: 550; letter-spacing: .05em; text-transform: uppercase; }
+.gate-pill-v { color: var(--text-secondary); font-weight: 600; font-variant-numeric: tabular-nums; }
+.gate-pill.ok { border-color: #2f4a3c; }
+.gate-pill.ok .gate-pill-v, .gate-pill.ok .gate-pill-ic { color: var(--green); }
+.gate-pill.bad { border-color: #5a2e31; }
+.gate-pill.bad .gate-pill-v, .gate-pill.bad .gate-pill-ic { color: var(--red); }
+.gate-pill.working { border-color: #5a3d36; }
+.gate-pill.working .gate-pill-v, .gate-pill.working .gate-pill-ic { color: var(--accent); }
+.gate-pill.working .gate-pill-ic svg { animation: spin 1.5s linear infinite; }
+.gate-spot.live { border-color: #71473f; background: linear-gradient(120deg, var(--accent-soft), var(--panel-raised) 62%); }
+.gate-spot.live .gate-spot-badge { color: var(--accent); border-color: #71473f; background: #241813; }
+.gate-spot.live .gate-spot-badge svg { animation: spin 1.5s linear infinite; }
 .gate-spot.live .gate-spot-eyebrow { color: var(--accent); }
-.gate-spot.review { border-color: #3a536e; background: linear-gradient(180deg, var(--blue-soft), #12161b); }
-.gate-spot.review .gate-spot-head svg, .gate-spot.review .gate-spot-eyebrow { color: var(--blue); }
-.gate-spot.failure { border-color: #71363b; background: linear-gradient(180deg, var(--red-soft), #1a1214); }
-.gate-spot.failure .gate-spot-head svg, .gate-spot.failure .gate-spot-eyebrow { color: var(--red); }
-.gate-spot.done { border-color: #35654d; background: linear-gradient(180deg, var(--green-soft), #121a16); }
-.gate-spot.done .gate-spot-head svg, .gate-spot.done .gate-spot-eyebrow { color: var(--green); }
-.gate-spot.neutral .gate-spot-head svg, .gate-spot.neutral .gate-spot-eyebrow { color: var(--muted); }
+.gate-spot.review { border-color: #3a536e; background: linear-gradient(120deg, var(--blue-soft), var(--panel-raised) 62%); }
+.gate-spot.review .gate-spot-badge { color: var(--blue); border-color: #3a536e; background: #12202e; }
+.gate-spot.review .gate-spot-eyebrow { color: var(--blue); }
+.gate-spot.failure { border-color: #71363b; background: linear-gradient(120deg, var(--red-soft), var(--panel-raised) 62%); }
+.gate-spot.failure .gate-spot-badge { color: var(--red); border-color: #71363b; background: #26161a; }
+.gate-spot.failure .gate-spot-eyebrow { color: var(--red); }
+.gate-spot.done { border-color: #35654d; background: linear-gradient(120deg, var(--green-soft), var(--panel-raised) 62%); }
+.gate-spot.done .gate-spot-badge { color: var(--green); border-color: #35654d; background: #142019; }
+.gate-spot.done .gate-spot-eyebrow { color: var(--green); }
+.gate-spot.neutral .gate-spot-badge, .gate-spot.neutral .gate-spot-eyebrow { color: var(--muted); }
 .evidence-log { overflow: hidden; border: 1px solid var(--border-soft); background: #0e0e0d; }
 .evidence-line { display: grid; grid-template-columns: 38px minmax(0, 1fr); min-height: 34px; border-bottom: 1px solid #211f1d; }
 .evidence-line:last-child { border-bottom: 0; }
@@ -386,9 +408,7 @@ button.danger:hover { background: var(--red-soft); }
   .dispatch-bar { grid-template-columns: 20px minmax(120px, 1fr) minmax(105px, .7fr) auto 60px 80px; padding-left: 10px; }
   .inst-node-wrap { width: 50px; }
   .metadata-list > div { grid-template-columns: 70px minmax(0, 1fr); }
-  /* The split columns can't hold their minimums in a narrow pane — stack them. */
-  .run-detail { grid-template-columns: 1fr; grid-template-rows: auto auto minmax(0, 1fr); }
-  .pipeline-band { grid-column: 1; }
-  .spot-col { grid-column: 1; grid-row: 2; border-right: 0; border-bottom: 1px solid var(--border); }
-  .ev-col { grid-column: 1; grid-row: 3; }
+  /* The stacked bands already read at any width; tighten their gutters in a narrow pane. */
+  .pipeline-band, .gate-band-sec { padding: 16px 18px; }
+  .ev-sec { padding: 16px 18px 22px; }
 }
