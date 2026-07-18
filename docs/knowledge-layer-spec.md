@@ -65,6 +65,13 @@ developer could act on; the cold arm sometimes went deeper on a single point. Th
 reaching the same altitude without the spelunking, and naming fewer things that don't exist. That
 is exactly the #52 value projection, so it is sufficient — but the spec must not oversell it.
 
+**The rubric's other two legs have since been read** (they are human pass/fail calls, not
+measurements). All three primed answers pass *actionable* and *honest* — so the quality claim no
+longer rests on the grounded leg alone, though it now rests on one reader's judgement of three
+answers about one repo. The reading also produced the single most useful finding about artifact
+*content* so far: the wiring answer passed both legs and still felt confidently shallow, which is
+what §4.2's data-flows section exists to address.
+
 Three findings constrain the design below:
 
 1. **The artifact removes searching, not reading.** Savings scaled with how much search a question
@@ -123,14 +130,39 @@ per-file declaration cap so one large service cannot eat the budget.
 
 Fleet-*generated* — never hand-written, forced by the repo-agnostic constraint. Compiled by a model
 with the full uncapped map as its spine plus read access to the repo, into a fixed section shape:
-what the product is, architecture, key seams, conventions, feature landing zones, verify gate,
-**unknowns**.
+what the product is, architecture, key seams, **principal data flows**, conventions, feature
+landing zones, verify gate, **unknowns**.
 
 - **Budget: ~200 lines.** The prototype's came out at 86 lines / ~2.9k tokens.
 - **The Unknowns section is mandatory**, and is the structural support for the rubric's *honest*
   leg: the artifact must state where it lacks a fact rather than inventing one. In the prototype it
   earned its place — it had already flagged the one claim the drift check later caught as stale.
+- **The data-flows section is the one addition the prototype's own evidence asks for**, and it is
+  the weakest-supported requirement here — see below.
 - **SHA-stamped frontmatter**, including the grounding ratio at compile time (§6).
+
+#### Why data flows get their own section
+
+Three signals converge on the **wiring** class ("how is Z wired today?") being where the artifact
+underdelivers, all from #54:
+
+1. It saved the least — **1.4×**, against 8.2× on placement.
+2. It scored the lowest grounding of the primed arm (0.92).
+3. On the human read of the rubric's *actionable* and *honest* legs, it was the one answer that
+   **passed both yet still felt confidently shallow** — organised and correct, but thinner than its
+   presentation suggested.
+
+The diagnosis that fits all three: a ranked structural map tells you what *depends on* what, which
+is not the same as what *happens in what order*. Placement questions are answered by structure;
+wiring questions are answered by narrative, and nothing in the artifact currently carries narrative.
+Hence an explicit section tracing the handful of principal flows end to end — for the prototype
+target, provider fetch → reconcile → store → filter → view.
+
+**Hold this loosely.** It rests on one reader, one answer, one repo — the thinnest evidence in this
+document, and the *actionable* and *honest* legs are pass/fail judgements, not measurements. It is
+recorded because it is the only signal so far about *what the prose layer should contain* rather
+than how big it should be. Stage 3 (§11) should treat it as a hypothesis to check against the next
+two or three targets, and drop it if the wiring class stops being the weak cell.
 
 ### 4.3 Injection cost
 
