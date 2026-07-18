@@ -25,6 +25,23 @@ productive, never drained*. Its projection here, from #52: **time-to-oriented �
 **zero dead-ends** (an answer never names something that doesn't exist, and never ends with the
 human opening the repo to finish the job).
 
+### 1.1 The question classes it must handle
+
+Decided in #52; everything below is built to serve these three, and the prototype was scored on
+them.
+
+1. **Placement** — "where does feature X land?"
+2. **Wiring** — "how is Z wired today?", the factual base that placement rests on.
+3. **Story-driven change** — given a story or feature request, produce a **dispatch-ready task
+   brief**: files and seams to touch, approach, constraints, verify gate — pasteable into a fleet
+   task. This is the fleet-unique class, the ideation→dispatch on-ramp, and it subsumes placement.
+
+Two further classes are **in spec but outside the must-bar** — build toward them, do not gate on
+them. **Blast radius** ("what breaks if we change Y?") needs reference precision the artifact will
+not have at stage 1 (§12). **Capability inventory** ("what does the product do today?") is largely
+a prose-layer question and may fall out of §4.2 for free; if it does, it is a bonus, not a
+commitment.
+
 ## 2. The bet, and what the evidence actually supports
 
 The map rested on one unproven claim: a pre-compiled artifact answers a feature question better and
@@ -37,7 +54,11 @@ comparison](./knowledge-layer-prototype-comparison.md).
 | tokens | 10.07M | 2.39M | 4.2× cheaper |
 | cost | $3.39 | $1.27 | 2.7× cheaper |
 | wall clock | 396s | 172s | 2.3× faster |
-| grounded ratio | 0.86 / 0.87 | 1.00 / 0.92 | primed wins both valid questions |
+| grounding ratio | 0.86 / 0.87 | 1.00 / 0.92 | primed wins both valid questions |
+
+Two grounding cells, not three: the third question's cold run recorded a stub — it spent 6.9M
+tokens and answered with a postscript referring to a brief that appears nowhere in its output — so
+its quality axis is void. Its cost figures stand; the work was really done and really paid for.
 
 **Sell this as cost, speed and precision — not as deeper insight.** Both arms produced answers a
 developer could act on; the cold arm sometimes went deeper on a single point. The artifact's win is
@@ -47,8 +68,10 @@ is exactly the #52 value projection, so it is sufficient — but the spec must n
 Three findings constrain the design below:
 
 1. **The artifact removes searching, not reading.** Savings scaled with how much search a question
-   needed: 8.2× on placement, 4.9× on the story→brief, 1.4× on wiring (whose answer is inherently a
-   file-by-file walk).
+   needed: 8.2× on placement and 1.4× on wiring, whose answer is inherently a file-by-file walk.
+   (The story→brief's 4.9× points the same way but should not be leaned on — that is the question
+   whose cold arm produced the stub above, so the ratio compares a deliverable against a
+   non-deliverable.)
 2. **The prose layer is what carries conventions**, and therefore what makes an answer
    dispatch-ready — and what goes stale. The map alone would not have named test conventions, ADR
    habits, or the target's build gate.
@@ -65,7 +88,10 @@ demonstrates it for the *run-time* consumer. See §10.
 Proposed terms. They graduate into `CONTEXT.md` when the code lands, not before — the glossary
 names what exists.
 
-- **Knowledge artifact** — the two fused layers for one target, taken together.
+- **Knowledge artifact** — the two fused layers for one target, taken together. Note the collision
+  to resolve at graduation: this repo already uses *artifact* for per-run evidence under
+  `artifacts/runs/<runId>/`. Either qualify this one everywhere or pick another head noun; do not
+  let both senses into `CONTEXT.md` unqualified.
 - **Map layer** — the deterministic tree-sitter structural map. Ephemeral; rebuilt on every use.
 - **Prose layer** — the fleet-generated intent layer. Compiled once, SHA-stamped, stored.
 - **Compile** — producing the prose layer for a target. Costs model tokens; happens at onboarding.
@@ -171,7 +197,8 @@ check, injects both, answers, and prints drift flags alongside. Target resolutio
 handling and registry merge already exist for `fleet run` and should be reused, not reimplemented.
 
 **Why the CLI and not the Operator app first:** the runner is where the artifact is produced and
-where target resolution lives; the Operator is a tolerant reader of runner speech (ADR-0001), so an
+where target resolution lives; the Operator is a tolerant reader of runner speech
+([ADR-0001](./adr/0001-tolerant-reader-wire-contract.md)), so an
 Operator view is a second consumer of a seam that must exist anyway. Building the CLI first gets
 the primary bar into use in one stage instead of three. An Operator view is stage 6 (§11) and, when
 built, reaches this through `@fleet/contract` like every other runner surface — never by reading
@@ -336,8 +363,8 @@ native install proves fragile across the fleet's platforms.
 
 ## 13. Out of scope
 
-- Blast-radius and capability-inventory question classes (#52 nice-to-haves, explicitly outside the
-  must-bar).
+- *Gating* on the blast-radius and capability-inventory question classes. They are in spec but
+  outside the must-bar (§1.1) — no stage below is blocked on them.
 - Embedding or semantic search over the target. #51 found it good for concept queries and
   infra-heavy; the tree-sitter substrate is the repo-agnostic choice and this spec commits to it.
 - Any per-target hand-written prose. The repo-agnostic constraint forbids it.
