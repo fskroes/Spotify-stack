@@ -1,0 +1,4 @@
+node_modules/
+
+# The evidence names a private fleet target; it stays local (see README).
+evidence/
