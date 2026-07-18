@@ -206,3 +206,16 @@ Recorded plainly, because the result is a decision input.
 - **Open question for the spec**: the fleet's own agents already have auto-memory. The spec should
   say how a compiled artifact and accumulated memory compose, rather than pretending the agent
   starts blank.
+- **The measurement this ticket did *not* do.** Everything above measures the *ideation* consumer —
+  a human asking a question. The run-time consumer is unmeasured: do fleet runs that receive the
+  artifact ship better pull requests than runs that don't? That is the harder experiment (the unit
+  is a shipped run, not an answer, and the judge/verify gates are the scoreboard), and it is the one
+  Honk's testability objection actually targets — #51 recorded their position that dynamic context
+  "makes it less testable and predictable." A static, versioned, SHA-stamped artifact is the answer
+  to that objection *in principle*; nothing here demonstrates it in practice.
+- **Where the measurement harness belongs.** #50 lists it as unspecified. The cheapest useful form:
+  fold a short version of this comparison into target onboarding — compile the artifact, ask two or
+  three questions both ways, record the row. Each new target then arrives carrying its own evidence,
+  and the case rests on a table across languages and repo sizes rather than one Swift app. Note for
+  whoever writes it: tokens are the least persuasive column. Wall clock, and whether an answer sent
+  the reader back into the repo, are what a reader actually feels.
