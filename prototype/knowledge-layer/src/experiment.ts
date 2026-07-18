@@ -12,13 +12,21 @@ export interface Question {
   text: string;
 }
 
-/** Identical for both arms — only the starting knowledge differs. */
+/**
+ * Identical for both arms — only the starting knowledge differs.
+ *
+ * The last rule is load-bearing for measurement, not for the reader: a run that
+ * delegates its deliverable to a file write or a sub-agent leaves the recorded
+ * answer a stub, and the run is then unscoreable however well it did the work.
+ * That happened once (see the comparison's threats to validity).
+ */
 const ANSWER_SHAPE = [
   "Answer for a developer who will act on this immediately. Requirements:",
   "- Name concrete files (repo-relative paths) and symbols; a reader must not have to re-explore the repo.",
   "- Everything you name as existing must actually exist. Mark anything you would create as new.",
   "- If you do not know something, say so explicitly instead of inventing it.",
   "- Be concise: at most 60 lines.",
+  "- Put the complete answer in your reply. Do not write it to a file and do not summarise work done elsewhere.",
 ].join("\n");
 
 /**

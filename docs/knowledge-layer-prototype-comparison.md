@@ -27,8 +27,9 @@ classes from #52 with and without it, and measures both sides.
 - **Money: 2.7× cheaper.** $3.39 → $1.27.
 - **Wall clock: 2.3× faster.** 396s → 172s. Every primed answer landed inside the #52
   "time-to-oriented ≤ 2 minutes" projection; the cold arm missed it on two of three.
-- **Grounding: primed wins all three.** Mechanically verified claims: 0.86 → 1.00 (q1),
-  0.87 → 0.92 (q2), 0.86 → 0.93 (q3).
+- **Grounding: primed wins both questions where the comparison is valid.** Mechanically verified
+  claims: 0.86 → 1.00 (q1), 0.87 → 0.92 (q2). q3's quality axis is void — the cold run recorded a
+  stub instead of its brief (see threats to validity); its cost figures still stand.
 - **Read the answers, they are close in substance.** Both arms produce answers a developer could
   act on, and the cold arm sometimes goes deeper on a specific point. The artifact's win is that it
   reaches the same altitude without the spelunking, and names fewer things that do not exist.
@@ -45,8 +46,8 @@ time-to-oriented and zero dead-ends, not "better answers than a thorough explore
 | q1 placement | **primed** | **257,274** | **$0.256** | **36s** | 3 | 33/33 | **1.00** |
 | q2 wiring | cold | 1,004,336 | $0.570 | 78s | — | 40/46 | 0.87 |
 | q2 wiring | **primed** | **713,039** | **$0.434** | **34s** | 8 | 49/53 | **0.92** |
-| q3 story-brief | cold | 6,944,859 | $1.971 | 191s | — | 6/7 | 0.86 |
-| q3 story-brief | **primed** | **1,420,059** | **$0.578** | **102s** | 15 | 38/41 | **0.93** |
+| q3 story-brief | cold | 6,944,859 | $1.971 | 191s | — | void | void |
+| q3 story-brief | **primed** | **1,420,059** | **$0.578** | **102s** | 15 | 38/41 | 0.93 |
 | **total** | cold | **10,066,158** | **$3.387** | **396s** | | | |
 | **total** | **primed** | **2,390,372** | **$1.268** | **172s** | | | |
 
@@ -188,6 +189,18 @@ Recorded plainly, because the result is a decision input.
 4. **Three questions, one run each.** No repetition, so per-question variance is unmeasured.
 5. **`num_turns` in the envelope is unreliable** (it reported 1 for runs that clearly used tools).
    Wall clock is measured by the harness, not taken from the CLI.
+6. **q3's cold run recorded a stub, so its quality axis is void.** The run spent 6.9M tokens and
+   191s, then answered with a postscript — "the brief already delivered stands as dispatch-ready" —
+   to a brief that appears nowhere in the recorded output, having tried to write a file the tool
+   allowlist denied. Its 7 scored claims are not comparable to the primed arm's 41, so the grounded
+   cells are voided rather than reported. The token and cost figures are unaffected: the work was
+   really done and really paid for.
+
+   Two things follow. The narrow one is a harness bug, now fixed at the source: the answer shape
+   demands the complete deliverable in the reply and forbids delegating it to a file. The broader
+   one is not a defect at all — a three-minute, seven-million-token wait that ends in "the brief
+   already delivered" is a vivid instance of the drained-user failure mode this layer exists to
+   prevent. One anecdote, not a measurement, but worth recording rather than tidying away.
 
 ## What this hands to #55
 

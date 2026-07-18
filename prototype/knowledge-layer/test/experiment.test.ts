@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildQuestionPrompt, type Question } from "../src/experiment.js";
+import { ARMS, buildQuestionPrompt, type Question } from "../src/experiment.js";
 import { QUESTIONS } from "../src/questions.js";
 
 const question: Question = { id: "q", questionClass: "placement", text: "Where does muting land?" };
@@ -13,6 +13,14 @@ describe("buildQuestionPrompt", () => {
       expect(prompt).toContain("Where does muting land?");
       expect(prompt).toContain("at most 60 lines");
       expect(prompt).toContain("Everything you name as existing must actually exist");
+    }
+  });
+
+  it("demands the deliverable in the reply, so a run cannot record a stub", () => {
+    for (const arm of ARMS) {
+      expect(buildQuestionPrompt(arm, question, "ARTIFACT BODY")).toContain(
+        "Put the complete answer in your reply.",
+      );
     }
   });
 
