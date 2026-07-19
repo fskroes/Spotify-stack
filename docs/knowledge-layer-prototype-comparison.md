@@ -33,6 +33,9 @@ classes from #52 with and without it, and measures both sides.
 - **Read the answers, they are close in substance.** Both arms produce answers a developer could
   act on, and the cold arm sometimes goes deeper on a specific point. The artifact's win is that it
   reaches the same altitude without the spelunking, and names fewer things that do not exist.
+- **The human legs pass, 3/3 on both.** *Actionable* and *honest* were read after the fact (see
+  Grading). One reader, three answers — the weakest evidence here, and it changes nothing about the
+  verdict. What it did surface is where the artifact is thinnest: the **wiring** class.
 
 The honest summary: **pre-compiled knowledge mostly buys speed, cost, and precision — not
 insight.** That is enough to justify the layer, because the #52 value projection was
@@ -109,9 +112,26 @@ symbol an answer names is checked against the repo's real files and tree-sitter-
 at the pinned SHA. Claims the answer explicitly proposes creating are counted separately as
 `proposed` rather than as fabrications.
 
-The *actionable* and *honest* legs are **pass/fail calls the human still owes** — this is a HITL
-ticket. The six answers are kept locally for exactly that reading; no verdict on those two legs is
-recorded here, which is why the quality claim above rests on the grounded leg alone.
+The *actionable* and *honest* legs are **pass/fail calls only the human can make** — this is a HITL
+ticket. That reading has since been done, against the three primed answers:
+
+| leg | q1 placement | q2 wiring | q3 story→brief |
+| --- | --- | --- | --- |
+| actionable | pass | pass | pass |
+| honest | pass | pass | pass |
+
+So the quality claim no longer rests on the grounded leg alone. It now rests on **one reader's
+judgement of three answers about one repo**, which is weaker evidence than the mechanical leg, not
+stronger — read it as "nothing here fails the bar," not as a measurement.
+
+**The one finding worth more than the six passes.** The wiring answer passed both legs and still
+read as *confidently shallow* — organised and correct, but thinner than its presentation suggested.
+That is the same cell that saved the least (1.4×) and scored the lowest grounding (0.92), so three
+independent signals land on the same class. The diagnosis that fits: a ranked structural map
+carries what depends on what, never what happens in what order. Placement is answered by structure;
+wiring is answered by narrative, and the artifact carries no narrative. The spec takes this up as a
+mandatory data-flows section in the prose layer, flagged there as a hypothesis to re-test on the
+next targets rather than a settled requirement.
 
 ## The artifact
 
