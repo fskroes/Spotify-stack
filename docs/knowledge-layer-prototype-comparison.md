@@ -95,10 +95,19 @@ Two arms, identical in everything except starting knowledge:
 | Starting knowledge | none | the artifact, injected up front |
 
 Both arms run as headless `claude -p --output-format stream-json` processes with the target repo as
-the working directory. The prototype code is in
-[`prototype/knowledge-layer/`](../prototype/knowledge-layer/README.md); every answer, run envelope,
-the artifact, and the grading table are written to `prototype/knowledge-layer/evidence/`, which is
-git-ignored because it names the private target — regenerate it locally to re-read the answers.
+the working directory. The prototype code lived at `prototype/knowledge-layer/` and was **deleted
+once the spec landed**, as its README always said it would be — it carried native tree-sitter
+grammars outside the pnpm workspace and was never meant to outlive the question it answered.
+Recover it from history if needed:
+
+```sh
+git show 1bec92d --stat            # the commit that added it
+git checkout 1bec92d -- prototype/knowledge-layer
+```
+
+Its `evidence/` (the artifact, six answers, run envelopes, grading tables) was git-ignored
+throughout because it names the private target, so it was never in history and is not recoverable
+that way. It is kept outside this repo.
 
 **Questions** (one per #52 class, all about behaviour the target does *not* have yet, so no answer
 can be recited):

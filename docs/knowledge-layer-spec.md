@@ -2,7 +2,8 @@
 
 Status: **spec** — the destination of wayfinder map #50, and the handoff document for the
 follow-on build effort. Nothing described here is built. The prototype that proved the core bet
-(#54) is throwaway code in `prototype/knowledge-layer/` and is not the implementation.
+(#54) was throwaway code at `prototype/knowledge-layer/`, deleted once this spec landed; recover it
+from commit `1bec92d` if the algorithms are wanted. It was never the implementation.
 
 Last updated: 2026-07-18
 
@@ -365,9 +366,11 @@ Stages 1–2 are pure and deterministic — no model tokens, fully unit-testable
 grounding machinery everything else depends on. Build them first even though stage 3 is the
 headline.
 
-**Port, don't lift.** The prototype is throwaway: it ships native tree-sitter grammars outside the
-pnpm workspace, is excluded from the root vitest run, and its module boundaries were drawn for one
-experiment. Its `src/` is a reference for the algorithms, not code to move.
+**Port, don't lift.** The prototype was throwaway and is gone from the tree — it shipped native
+tree-sitter grammars outside the pnpm workspace, was excluded from the root vitest run, and its
+module boundaries were drawn for one experiment. Read its `src/` out of commit `1bec92d` as a
+reference for the algorithms (parse → rank → select → budget, and the grounding checker); do not
+restore it as code.
 
 **Native-dependency risk, flagged early.** Tree-sitter grammars are native modules, and the runner
 executes both on an SSH-dispatched Mac and in GitHub Actions on Linux. The prototype already needed
