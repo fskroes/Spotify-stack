@@ -55,7 +55,7 @@ import {
 } from "@fleet/contract";
 import { fleetRevision, ledgerRefreshDecision, refreshedLedgerUrl } from "./ledger-refresh";
 import { parsePatch, type DiffFile, type ParsedDiff } from "./diff-parser";
-import { verifyReadout } from "./verify-view";
+import { mergeStakesClaim, verifyReadout } from "./verify-view";
 import {
   awaitingReview,
   closeReasonProblem,
@@ -871,10 +871,14 @@ function spotlightFor(run: FleetRun): Spotlight {
   }
   const facts = runFacts(data.status);
   if (facts?.diedAt || facts?.kind === "infra" || facts?.kind === "killed") {
-    // The evidence line for the gate it died at, when the run recorded one.
-    const line = (facts?.diedAt ? data.evidence?.find((entry) => new RegExp(facts.diedAt!, "i").test(entry)) : undefined)
-      ?? data.reason
-      ?? "No gate evidence recorded.";
+    // Why it stopped, read from the field the runner records for exactly this.
+    // This used to search the evidence prose for a line containing the gate's
+    // name, which matched for `scope` and `agent` — whose evidence happens to
+    // open with those words — and never for `verify` or `judge`, whose evidence
+    // opens with the failing check's label or `veto:`. So two kills showed a
+    // scraped line and two silently fell through to `reason`, with nothing
+    // marking the difference.
+    const line = data.reason ?? "No gate evidence recorded.";
     return {
       key: `fail:${data.status}`,
       eyebrow: "Stopped at",
@@ -1431,16 +1435,19 @@ function openMergeConfirm(key: string): void {
   const run = runs.find((item) => item.key === key);
   if (!run || run.kind !== "completed" || !run.data.prUrl) return;
   mergeCandidate = key;
-  const evidence = run.data.evidence ?? [];
+  // Both halves read the recorded state. This sentence used to say "verify
+  // green" for every run, including one whose mandated gate never ran — the
+  // false green this whole map exists to close, in the one place that asks for
+  // a signature.
   $("#merge-stakes").textContent =
-    `Squash-merge PR #${prNumber(run.data.prUrl)} into ${run.data.repo} — verify green, judge approved. ` +
+    `Squash-merge PR #${prNumber(run.data.prUrl)} into ${run.data.repo} — ${mergeStakesClaim(run.data)}. ` +
     "The branch is deleted after the merge.";
   renderDefinitionRows($("#merge-facts"), [
     ["Task", run.data.task],
     ["Repository", run.data.repo],
     ["Pull request", `#${prNumber(run.data.prUrl)} — open`],
-    ["Verify", evidence.find((line) => /verify/i.test(line)) ?? "Run approved — no verify line in the evidence"],
-    ["Judge", evidence.find((line) => /judge/i.test(line)) ?? "Run approved — no judge line in the evidence"],
+    ["Verify", verifyReadout(run.data).value],
+    ["Judge", "Approved"],
   ]);
   mergeDialog.showModal();
 }

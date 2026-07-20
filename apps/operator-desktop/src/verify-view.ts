@@ -49,3 +49,22 @@ export function verifyReadout(entry: Pick<LedgerEntry, "verifyState" | "unmetGat
     phrase: `verify inconclusive — ${unmet.join(", ")} never ran`,
   };
 }
+
+/**
+ * What the merge-confirm dialog says it is about to merge — the last sentence a
+ * co-signer reads before the branch is squashed into their default branch.
+ *
+ * Extracted here, and pure, because it was a string literal reading `verify
+ * green, judge approved` for every run regardless of what verification did (#66).
+ * The dialog is the surface with the least excuse for that: the other three all
+ * read the recorded state, so the one asking for the signature was the only one
+ * still asserting a pass it had not checked.
+ *
+ * The judge half stays a constant on purpose, and is not the same sin: a run
+ * only carries a `prUrl` if it was approved — the runner opens a pull request on
+ * no other path — and the dialog opens only for a run that has one. That is a
+ * precondition of the surface, not an inference from prose.
+ */
+export function mergeStakesClaim(entry: Pick<LedgerEntry, "verifyState" | "unmetGates">): string {
+  return `${verifyReadout(entry).phrase}, judge approved`;
+}
