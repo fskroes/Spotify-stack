@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { verifyReadout } from "../src/verify-view";
+import { mergeStakesClaim, verifyReadout } from "../src/verify-view";
 
 describe("verifyReadout", () => {
   it("calls verification green only when it passed", () => {
@@ -43,5 +43,33 @@ describe("verifyReadout", () => {
       expect(readout.value).toBe("Not recorded");
       expect(readout.tone).toBe("neutral");
     }
+  });
+});
+
+/** The merge-confirm dialog's sentence — the last thing read before a branch is
+ *  squashed into the default branch, and until #66 a string literal claiming
+ *  every run was verified green. */
+describe("mergeStakesClaim", () => {
+  it("claims green only for a run that actually verified green", () => {
+    expect(mergeStakesClaim({ verifyState: "passed" })).toBe("verify green, judge approved");
+  });
+
+  it("does not claim green when a mandated gate never ran", () => {
+    const claim = mergeStakesClaim({ verifyState: "inconclusive", unmetGates: ["xcodebuild-test"] });
+    expect(claim).not.toContain("verify green");
+    // Named here too: the co-signer's last chance to notice is this sentence.
+    expect(claim).toContain("xcodebuild-test");
+    expect(claim).toContain("judge approved");
+  });
+
+  it("does not claim green when nothing ran at all", () => {
+    expect(mergeStakesClaim({ verifyState: "inconclusive" })).not.toContain("verify green");
+  });
+
+  it("does not claim green for a line written before the state was recorded", () => {
+    // The dialog is the worst possible place to assume a pass on a run that
+    // never said what it proved.
+    expect(mergeStakesClaim({})).not.toContain("verify green");
+    expect(mergeStakesClaim({})).toContain("not recorded");
   });
 });
