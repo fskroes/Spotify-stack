@@ -96,6 +96,10 @@ export function previewCosigns(now: number): Record<string, PrLiveState> {
     "https://github.com/example/repo/pull/51": { state: "open" },
     "https://github.com/example/repo/pull/52": { state: "open" },
     "https://github.com/example/repo/pull/44": { state: "open" },
+    // A local run that shipped approved but inconclusive: reaches the co-sign
+    // gate (local diff is captured beside it), so the preview exercises the
+    // unproven merge button — the warn tone and the "you can still co-sign" copy.
+    "https://github.com/example/repo/pull/45": { state: "open" },
     "https://github.com/example/repo/pull/38": { state: "merged", mergedBy: "fernando", mergedAt: new Date(now - 90 * 60_000).toISOString() },
     // A closed run: exercises the "Run again" prefill path in the preview.
     "https://github.com/example/repo/pull/40": { state: "closed" },
