@@ -27,5 +27,5 @@ if (!task.body.includes("NO_CHANGES_NEEDED")) {
 
 console.log(`${task.id} — ${task.title}`);
 console.log(
-  `targets: ${resolved.join(", ")} · risk: ${task.risk}${task.scope ? ` · scope: ${task.scope.join(", ")}` : " · scope: unrestricted"}`,
+  `targets: ${resolved.join(", ")} · risk: ${task.risk}${task.scope ? ` · scope: ${task.scope.join(", ")}` : " · scope: unrestricted"}${task.gates ? ` · gates: ${task.gates.join(", ")}` : ""}`,
 );

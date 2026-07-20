@@ -33,7 +33,7 @@ function input(overrides: Partial<PrBodyInput> = {}): PrBodyInput {
     task: TASK,
     diff: DIFF,
     verifyChecks: [
-      { name: "vitest", label: "npm run test", status: "passed", summary: "", durationMs: 3200 },
+      { name: "test", label: "npm run test", status: "passed", summary: "", durationMs: 3200 },
     ],
     verifyState: "passed",
     verifySummary: "VERIFY PASSED\n✔ npm run test passed (3.2s)",
@@ -140,12 +140,39 @@ describe("buildPrBody", () => {
     expect(body).not.toContain("passed");
   });
 
+  it("names a mandated gate that never ran, and drops the verified claim", () => {
+    // Checks ran and passed here — the hole is that they are not the set the
+    // task demanded. The body sits above a request to co-sign, so "What
+    // actually ran" has to be true at the moment it is read.
+    const body = buildPrBody(
+      input({
+        verifyState: "inconclusive",
+        unmetGates: ["live-contract-check"],
+      }),
+    );
+
+    expect(body).not.toContain("co-signing a verified change");
+    expect(body).toContain("live-contract-check");
+    // The other road to inconclusive must not be claimed: verifiers did run.
+    expect(body).not.toContain("no verifiers detected");
+    // And what did run is still reported, rather than discarded.
+    expect(body).toContain("✔ `npm run test` passed (3.2s)");
+  });
+
+  it("shows no gate affordance when a task declared none or all were met", () => {
+    for (const unmetGates of [undefined, []]) {
+      const body = buildPrBody(input({ unmetGates }));
+      expect(body).toContain("co-signing a verified change");
+      expect(body).not.toContain("mandated");
+    }
+  });
+
   it("marks a check that never ran as skipped, not passed", () => {
     const body = buildPrBody(
       input({
         verifyChecks: [
           { name: "eslint", label: "npm run lint", status: "failed", summary: "1 error", durationMs: 900 },
-          { name: "vitest", label: "npm run test", status: "skipped", summary: "", durationMs: 0 },
+          { name: "test", label: "npm run test", status: "skipped", summary: "", durationMs: 0 },
         ],
         verifyState: "failed",
         verifySummary: "VERIFY FAILED",

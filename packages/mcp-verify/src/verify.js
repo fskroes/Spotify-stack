@@ -76,7 +76,11 @@ export function detect(cwd, { platform = process.platform } = {}) {
       checks.push({ name: "tsc", label: "tsc --noEmit", command: "npx", args: ["tsc", "--noEmit"] });
     }
     if (scripts.test) {
-      checks.push({ name: "vitest", label: "npm run test", command: "npm", args: ["run", "test"] });
+      // Named for the script, not for one runner: this fires for any `test`
+      // script, so a jest or node:test repo used to get a check called
+      // "vitest". Check names are the task-facing `gates:` vocabulary, so the
+      // misnomer would have been permanent the moment a task mandated it.
+      checks.push({ name: "test", label: "npm run test", command: "npm", args: ["run", "test"] });
     }
   }
 

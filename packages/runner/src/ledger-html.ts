@@ -536,10 +536,18 @@ function renderTimeline(e: LedgerEntry, cosign?: PrLiveState): string {
   // Read it from the recorded state instead — never from the evidence prose.
   // A line written before the tri-state existed says nothing, and "nothing
   // known" is not green.
+  // Inconclusive arrives two ways, and the row says which: nothing was
+  // detectable to run, or the task mandated a check that did not. Naming the
+  // unmet gates is the difference between "unproven" and "unproven, and here is
+  // exactly what is missing" — the latter is what a co-signer can act on.
+  const unmet = e.unmetGates ?? [];
   const VERIFY_ROW = {
     passed: { status: "passed", color: C.green },
     failed: { status: "KILLED", color: C.red },
-    inconclusive: { status: "INCONCLUSIVE — nothing ran", color: C.yellow },
+    inconclusive: {
+      status: unmet.length > 0 ? `INCONCLUSIVE — ${unmet.join(", ")} never ran` : "INCONCLUSIVE — nothing ran",
+      color: C.yellow,
+    },
     unknown: { status: "not recorded", color: C.gray },
   } as const;
   const verifyRow = VERIFY_ROW[knownVerifyState(e.verifyState) ?? "unknown"];

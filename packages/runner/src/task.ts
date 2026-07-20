@@ -15,6 +15,18 @@ export interface Task {
    * judge, or PR. Absent = unrestricted.
    */
   scope?: string[];
+  /**
+   * Verifier check names this task declares must have run for the verification
+   * to count — a *mandate*, never an instruction: a gate asserts a check
+   * executed, and never supplies one the fleet could not already run.
+   *
+   * Open vocabulary, deliberately unvalidated: the runnable set is a function
+   * of (repo shape, host platform) and is only knowable at detection time, so
+   * a typo and a deliberately unrunnable mandate are indistinguishable here.
+   * Both come out as unmet gates and an `inconclusive` verification — loud,
+   * never a false green. Flat and applied to every target, mirroring `scope`.
+   */
+  gates?: string[];
   /** Blast-radius label surfaced in the PR header. Default: low. */
   risk: TaskRisk;
   /** One human sentence for the PR's "Why" section. Falls back to the title. */
@@ -46,10 +58,17 @@ export function loadTask(taskPath: string): Task {
     }
     scope = meta.scope.map(String);
   }
+  let gates: string[] | undefined;
+  if (meta.gates !== undefined) {
+    if (!Array.isArray(meta.gates) || meta.gates.length === 0) {
+      throw new Error(`task file ${taskPath}: gates must be a non-empty list of verifier check names`);
+    }
+    gates = meta.gates.map(String);
+  }
   const risk = (meta.risk ?? "low") as TaskRisk;
   if (!TASK_RISKS.includes(risk)) {
     throw new Error(`task file ${taskPath}: risk must be one of ${TASK_RISKS.join(" | ")}`);
   }
   const why = typeof meta.why === "string" && meta.why.trim() !== "" ? meta.why.trim() : title;
-  return { id, title, targets: targets.map(String), scope, risk, why, body: match[2].trim(), raw };
+  return { id, title, targets: targets.map(String), scope, gates, risk, why, body: match[2].trim(), raw };
 }

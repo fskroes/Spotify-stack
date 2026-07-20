@@ -133,6 +133,18 @@ describe("verification state", () => {
     expect(LedgerEntrySchema.parse(entry({ verifyState: "quarantined" })).verifyState).toBe("quarantined");
     expect(LedgerEntrySchema.safeParse({ ...entry(), verifyState: 3 }).success).toBe(false);
   });
+
+  it("carries unmet gates as optional structured data, not only as prose", () => {
+    // A surface must be able to render them without pattern-matching a
+    // paragraph, and an older operator must be able to ignore the field.
+    expect(LedgerEntrySchema.parse(entry({ unmetGates: ["live-contract-check"] })).unmetGates).toEqual([
+      "live-contract-check",
+    ]);
+    // Absent means *not recorded* — every line written before gates existed.
+    // A reader must render that as unknown, never as "nothing was outstanding".
+    expect(LedgerEntrySchema.parse(entry()).unmetGates).toBeUndefined();
+    expect(LedgerEntrySchema.safeParse({ ...entry(), unmetGates: "test" }).success).toBe(false);
+  });
 });
 
 describe("parseLedgerJsonl", () => {

@@ -26,6 +26,28 @@ describe("detect", () => {
     expect(detect(dir)).toEqual([]);
   });
 
+  // These names are not internal: they are the vocabulary a task's `gates:`
+  // mandates by, so renaming one silently changes the task language. That is
+  // why the npm-shape names are asserted rather than left to the summarizer
+  // table — `test` in particular was once called `vitest`, though it fires for
+  // any `test` script, jest and node:test included.
+  it("names the npm-shape checks after the script, not after one runner", () => {
+    writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ scripts: { lint: "eslint .", typecheck: "tsc --noEmit", test: "node --test" } }),
+    );
+    mkdirSync(path.join(dir, "node_modules"));
+
+    expect(names(detect(dir))).toEqual(["eslint", "tsc", "test"]);
+  });
+
+  it("adds the install check only when dependencies are not present", () => {
+    writeFileSync(path.join(dir, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
+    writeFileSync(path.join(dir, "package-lock.json"), "{}");
+
+    expect(names(detect(dir))).toEqual(["npm-install", "test"]);
+  });
+
   it("gates an Xcode project with a unit-test target on macOS", () => {
     mkdirSync(path.join(dir, "Foo.xcodeproj"));
     writeFileSync(path.join(dir, "project.yml"), "targets:\n  FooTests:\n    type: bundle.unit-test\n");

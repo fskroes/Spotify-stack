@@ -29,6 +29,10 @@ export interface PrBodyInput {
   /** How verification ended. Read from the field, never inferred from the
    *  summary prose — the co-sign body's claims depend on getting this right. */
   verifyState: VerifyState;
+  /** Checks the task's `gates:` mandated that never executed. Empty or absent
+   *  when the task declared no gates or all were met — neither leaves anything
+   *  outstanding, and neither renders an unmet-gate affordance at all. */
+  unmetGates?: string[];
   verifySummary: string;
   verdict: Verdict;
   /** Veto verdicts absorbed before the final approval, in order. */
@@ -68,8 +72,13 @@ export function buildPrBody(input: PrBodyInput): string {
   const stats = diffStats(input.diff);
   const sha = input.sha ?? "<sha>";
   // Asked once: two sections of this body make claims that are only true when
-  // something actually verified the change.
+  // something actually verified the change. Inconclusive arrives by two roads —
+  // nothing was detectable to run, or the task demanded a check that did not
+  // run — and the reviewer needs to be told which, since the second leaves a
+  // named hole they can judge and the first does not.
   const unverified = input.verifyState === "inconclusive";
+  const unmet = input.unmetGates ?? [];
+  const nothingRan = input.verifyChecks.length === 0;
 
   const scopeSection = task.scope
     ? [
@@ -86,16 +95,27 @@ export function buildPrBody(input: PrBodyInput): string {
   // What actually ran — and, when nothing did, the fact that nothing did. The
   // reviewer is being asked to co-sign on this section's word; an empty check
   // set that reads like silence would let them assume a pass.
-  const checkLines = unverified
-    ? [
-        `- ⚠ **No verifiers detected for this repository** — nothing was executed.`,
-        `- This change is **unverified**: no build, test, or lint gate has run against it.`,
-      ]
-    : input.verifyChecks.map((c) =>
-        c.status === "skipped"
-          ? `- – \`${c.label}\` did not run (earlier check failed)`
-          : `- ${c.status === "passed" ? "✔" : "✖"} \`${c.label}\` ${c.status === "passed" ? "passed" : "FAILED"} (${(c.durationMs / 1000).toFixed(1)}s)`,
-      );
+  const checkLines = [
+    ...(unverified && nothingRan
+      ? [
+          `- ⚠ **No verifiers detected for this repository** — nothing was executed.`,
+          `- This change is **unverified**: no build, test, or lint gate has run against it.`,
+        ]
+      : input.verifyChecks.map((c) =>
+          c.status === "skipped"
+            ? `- – \`${c.label}\` did not run (earlier check failed)`
+            : `- ${c.status === "passed" ? "✔" : "✖"} \`${c.label}\` ${c.status === "passed" ? "passed" : "FAILED"} (${(c.durationMs / 1000).toFixed(1)}s)`,
+        )),
+    // Named, not merely counted: which gate went unmet is what decides whether
+    // the hole matters for this particular change.
+    ...(unmet.length > 0
+      ? [
+          ``,
+          `- ⚠ **This task mandated ${unmet.length === 1 ? "a check that did not run" : "checks that did not run"}**: ${unmet.map((g) => `\`${g}\``).join(", ")}`,
+          `- What ran above is not the set the task required, so the mandate is **unproven** — whether that matters here is your call.`,
+        ]
+      : []),
+  ];
 
   const vetoTrail =
     input.vetoes.length > 0
@@ -110,9 +130,11 @@ export function buildPrBody(input: PrBodyInput): string {
 
   // The banner's claim has to survive the verify state. "A verified change" is
   // only true when something verified it.
-  const banner = unverified
-    ? `> **Risk: ${task.risk}** · Proposed by the fleet runner and reviewed by the judge, but **the fleet could not verify it** — this repository has no verifiers, so no check ran. Read the diff.`
-    : `> **Risk: ${task.risk}** · Proposed and pre-vetted by the fleet runner. You are co-signing a verified change, not reviewing raw agent output.`;
+  const banner = !unverified
+    ? `> **Risk: ${task.risk}** · Proposed and pre-vetted by the fleet runner. You are co-signing a verified change, not reviewing raw agent output.`
+    : unmet.length > 0
+      ? `> **Risk: ${task.risk}** · Proposed by the fleet runner and reviewed by the judge, but **the fleet could not fully verify it** — this task mandated ${unmet.map((g) => `\`${g}\``).join(", ")}, which did not run. Read the diff.`
+      : `> **Risk: ${task.risk}** · Proposed by the fleet runner and reviewed by the judge, but **the fleet could not verify it** — this repository has no verifiers, so no check ran. Read the diff.`;
 
   return [
     banner,

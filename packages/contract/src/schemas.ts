@@ -178,6 +178,13 @@ export const LedgerEntrySchema = z.object({
    *  this side knows. Absent on lines written before the tri-state existed,
    *  which means "not known": a reader must not render those as green. */
   verifyState: z.string().optional(),
+  /** Gates the task mandated that no check satisfied — see `unmetGates()` in the
+   *  runner. Present and non-empty only when something the task demanded did not
+   *  run; a run that declared no gates and a run whose gates were all met both
+   *  omit it. Absent therefore means *not recorded*, which a reader must render
+   *  as unknown rather than as an empty set — the latter would assert that
+   *  nothing was outstanding, which no historical line ever established. */
+  unmetGates: z.array(z.string()).optional(),
 
   // --- Cloud provenance (written by run.ts only when GITHUB_ACTIONS is set;
   // recorded, never derived by readers). They let the operator pull a cloud

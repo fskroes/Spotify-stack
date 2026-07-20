@@ -42,7 +42,7 @@ describe("runVerify", () => {
 
     expect(result.state).toBe("passed");
     expect(result.summary.startsWith("VERIFY PASSED")).toBe(true);
-    expect(result.checks.map((c) => [c.name, c.status])).toEqual([["vitest", "passed"]]);
+    expect(result.checks.map((c) => [c.name, c.status])).toEqual([["test", "passed"]]);
   });
 
   it("fails at the first red check and records the rest as skipped, not passed", async () => {
@@ -59,8 +59,8 @@ describe("runVerify", () => {
     // prose in the summary — surfaces must be able to say so from the field.
     expect(result.checks.map((c) => [c.name, c.status])).toEqual([
       ["eslint", "failed"],
-      ["vitest", "skipped"],
+      ["test", "skipped"],
     ]);
-    expect(result.checks.find((c) => c.name === "vitest")?.durationMs).toBe(0);
+    expect(result.checks.find((c) => c.name === "test")?.durationMs).toBe(0);
   });
 });
