@@ -284,6 +284,14 @@ select:disabled, input:disabled { color: #65615d; }
 button.compact { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: 4px; font-size: 10.5px; font-weight: 620; cursor: pointer; }
 button.primary { position: relative; overflow: hidden; color: #1c1513; border: 1px solid var(--accent); background: var(--accent); }
 button.primary:hover:not(:disabled) { background: #e19a8e; }
+/* An unproven run is still signable (#61), so the merge button stays a primary —
+   recoloured to the warn tone, not demoted: a disabled-looking button would read
+   as "blocked", which is the one thing it must not say. Unscoped on purpose, so
+   it reaches both the rail button and the confirm dialog's submit — the second
+   is the one that actually signs. Carries the --yellow of .gate-pill.warn,
+   though as a fill rather than that rule's foreground. */
+button.cosign-merge.unproven { color: #1c1513; border-color: var(--yellow); background: var(--yellow); }
+button.cosign-merge.unproven:hover:not(:disabled) { background: #e8c877; }
 /* The charge → commit sweep: a shine that crosses the Dispatch button as the run
    is launched. Parked off-screen left at rest, so it only shows during the press. */
 .commit-sweep { position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgb(255 255 255 / 45%), transparent); transform: translateX(-120%); pointer-events: none; }

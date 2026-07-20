@@ -55,7 +55,7 @@ import {
 } from "@fleet/contract";
 import { fleetRevision, ledgerRefreshDecision, refreshedLedgerUrl } from "./ledger-refresh";
 import { parsePatch, type DiffFile, type ParsedDiff } from "./diff-parser";
-import { mergeStakesClaim, verifyReadout } from "./verify-view";
+import { cosignAffordance, mergeStakesClaim, outcomeDetail, verifyReadout } from "./verify-view";
 import {
   awaitingReview,
   closeReasonProblem,
@@ -320,7 +320,7 @@ app.innerHTML = `
       <div class="dialog-actions">
         <span></span><span></span>
         <button type="button" id="cancel-merge" class="secondary">Cancel</button>
-        <button type="submit" class="primary"><i data-lucide="git-merge"></i>Squash-merge</button>
+        <button type="submit" id="confirm-merge" class="primary"><i data-lucide="git-merge"></i><span>Squash-merge</span></button>
       </div>
     </form>
   </dialog>
@@ -1296,7 +1296,10 @@ function decisionHead(run: FleetRun): DecisionHead {
     return { tone: "neutral", icon: "git-pull-request-closed", eyebrow: "Outcome", title: "Closed", detail: "Closed without merging — the reason was posted to the pull request." };
   }
   if (awaitingReview(gateInput(run))) {
-    return { tone: "review", icon: "git-pull-request", eyebrow: "Your move", title: "Ready to co-sign", detail: `PR #${prNumber(run.data.prUrl)} is open with every gate green. Squash-merge, or close it with a reason.` };
+    // The detail sentence reads the recorded verification state rather than
+    // asserting "every gate green" for anything the gate would accept (#59).
+    const affordance = cosignAffordance(run.data, { prNumber: prNumber(run.data.prUrl), retry: false });
+    return { tone: "review", icon: "git-pull-request", eyebrow: "Your move", title: "Ready to co-sign", detail: affordance.detail };
   }
   const facts = runFacts(run.data.status);
   if (facts?.diedAt || facts?.kind === "infra" || facts?.kind === "killed") {
@@ -1305,7 +1308,8 @@ function decisionHead(run: FleetRun): DecisionHead {
   if (run.data.status === "no-changes") {
     return { tone: "neutral", icon: "circle", eyebrow: "Outcome", title: "No changes", detail: run.data.reason ?? "The agent made no changes — nothing to review or ship." };
   }
-  return { tone: "done", icon: "check-circle-2", eyebrow: "Outcome", title: "Approved", detail: "Every gate passed." };
+  // "Every gate passed." was a literal here too — true only when it was (#59).
+  return { tone: "done", icon: "check-circle-2", eyebrow: "Outcome", title: "Approved", detail: outcomeDetail(run.data) };
 }
 
 function renderCosignDecision(run: FleetRun | undefined): void {
@@ -1385,13 +1389,19 @@ function renderCosignDecision(run: FleetRun | undefined): void {
     }
   } else {
     const number = prNumber(run.kind === "completed" ? run.data.prUrl : undefined);
+    // The button carries the warning itself, so a co-signer who reads only the
+    // thing they are about to press still learns the run was never proven (#59).
+    // It is never withheld: an unmet mandate is non-blocking by #61, and the
+    // gate that can refuse is `mergeBlocker`, which stays verify-blind.
+    const affordance = cosignAffordance(run.kind === "completed" ? run.data : {}, {
+      prNumber: number,
+      retry: refusal?.action === "merge",
+    });
     const merge = document.createElement("button");
-    merge.className = "primary compact cosign-merge";
+    merge.className = `primary compact cosign-merge ${affordance.stance}`;
     merge.disabled = busy;
-    merge.innerHTML = `<i data-lucide="git-merge"></i><span></span>`;
-    merge.querySelector("span")!.textContent = busy
-      ? "Working…"
-      : `${refusal?.action === "merge" ? "Retry squash-merge" : "Squash-merge"} PR #${number}`;
+    merge.innerHTML = `<i data-lucide="${affordance.mergeIcon}"></i><span></span>`;
+    merge.querySelector("span")!.textContent = busy ? "Working…" : affordance.mergeLabel;
     merge.addEventListener("click", () => openMergeConfirm(run.key));
     const close = document.createElement("button");
     close.className = "secondary compact cosign-close";
@@ -1449,6 +1459,17 @@ function openMergeConfirm(key: string): void {
     ["Verify", verifyReadout(run.data).value],
     ["Judge", "Approved"],
   ]);
+  // The submit button is the one that actually signs, so it wears the warning
+  // too — leaving it plain would protect the signature itself with prose alone,
+  // which is the state #59 item 1 rejected.
+  const affordance = cosignAffordance(run.data, { prNumber: prNumber(run.data.prUrl), retry: false });
+  const confirm = $("#confirm-merge");
+  confirm.className = `primary cosign-merge ${affordance.stance}`;
+  // Rebuilt rather than patched: `refreshIcons` swaps each `<i>` for an `<svg>`,
+  // so the placeholder is gone by the second open.
+  confirm.innerHTML = `<i data-lucide="${affordance.mergeIcon}"></i><span></span>`;
+  confirm.querySelector("span")!.textContent = affordance.confirmLabel;
+  refreshIcons(mergeDialog);
   mergeDialog.showModal();
 }
 
