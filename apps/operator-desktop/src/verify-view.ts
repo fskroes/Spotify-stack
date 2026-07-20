@@ -31,7 +31,21 @@ const READOUTS: Record<"passed" | "failed" | "inconclusive" | "unknown", VerifyR
   unknown: { value: "Not recorded", tone: "neutral", phrase: "verify not recorded" },
 };
 
-/** What this run's verification proved, for a completed run's ledger line. */
-export function verifyReadout(entry: Pick<LedgerEntry, "verifyState">): VerifyReadout {
-  return READOUTS[knownVerifyState(entry.verifyState) ?? "unknown"];
+/** What this run's verification proved, for a completed run's ledger line.
+ *
+ *  An inconclusive run names its unmet gates when it has them: the co-signer's
+ *  question is not "was this proven" but "is the *missing* check one I care
+ *  about for this change", and only the names answer that. A run that declared
+ *  no gates, and one whose gates were all met, both carry none and read exactly
+ *  as they did before — the affordance appears only when something is
+ *  outstanding. */
+export function verifyReadout(entry: Pick<LedgerEntry, "verifyState" | "unmetGates">): VerifyReadout {
+  const readout = READOUTS[knownVerifyState(entry.verifyState) ?? "unknown"];
+  const unmet = entry.unmetGates ?? [];
+  if (readout.tone !== "warn" || unmet.length === 0) return readout;
+  return {
+    value: unmet.length === 1 ? `${unmet[0]} never ran` : `${unmet.length} gates never ran`,
+    tone: "warn",
+    phrase: `verify inconclusive — ${unmet.join(", ")} never ran`,
+  };
 }

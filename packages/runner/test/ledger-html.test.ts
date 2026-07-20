@@ -62,6 +62,22 @@ describe("renderLedgerHtml · the static report", () => {
     // and "nothing known" may not be dressed up as green.
     expect(renderLedgerHtml([entry()], opts)).toContain("not recorded");
   });
+
+  it("names the gate a task demanded when that is why verification was inconclusive", () => {
+    const html = renderLedgerHtml(
+      [entry({ verifyState: "inconclusive", unmetGates: ["live-contract-check"] })],
+      opts,
+    );
+
+    expect(html).toContain("live-contract-check");
+    // Distinguished from the other road to inconclusive: checks did run here.
+    expect(html).not.toContain("INCONCLUSIVE — nothing ran");
+
+    // A historical line carries no gate field at all. That means "not recorded",
+    // never an assertion that nothing was outstanding.
+    const legacy = renderLedgerHtml([entry({ verifyState: "inconclusive" })], opts);
+    expect(legacy).toContain("INCONCLUSIVE — nothing ran");
+  });
 });
 
 describe("renderLedgerHtml · the Live lane", () => {

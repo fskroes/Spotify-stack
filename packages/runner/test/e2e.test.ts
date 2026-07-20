@@ -19,6 +19,8 @@ import { run } from "../src/run.js";
 const CONTROL_REPO = path.resolve(__dirname, "..", "..", "..");
 const TASK_001 = path.join(CONTROL_REPO, "tasks", "examples", "001-ts-migrate-http-client.md");
 const SCOPE_TASK = path.join(__dirname, "fixtures", "scope-task.md");
+const GATES_UNMET_TASK = path.join(__dirname, "fixtures", "gates-unmet-task.md");
+const GATES_MET_TASK = path.join(__dirname, "fixtures", "gates-met-task.md");
 const GOOD_PATCH = path.join(__dirname, "fixtures", "001-good.patch");
 const BAD_PATCH = path.join(__dirname, "fixtures", "001-bad.patch");
 
@@ -257,6 +259,86 @@ describe("runner e2e (mock engine, hermetic)", () => {
     // A kill is a terminal path like any other: it must not leave a ghost in
     // the lane, claiming to be running forever.
     expect(readInflight(ledgerPath)).toEqual([]);
+  });
+
+  // The whole gates path in one place: frontmatter parse, the mandated-vs-
+  // executed comparison, the composed state, and the wire field — proven by
+  // what a real run records rather than by reaching into the pieces.
+  it("gate mandate unmet: ships approved, but records inconclusive and names the gate", async () => {
+    const ledgerPath = tmpLedger();
+    vi.stubEnv("GITHUB_ACTIONS", "");
+    const result = await run({
+      controlRepo: CONTROL_REPO,
+      taskPath: GATES_UNMET_TASK,
+      repoName: "demo-ts-service",
+      local: true,
+      dryRun: true,
+      engine: "mock",
+      mockPatch: GOOD_PATCH,
+      judgeMode: "approve",
+      ledgerPath,
+      log: quiet,
+    });
+
+    // Non-blocking: an unmet mandate must never turn a good diff into a
+    // discarded run, or declaring a gate would be dangerous and authors would
+    // stop. What is unproven is the verification, not the run.
+    expect(result.status).toBe("approved");
+    // Verification itself is untouched — it ran what this repo offers, and that
+    // passed. The mandate is the runner's business, not verification's.
+    expect(result.verify?.state).toBe("passed");
+    expect(result.unmetGates).toEqual(["live-contract-check"]);
+
+    // The composed state is what reaches the wire, and it is not a passthrough.
+    const entries = readLedger(ledgerPath);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].status).toBe("approved");
+    expect(entries[0].verifyState).toBe("inconclusive");
+    expect(entries[0].unmetGates).toEqual(["live-contract-check"]);
+    expect(entries[0].evidence?.[0]).not.toContain("all green");
+    expect(entries[0].evidence?.[0]).toContain("live-contract-check");
+
+    // The co-sign body may not claim a verified change, and must say which
+    // gate is missing — it sits directly above the ask to sign.
+    const preview = readFileSync(path.join(result.artifactsDir, "pr-preview.md"), "utf8");
+    expect(preview).not.toContain("co-signing a verified change");
+    expect(preview).toContain("live-contract-check");
+
+    // And the judge was told in prose, since its whole input is the task, the
+    // diff, and this summary.
+    expect(result.verify?.summary).toContain("GATES UNMET");
+    expect(result.verify?.summary).toContain("live-contract-check");
+  });
+
+  it("gate mandate met: the run keeps the green it earned, with nothing outstanding", async () => {
+    const ledgerPath = tmpLedger();
+    vi.stubEnv("GITHUB_ACTIONS", "");
+    const result = await run({
+      controlRepo: CONTROL_REPO,
+      taskPath: GATES_MET_TASK,
+      repoName: "demo-ts-service",
+      local: true,
+      dryRun: true,
+      engine: "mock",
+      mockPatch: GOOD_PATCH,
+      judgeMode: "approve",
+      ledgerPath,
+      log: quiet,
+    });
+
+    expect(result.status).toBe("approved");
+    expect(result.unmetGates).toEqual([]);
+
+    const entries = readLedger(ledgerPath);
+    expect(entries[0].verifyState).toBe("passed");
+    // Omitted, not empty: a met mandate leaves nothing outstanding, and no
+    // surface should render an unmet-gate affordance for it.
+    expect(entries[0].unmetGates).toBeUndefined();
+    expect(entries[0].evidence?.[0]).toContain("all green");
+
+    const preview = readFileSync(path.join(result.artifactsDir, "pr-preview.md"), "utf8");
+    expect(preview).toContain("co-signing a verified change");
+    expect(result.verify?.summary).not.toContain("GATES UNMET");
   });
 
   it("negative path: broken change → verify red → no PR, no verdict", async () => {

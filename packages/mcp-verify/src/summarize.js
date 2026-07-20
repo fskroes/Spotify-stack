@@ -147,7 +147,7 @@ export function summarizeGeneric(output) {
 export const summarizers = {
   eslint: summarizeEslint,
   tsc: summarizeTsc,
-  vitest: summarizeVitest,
+  test: summarizeVitest,
   "swift-build": summarizeSwiftBuild,
   "swift-test": summarizeSwiftTest,
   // xcodebuild output is clang/XCTest-flavored — same shapes the swift parsers

@@ -46,11 +46,54 @@ How deterministic verification ended: `passed`, `failed`, or **`inconclusive`**
 ran* — a repo with no detectable verifiers is a legitimate state, but claiming a
 pass for it is an assertion the fleet has not earned.
 
+The state a *run records* is a composition, not a passthrough of what
+verification returned. Verification answers only "what does this repo offer, and
+did it pass"; the runner folds in whether the task's [mandated
+gates](#mandated-gate) actually ran. So `inconclusive` now arrives by two roads —
+nothing was detectable to run, or something the task demanded did not — and
+`passed` means both that every check that ran was green *and* that every
+mandated gate was among them. Only the runner holds both halves, which is why
+the composition lives there and verification stays task-blind.
+
 Orthogonal to [run status](#run-status-vs-verification-state). Every surface
 reads the state from its field — `VerifyResult.state`, or the ledger line's
 `verifyState` — and none may infer it by string-matching summary prose. A
 missing field (any line written before the tri-state existed) means *not
 known*, which is not the same as green and must never render as green.
+
+## Mandated gate
+
+A verifier check name a task's `gates:` frontmatter declares must have run for
+its verification to count. A gate is an **assertion, not an instruction**: it
+names a check the fleet could already run and demands evidence that it did. It
+never supplies a new one — that is a capability question, deliberately kept out.
+
+The names are the check names verification emits (`test`, `tsc`,
+`xcodebuild-test`, …), an **open vocabulary** with no registry. Any string is
+legal, because the runnable set is a function of *(repo shape, host platform)*
+and is only knowable at detection time. A typo and a deliberately unrunnable
+mandate are therefore indistinguishable — by design, since both produce a loud
+[unmet gate](#unmet-gate) and neither can produce a false green.
+
+## Unmet gate
+
+A mandated gate that no check satisfied. A gate is **met** when a check of that
+name reached `passed` or `failed` — it *executed*. A `skipped` check does not
+meet a mandate: it was detected and then never reached, which is the "did not
+run" case the tri-state exists to name.
+
+Any unmet gate makes the recorded [verification state](#verification-state)
+`inconclusive`, and travels to every surface by name (`unmetGates` on the wire,
+plus the verification summary prose the judge reads). It does **not** change
+[run status](#run-status-vs-verification-state): a good diff with an unmet gate
+still ships as `approved`. Blocking would make declaring a gate dangerous, so
+authors would stop declaring them; the proposition is *cheap to declare, loud
+when unmet*. What is unproven is the verification, not the run.
+
+A run that declared no gates and a run whose gates were all met both record
+none, and no surface shows an unmet-gate affordance for either. A ledger line
+with no `unmetGates` field at all means *not recorded* — never an assertion that
+nothing was outstanding.
 
 ## Run status vs. verification state
 

@@ -56,6 +56,10 @@ export interface RunResult {
   artifactsDir: string;
   diff: string;
   verify?: VerifyResult;
+  /** Gates `task.gates` mandated that no check executed. Empty when the task
+   *  declared none or all were met; those two cases are deliberately
+   *  indistinguishable downstream, since neither leaves anything outstanding. */
+  unmetGates?: string[];
   verdict?: Verdict;
   /** Veto verdicts absorbed along the way (includes a final fatal one). */
   vetoes: Verdict[];
@@ -174,13 +178,55 @@ function killReason(result: Pick<RunResult, "status" | "verify" | "verdict" | "r
 }
 
 /**
+ * The gates a task mandated that nothing satisfied.
+ *
+ * A gate is **met** when a check of that name actually executed — reached
+ * `passed` or `failed`. A `skipped` check does not meet a mandate: it was
+ * detected and then never reached because an earlier check failed, which is
+ * precisely the "did not run" case the tri-state exists to name.
+ *
+ * Matching is by check name against an open vocabulary, so a gate naming a
+ * check this host cannot run and a gate with a typo in it both come out unmet.
+ * That is the design: neither can produce a false green, and no mechanism
+ * exists whose function is to make one of them look acceptable.
+ */
+export function findUnmetGates(mandated: string[] | undefined, checks: VerifyCheck[]): string[] {
+  if (!mandated || mandated.length === 0) return [];
+  const executed = new Set(checks.filter((c) => c.status !== "skipped").map((c) => c.name));
+  return mandated.filter((gate) => !executed.has(gate));
+}
+
+/**
+ * The verification state a run *records* — a composition of what verification
+ * found and what the task demanded, which is not the same thing as
+ * `VerifyResult.state`. Deterministic verification answers "what does this repo
+ * offer, and did it pass"; it never learns about tasks. Only the runner holds
+ * both halves, so only the runner can compose them.
+ *
+ * `failed` outranks an unmet mandate — a red check is a kill either way, and
+ * this feature adds no new way for one to be reported. An unmet mandate over an
+ * otherwise-passing verification is `inconclusive`: every check that ran was
+ * green, and the one the task cared about was not among them.
+ *
+ * Returns `undefined` when the run died before verify — nothing is known, which
+ * no surface may render as green.
+ */
+export function composedVerifyState(
+  result: Pick<RunResult, "verify" | "unmetGates">,
+): VerifyState | undefined {
+  if (!result.verify) return undefined;
+  if (result.verify.state === "failed") return "failed";
+  return (result.unmetGates?.length ?? 0) > 0 ? "inconclusive" : result.verify.state;
+}
+
+/**
  * A short, capped slice of the evidence that decided the run — the gate output
  * a reader would want when the one-line `reason` isn't enough. Kept small on
  * purpose: this lives inline in the append-only, version-controlled ledger, so
  * it must not carry multi-KB diffs or full logs (those stay in artifacts/).
  */
 export function evidenceFor(
-  result: Pick<RunResult, "status" | "verify" | "verdict" | "resultText">,
+  result: Pick<RunResult, "status" | "verify" | "verdict" | "resultText" | "unmetGates">,
   scopeOffenders?: string[],
 ): string[] | undefined {
   const cap = (lines: string[]): string[] =>
@@ -211,12 +257,16 @@ export function evidenceFor(
     case "agent-failed":
       return cap(["agent produced no diff and did not declare NO_CHANGES_NEEDED", ...result.resultText.split("\n")]);
     case "approved": {
-      // Read the headline off the verify state, never off its prose: an
-      // approved run whose verifiers never ran is not "all green".
+      // Read the headline off the composed state, never off its prose: an
+      // approved run whose verifiers never ran — or whose task demanded a check
+      // that did not — is not "all green".
+      const unmet = result.unmetGates ?? [];
       const headline =
-        result.verify?.state === "inconclusive"
-          ? "⚠ scope · judge green — verify INCONCLUSIVE (no verifiers ran)"
-          : "✓ scope · verify · judge all green";
+        unmet.length > 0
+          ? `⚠ scope · judge green — verify INCONCLUSIVE (mandated gate never ran: ${unmet.join(", ")})`
+          : result.verify?.state === "inconclusive"
+            ? "⚠ scope · judge green — verify INCONCLUSIVE (no verifiers ran)"
+            : "✓ scope · verify · judge all green";
       return cap([headline, ...(result.verify?.summary.split("\n") ?? [])]);
     }
     default:
@@ -355,7 +405,13 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         // Recorded, so the operator reads the verification state as a fact
         // rather than string-matching the evidence lines. Absent when the run
         // died before verify — nothing is known, which is not the same as green.
-        verifyState: full.verify?.state,
+        // This is the *composed* state, not a passthrough of verify.state: it
+        // folds in whether the task's mandated gates actually ran.
+        verifyState: composedVerifyState(full),
+        // Only when something is outstanding. Omitted for a run that declared no
+        // gates and for one whose gates were all met — neither has anything to
+        // report, and an empty array would read as a positive all-clear.
+        ...((full.unmetGates?.length ?? 0) > 0 ? { unmetGates: full.unmetGates } : {}),
         // Cloud provenance: only in Actions, where the review set is uploaded as
         // an artifact named `<task>-<repo>` (the exact expression agent-task.yml
         // uses). Lets the operator pull this run's evidence on demand later.
@@ -430,15 +486,38 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       return finish({ ...base, diff, status: "scope-violation" }, offenders);
     }
 
+    // The task's mandate, checked against what actually executed. Verification
+    // itself never learns about tasks — it is shared with the agent-facing MCP
+    // tool, and handing the agent a mandate it cannot act on would leave it
+    // chasing a pass it has no way to produce. Naming the unmet gates in the
+    // summary is not redundancy with the wire field: the judge's whole input is
+    // the task markdown, the diff, and this text, so this is what lets it
+    // decline to approve a change on the strength of checks the task never asked for.
+    const applyGates = (result: VerifyResult): { verify: VerifyResult; unmetGates: string[] } => {
+      const unmet = findUnmetGates(task.gates, result.checks);
+      if (unmet.length === 0) return { verify: result, unmetGates: unmet };
+      return {
+        verify: {
+          ...result,
+          summary:
+            `${result.summary}\n\nGATES UNMET — this task mandated ${unmet.join(", ")}, which did not run here. ` +
+            "What executed above is not the set the task required, so this change is unverified against its own mandate. This is not a pass.",
+        },
+        unmetGates: unmet,
+      };
+    };
+
     // Belt-and-braces deterministic verification (the Stop hook already ran it
     // inside the session for the real engine, but nothing green goes unproven).
     log("· verifying…");
     inflight.enter("verify");
-    let verify = (await timed("verifyMs", () => runVerify(workspace))) as VerifyResult;
+    let gated = applyGates((await timed("verifyMs", () => runVerify(workspace))) as VerifyResult);
+    let verify = gated.verify;
+    let unmetGates = gated.unmetGates;
     artifact("verify.log", verify.summary);
     if (verify.state === "failed") {
       artifact("diff.patch", diff);
-      return finish({ ...base, diff, verify, status: "verify-failed" });
+      return finish({ ...base, diff, verify, unmetGates, status: "verify-failed" });
     }
 
     // Judge loop — veto feeds guidance back into the same session (part 3).
@@ -466,6 +545,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
           ...base,
           diff,
           verify,
+          unmetGates,
           verdict,
           resultText: error instanceof Error ? error.message : String(error),
           status: "engine-failed",
@@ -478,11 +558,13 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         return finish({ ...base, diff, status: "scope-violation" }, offenders);
       }
       inflight.enter("verify");
-      verify = (await timed("verifyMs", () => runVerify(workspace))) as VerifyResult;
+      gated = applyGates((await timed("verifyMs", () => runVerify(workspace))) as VerifyResult);
+      verify = gated.verify;
+      unmetGates = gated.unmetGates;
       artifact("verify.log", verify.summary);
       if (verify.state === "failed") {
         artifact("diff.patch", diff);
-        return finish({ ...base, diff, verify, status: "verify-failed" });
+        return finish({ ...base, diff, verify, unmetGates, status: "verify-failed" });
       }
       inflight.enter("judge");
       verdict = await timed("judgeMs", () => judgeOnce({ taskMarkdown: task.raw, diff, verifySummary: verify.summary }));
@@ -493,7 +575,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
 
     if (verdict.verdict === "veto") {
       vetoes.push(verdict);
-      return finish({ ...base, diff, verify, verdict, status: "vetoed" });
+      return finish({ ...base, diff, verify, unmetGates, verdict, status: "vetoed" });
     }
 
     // Assemble the reviewer-facing PR body (previewed as an artifact in
@@ -505,7 +587,10 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       task,
       diff,
       verifyChecks: verify.checks,
-      verifyState: verify.state,
+      // The composed state, so the co-sign banner and "What actually ran" agree
+      // with the ledger rather than with verification's own narrower answer.
+      verifyState: composedVerifyState({ verify, unmetGates }) ?? verify.state,
+      unmetGates,
       verifySummary: verify.summary,
       verdict,
       vetoes,
@@ -535,7 +620,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       }));
     }
 
-    return finish({ ...base, diff, verify, verdict, prUrl, sha, status: "approved" });
+    return finish({ ...base, diff, verify, unmetGates, verdict, prUrl, sha, status: "approved" });
   } finally {
     // The throw path: prepareWorkspace fails on a bad clone or a missing
     // local_path, and finish() never runs. Clearing is idempotent, so the
