@@ -33,8 +33,9 @@ function input(overrides: Partial<PrBodyInput> = {}): PrBodyInput {
     task: TASK,
     diff: DIFF,
     verifyChecks: [
-      { name: "vitest", label: "npm run test", ok: true, summary: "", durationMs: 3200 },
+      { name: "vitest", label: "npm run test", status: "passed", summary: "", durationMs: 3200 },
     ],
+    verifyState: "passed",
     verifySummary: "VERIFY PASSED\n✔ npm run test passed (3.2s)",
     verdict: {
       verdict: "approve",
@@ -119,6 +120,40 @@ describe("buildPrBody", () => {
     );
     expect(body).toContain("Attempt 1 vetoed (package-lock.json modified without being asked) → corrected → re-judged.");
     expect(body).toContain("Final verdict after 1 correction: approved.");
+  });
+
+  it("says nothing ran — and drops the verified claim — when verification was inconclusive", () => {
+    const body = buildPrBody(
+      input({
+        verifyChecks: [],
+        verifyState: "inconclusive",
+        verifySummary: "VERIFY INCONCLUSIVE — no verifiers detected for this repository",
+      }),
+    );
+
+    // The banner may not call this a verified change: nothing verified it.
+    expect(body).not.toContain("co-signing a verified change");
+    expect(body).toContain("could not verify");
+    // "What actually ran" must answer honestly: nothing did.
+    expect(body).toContain("no verifiers detected");
+    expect(body).toContain("nothing was executed");
+    expect(body).not.toContain("passed");
+  });
+
+  it("marks a check that never ran as skipped, not passed", () => {
+    const body = buildPrBody(
+      input({
+        verifyChecks: [
+          { name: "eslint", label: "npm run lint", status: "failed", summary: "1 error", durationMs: 900 },
+          { name: "vitest", label: "npm run test", status: "skipped", summary: "", durationMs: 0 },
+        ],
+        verifyState: "failed",
+        verifySummary: "VERIFY FAILED",
+      }),
+    );
+
+    expect(body).toContain("✖ `npm run lint` FAILED (0.9s)");
+    expect(body).toContain("– `npm run test` did not run (earlier check failed)");
   });
 
   it("falls back cleanly without scope, sha, or links", () => {

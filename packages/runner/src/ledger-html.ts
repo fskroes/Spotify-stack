@@ -18,6 +18,7 @@ import path from "node:path";
 import {
   dedupeInflight,
   isKillStatus,
+  knownVerifyState,
   runFacts,
   TERMINAL_STAGES,
   type InflightRecord,
@@ -495,7 +496,7 @@ function evLineStyle(line: string): string {
   else if (t.startsWith("-")) c = C.red;
   else if (t.startsWith("✓")) c = C.green;
   else if (/^(✗|veto:)|error|fail/i.test(t)) c = C.red;
-  else if (/^⧗|warn/i.test(t)) c = C.yellow;
+  else if (/^(⧗|⚠)|warn/i.test(t)) c = C.yellow;
   return `font-family:var(--mono);font-size:11.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word;padding:1px 14px;color:${c}`;
 }
 
@@ -530,6 +531,19 @@ function renderTimeline(e: LedgerEntry, cosign?: PrLiveState): string {
   const diedAt = runFacts(e.status)?.diedAt;
   const d = diedAt ? TERMINAL_STAGES.indexOf(diedAt) : undefined; // undefined for approved
 
+  // The Verify row (stages[2]) is the one gate whose outcome the run status
+  // cannot tell you: `approved` says the change shipped, not that anything ran.
+  // Read it from the recorded state instead — never from the evidence prose.
+  // A line written before the tri-state existed says nothing, and "nothing
+  // known" is not green.
+  const VERIFY_ROW = {
+    passed: { status: "passed", color: C.green },
+    failed: { status: "KILLED", color: C.red },
+    inconclusive: { status: "INCONCLUSIVE — nothing ran", color: C.yellow },
+    unknown: { status: "not recorded", color: C.gray },
+  } as const;
+  const verifyRow = VERIFY_ROW[knownVerifyState(e.verifyState) ?? "unknown"];
+
   return stages
     .map((s, i) => {
       let status: string;
@@ -537,8 +551,13 @@ function renderTimeline(e: LedgerEntry, cosign?: PrLiveState): string {
       let bg: string;
       let time = fmtDur(s.ms);
       if (d === undefined) {
-        // approved — everything passed; the human queue is the last gate
-        if (i < 4) {
+        // approved — every gate was cleared; the human queue is the last one.
+        // "Cleared" is not "proven": the Verify row states what actually ran.
+        if (i === 2) {
+          status = verifyRow.status;
+          color = verifyRow.color;
+          bg = verifyRow.color;
+        } else if (i < 4) {
           status = "passed";
           color = C.green;
           bg = C.green;

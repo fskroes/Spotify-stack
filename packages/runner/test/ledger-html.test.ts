@@ -47,6 +47,21 @@ describe("renderLedgerHtml · the static report", () => {
     expect(withLive).toBe(bare);
     expect(bare).not.toContain("In flight");
   });
+
+  // The timeline's Verify row is the one gate whose outcome `approved` cannot
+  // imply: an approved run says the change shipped, not that anything ran.
+  it("states what verification proved, rather than inferring it from the run status", () => {
+    const passed = renderLedgerHtml([entry({ verifyState: "passed" })], opts);
+    expect(passed).toContain("passed");
+    expect(passed).not.toContain("INCONCLUSIVE");
+
+    const nothingRan = renderLedgerHtml([entry({ verifyState: "inconclusive" })], opts);
+    expect(nothingRan).toContain("INCONCLUSIVE — nothing ran");
+
+    // A line written before the tri-state existed knows nothing about what ran,
+    // and "nothing known" may not be dressed up as green.
+    expect(renderLedgerHtml([entry()], opts)).toContain("not recorded");
+  });
 });
 
 describe("renderLedgerHtml · the Live lane", () => {

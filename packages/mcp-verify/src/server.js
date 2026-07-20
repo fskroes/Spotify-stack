@@ -22,14 +22,16 @@ server.registerTool(
     description:
       "Run all formatting, build, and test verifiers for this repository and " +
       "return a summary. Call this after making changes; the task is only " +
-      "complete when it reports VERIFY PASSED.",
+      "complete when it reports VERIFY PASSED — or VERIFY INCONCLUSIVE, which " +
+      "means this repository has no verifiers to run and there is nothing you " +
+      "can do to turn it green.",
     inputSchema: {},
   },
   async () => {
     const result = await runVerify(workspace);
     return {
       content: [{ type: "text", text: result.summary }],
-      isError: !result.ok,
+      isError: result.state === "failed",
     };
   },
 );

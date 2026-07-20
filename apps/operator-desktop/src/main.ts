@@ -55,6 +55,7 @@ import {
 } from "@fleet/contract";
 import { fleetRevision, ledgerRefreshDecision, refreshedLedgerUrl } from "./ledger-refresh";
 import { parsePatch, type DiffFile, type ParsedDiff } from "./diff-parser";
+import { verifyReadout } from "./verify-view";
 import {
   awaitingReview,
   closeReasonProblem,
@@ -842,7 +843,7 @@ function spotlightFor(run: FleetRun): Spotlight {
       key: "review",
       eyebrow: "Your move",
       title: "Awaiting your co-sign",
-      detail: `PR #${prNumber(data.prUrl)} open · verify green · judge approved`,
+      detail: `PR #${prNumber(data.prUrl)} open · ${verifyReadout(data).phrase} · judge approved`,
       tone: "review",
       icon: "git-pull-request",
     };
@@ -897,16 +898,17 @@ function spotlightFor(run: FleetRun): Spotlight {
     key: "approved",
     eyebrow: "Outcome",
     title: statusLabel(data.status),
-    detail: `${duration(data.elapsedMs)} · verify green · judge approved`,
+    detail: `${duration(data.elapsedMs)} · ${verifyReadout(data).phrase} · judge approved`,
     tone: "done",
     icon: "check-circle-2",
   };
 }
 
-type ReadoutTone = "ok" | "bad" | "working" | "neutral";
+type ReadoutTone = "ok" | "bad" | "warn" | "working" | "neutral";
 /** One telemetry pill in the gate band's base — a fact about *this* run, toned
- *  so verify-green / stopped-red land at a glance. `ok`/`bad`/`working` carry a
- *  redundant icon (✓/✗/spinner) over colour; `neutral` facts stay quiet text. */
+ *  so verify-green / stopped-red land at a glance. `ok`/`bad`/`warn`/`working`
+ *  carry a redundant icon (✓/✗/⚠/spinner) over colour; `neutral` facts stay
+ *  quiet text. */
 interface GateReadout {
   label: string;
   value: string;
@@ -942,9 +944,12 @@ function gateReadouts(run: FleetRun): GateReadout[] {
       { label: "Mode", value: data.mode, tone: "neutral" },
     ];
   }
-  // A clean run: verify green, judge approved, plus the decision facts it carries.
+  // A shipped run: what verification actually proved (read from the recorded
+  // state — an approved run is not evidence that anything ran), judge approved,
+  // plus the decision facts it carries.
+  const verify = verifyReadout(data);
   const out: GateReadout[] = [
-    { label: "Verify", value: "Green", tone: "ok" },
+    { label: "Verify", value: verify.value, tone: verify.tone },
     { label: "Judge", value: "Approved", tone: "ok" },
     { label: "Duration", value: duration(data.elapsedMs), tone: "neutral" },
   ];
@@ -1029,7 +1034,12 @@ function renderInstrument(run: FleetRun): void {
   for (const readout of gateReadouts(run)) {
     const pill = document.createElement("span");
     pill.className = `gate-pill ${readout.tone}`;
-    const pillIcon = readout.tone === "ok" ? "check" : readout.tone === "bad" ? "x" : readout.tone === "working" ? "loader-circle" : null;
+    const pillIcon =
+      readout.tone === "ok" ? "check"
+      : readout.tone === "bad" ? "x"
+      : readout.tone === "warn" ? "alert-circle"
+      : readout.tone === "working" ? "loader-circle"
+      : null;
     if (pillIcon) {
       const iconWrap = document.createElement("span");
       iconWrap.className = "gate-pill-ic";

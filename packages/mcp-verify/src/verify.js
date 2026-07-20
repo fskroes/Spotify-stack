@@ -16,17 +16,27 @@ const MAX_BUFFER = 32 * 1024 * 1024;
  * @property {string} command
  * @property {string[]} args
  *
+ * @typedef {"passed" | "failed" | "skipped"} CheckStatus
+ *   `skipped` = detected but never executed (an earlier check failed). A
+ *   boolean could not say that, so a check that did not run cannot be mistaken
+ *   for one that passed.
+ *
  * @typedef {object} CheckResult
  * @property {string} name
  * @property {string} label
- * @property {boolean} ok
- * @property {string} summary      Empty when ok; capped failure summary when not
- * @property {number} durationMs
+ * @property {CheckStatus} status
+ * @property {string} summary      Empty unless the check failed; its capped summary when it did
+ * @property {number} durationMs   0 for a skipped check — it consumed no time
+ *
+ * @typedef {"passed" | "failed" | "inconclusive"} VerifyState
+ *   Mirrors VERIFY_STATES in @fleet/contract (this package is dependency-free
+ *   plain JS and cannot import it). `inconclusive` = no verifier ran at all,
+ *   which is a legitimate state for a repo that has none — but not a pass.
  *
  * @typedef {object} VerifyResult
- * @property {boolean} ok
- * @property {CheckResult[]} checks
- * @property {string} summary      Agent-facing text for the whole run
+ * @property {VerifyState} state
+ * @property {CheckResult[]} checks  Every detected check, including skipped ones
+ * @property {string} summary        Agent-facing text for the whole run
  */
 
 /**
@@ -127,7 +137,7 @@ async function runCheck(cwd, check) {
       maxBuffer: MAX_BUFFER,
       env: { ...process.env, CI: "1", NO_COLOR: "1", FORCE_COLOR: "0" },
     });
-    return { name: check.name, label: check.label, ok: true, summary: "", durationMs: Date.now() - started };
+    return { name: check.name, label: check.label, status: "passed", summary: "", durationMs: Date.now() - started };
   } catch (/** @type {any} */ err) {
     const output = `${err.stdout ?? ""}\n${err.stderr ?? ""}`;
     const summarize = summarizers[check.name] ?? summarizeGeneric;
@@ -135,7 +145,7 @@ async function runCheck(cwd, check) {
     const summary = timedOut
       ? `check timed out after ${CHECK_TIMEOUT_MS / 1000}s`
       : summarize(output);
-    return { name: check.name, label: check.label, ok: false, summary, durationMs: Date.now() - started };
+    return { name: check.name, label: check.label, status: "failed", summary, durationMs: Date.now() - started };
   }
 }
 
@@ -149,10 +159,14 @@ async function runCheck(cwd, check) {
 export async function runVerify(cwd) {
   const checks = detect(cwd);
   if (checks.length === 0) {
+    // A repo with no verifiers is legitimate; a pass for it is not. Nothing ran,
+    // so there is nothing to assert about the change — say exactly that.
     return {
-      ok: true,
+      state: "inconclusive",
       checks: [],
-      summary: "VERIFY PASSED — no verifiers detected for this repository (no package.json, Package.swift, or Xcode project).",
+      summary:
+        "VERIFY INCONCLUSIVE — no verifiers detected for this repository (no package.json, Package.swift, or Xcode project). " +
+        "Nothing was executed, so this change is unverified. This is not a pass.",
     };
   }
 
@@ -161,20 +175,26 @@ export async function runVerify(cwd) {
   for (const check of checks) {
     const result = await runCheck(cwd, check);
     results.push(result);
-    if (!result.ok) break;
+    if (result.status === "failed") break;
+  }
+  // Detected but never reached — carried in `checks` rather than only in the
+  // summary prose, so a reader can tell "did not run" from "passed".
+  for (const check of checks.slice(results.length)) {
+    results.push({ name: check.name, label: check.label, status: "skipped", summary: "", durationMs: 0 });
   }
 
-  const failed = results.find((r) => r.ok === false);
+  const failed = results.some((r) => r.status === "failed");
   const lines = results.map((r) =>
-    r.ok
+    r.status === "passed"
       ? `✔ ${r.label} passed (${(r.durationMs / 1000).toFixed(1)}s)`
-      : `✖ ${r.label} FAILED (${(r.durationMs / 1000).toFixed(1)}s)\n${r.summary}`,
+      : r.status === "failed"
+        ? `✖ ${r.label} FAILED (${(r.durationMs / 1000).toFixed(1)}s)\n${r.summary}`
+        : `– ${r.label} skipped (earlier check failed)`,
   );
-  const skipped = checks.slice(results.length).map((c) => `– ${c.label} skipped (earlier check failed)`);
 
-  const summary = failed
-    ? `VERIFY FAILED\n${[...lines, ...skipped].join("\n")}`
-    : `VERIFY PASSED\n${lines.join("\n")}`;
-
-  return { ok: !failed, checks: results, summary };
+  return {
+    state: failed ? "failed" : "passed",
+    checks: results,
+    summary: `${failed ? "VERIFY FAILED" : "VERIFY PASSED"}\n${lines.join("\n")}`,
+  };
 }

@@ -16,6 +16,8 @@ import {
   runFacts,
   RunDetailResponseSchema,
   safeParseWire,
+  VERIFY_STATES,
+  knownVerifyState,
   WireParseError,
   type InflightRecord,
   type LedgerEntry,
@@ -108,6 +110,28 @@ describe("run fate vocabulary", () => {
     expect(runFacts("engine-failed")?.kind).toBe("infra");
     expect(runFacts("quarantined")).toBeUndefined();
     expect(isKillStatus("quarantined")).toBe(false);
+  });
+});
+
+describe("verification state", () => {
+  it("is a tri-state — a pass is only one of the three ways verification ends", () => {
+    expect([...VERIFY_STATES]).toEqual(["passed", "failed", "inconclusive"]);
+  });
+
+  it("reads the recorded state tolerantly, never inventing a pass", () => {
+    expect(knownVerifyState(entry({ verifyState: "passed" }).verifyState)).toBe("passed");
+    expect(knownVerifyState(entry({ verifyState: "inconclusive" }).verifyState)).toBe("inconclusive");
+    // A line written before this field existed knows nothing — and "nothing
+    // known" must never render as green.
+    expect(knownVerifyState(entry().verifyState)).toBeUndefined();
+    // A state a newer runner speaks and this build has never heard of.
+    expect(knownVerifyState("quarantined")).toBeUndefined();
+  });
+
+  it("carries the state on the wire as a plain, optional string", () => {
+    expect(LedgerEntrySchema.parse(entry({ verifyState: "inconclusive" })).verifyState).toBe("inconclusive");
+    expect(LedgerEntrySchema.parse(entry({ verifyState: "quarantined" })).verifyState).toBe("quarantined");
+    expect(LedgerEntrySchema.safeParse({ ...entry(), verifyState: 3 }).success).toBe(false);
   });
 });
 

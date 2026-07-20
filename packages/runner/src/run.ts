@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import picomatch from "picomatch";
-import { type RunStatus } from "@fleet/contract";
+import { type RunStatus, type VerifyState } from "@fleet/contract";
 import { runVerify } from "@fleet/mcp-verify";
 import { createCliJudgeClient, judge, type JudgeClient, type Verdict } from "@fleet/judge";
 import { prepareRunArtifactsDir, REVIEW_ARTIFACTS } from "./artifacts.js";
@@ -17,7 +17,9 @@ import { loadTask, type Task } from "./task.js";
 import { git, injectAgentConfig, prepareWorkspace, stagedDiff, stagedFiles } from "./workspace.js";
 
 interface VerifyResult {
-  ok: boolean;
+  /** Tri-state: `inconclusive` means no verifier ran, which is not a pass.
+   *  Orthogonal to RunStatus — an inconclusive run still ships as `approved`. */
+  state: VerifyState;
   checks: VerifyCheck[];
   summary: string;
 }
@@ -70,7 +72,8 @@ Complete the task below. Rules of engagement:
 - You may only edit files in this repository. Do not use git; the harness owns
   branching, commits, and pull requests.
 - Call the "verify" MCP tool after making changes; the task is complete only
-  when it reports VERIFY PASSED.
+  when it reports VERIFY PASSED — or VERIFY INCONCLUSIVE, which means this
+  repository has no verifiers and nothing you do will turn it green.
 - Never modify dependency manifests or lockfiles (package.json,
   package-lock.json, pnpm-lock.yaml, Package.resolved, …) unless the task
   explicitly asks for it. Judges veto out-of-scope changes; every veto costs a
@@ -155,7 +158,7 @@ function killReason(result: Pick<RunResult, "status" | "verify" | "verdict" | "r
     case "agent-failed":
       return "agent produced no diff without declaring NO_CHANGES_NEEDED";
     case "verify-failed": {
-      const failed = result.verify?.checks.find((c) => !c.ok);
+      const failed = result.verify?.checks.find((c) => c.status === "failed");
       const firstLine = failed?.summary.split("\n").find((l) => l.trim() !== "")?.trim();
       return failed ? `${failed.label} failed${firstLine ? `: ${firstLine}` : ""}` : "verification failed";
     }
@@ -176,7 +179,7 @@ function killReason(result: Pick<RunResult, "status" | "verify" | "verdict" | "r
  * purpose: this lives inline in the append-only, version-controlled ledger, so
  * it must not carry multi-KB diffs or full logs (those stay in artifacts/).
  */
-function evidenceFor(
+export function evidenceFor(
   result: Pick<RunResult, "status" | "verify" | "verdict" | "resultText">,
   scopeOffenders?: string[],
 ): string[] | undefined {
@@ -189,7 +192,7 @@ function evidenceFor(
 
   switch (result.status) {
     case "verify-failed": {
-      const failed = result.verify?.checks.find((c) => !c.ok);
+      const failed = result.verify?.checks.find((c) => c.status === "failed");
       if (!failed) return undefined;
       return cap([`✗ ${failed.label} failed`, ...failed.summary.split("\n")]);
     }
@@ -207,8 +210,15 @@ function evidenceFor(
       return cap(result.resultText.split("\n"));
     case "agent-failed":
       return cap(["agent produced no diff and did not declare NO_CHANGES_NEEDED", ...result.resultText.split("\n")]);
-    case "approved":
-      return cap(["✓ scope · verify · judge all green", ...(result.verify?.summary.split("\n") ?? [])]);
+    case "approved": {
+      // Read the headline off the verify state, never off its prose: an
+      // approved run whose verifiers never ran is not "all green".
+      const headline =
+        result.verify?.state === "inconclusive"
+          ? "⚠ scope · judge green — verify INCONCLUSIVE (no verifiers ran)"
+          : "✓ scope · verify · judge all green";
+      return cap([headline, ...(result.verify?.summary.split("\n") ?? [])]);
+    }
     default:
       return undefined;
   }
@@ -342,6 +352,10 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         elapsedMs: Date.now() - startedAt,
         timings: { ...timings },
         evidence: evidenceFor(full, scopeOffenders),
+        // Recorded, so the operator reads the verification state as a fact
+        // rather than string-matching the evidence lines. Absent when the run
+        // died before verify — nothing is known, which is not the same as green.
+        verifyState: full.verify?.state,
         // Cloud provenance: only in Actions, where the review set is uploaded as
         // an artifact named `<task>-<repo>` (the exact expression agent-task.yml
         // uses). Lets the operator pull this run's evidence on demand later.
@@ -422,7 +436,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     inflight.enter("verify");
     let verify = (await timed("verifyMs", () => runVerify(workspace))) as VerifyResult;
     artifact("verify.log", verify.summary);
-    if (!verify.ok) {
+    if (verify.state === "failed") {
       artifact("diff.patch", diff);
       return finish({ ...base, diff, verify, status: "verify-failed" });
     }
@@ -466,7 +480,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       inflight.enter("verify");
       verify = (await timed("verifyMs", () => runVerify(workspace))) as VerifyResult;
       artifact("verify.log", verify.summary);
-      if (!verify.ok) {
+      if (verify.state === "failed") {
         artifact("diff.patch", diff);
         return finish({ ...base, diff, verify, status: "verify-failed" });
       }
@@ -491,6 +505,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       task,
       diff,
       verifyChecks: verify.checks,
+      verifyState: verify.state,
       verifySummary: verify.summary,
       verdict,
       vetoes,

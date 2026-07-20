@@ -97,6 +97,26 @@ export function isKillStatus(status: string): status is KillStatus {
   return runFacts(status)?.kind === "killed";
 }
 
+/**
+ * How deterministic verification ended — a tri-state, because `passed | failed`
+ * cannot say "nothing ran". A repo with no detectable verifiers is a legitimate
+ * state; claiming a pass for it is not, so that run is `inconclusive`.
+ *
+ * Orthogonal to RunStatus: what is unproven is the verification, not the run. A
+ * run that shipped a good diff against a repo with no verifiers is still
+ * `approved`. Surfaces read this field; none may infer it from summary prose.
+ */
+export const VERIFY_STATES = ["passed", "failed", "inconclusive"] as const;
+export type VerifyState = (typeof VERIFY_STATES)[number];
+
+/** The verification state this build knows, else `undefined` — the tolerant
+ *  lookup for a field that is absent on every ledger line written before it
+ *  existed, and may carry a value only a newer runner speaks. `undefined` means
+ *  "not known", which no surface may render as green. */
+export function knownVerifyState(value: string | undefined): VerifyState | undefined {
+  return (VERIFY_STATES as readonly string[]).includes(value as string) ? (value as VerifyState) : undefined;
+}
+
 /** Where the run executed. */
 export const RUN_MODES = ["local", "cloud"] as const;
 export type RunMode = (typeof RUN_MODES)[number];
@@ -154,6 +174,10 @@ export const LedgerEntrySchema = z.object({
   timings: PhaseTimingsSchema.optional(),
   /** A few capped lines of the evidence that decided the run (the gate output). */
   evidence: z.array(z.string()).optional(),
+  /** How deterministic verification ended — see VERIFY_STATES for the values
+   *  this side knows. Absent on lines written before the tri-state existed,
+   *  which means "not known": a reader must not render those as green. */
+  verifyState: z.string().optional(),
 
   // --- Cloud provenance (written by run.ts only when GITHUB_ACTIONS is set;
   // recorded, never derived by readers). They let the operator pull a cloud

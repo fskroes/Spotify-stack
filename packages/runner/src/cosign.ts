@@ -4,8 +4,14 @@
  *
  * Merging is the one irreversible write in the fleet, so the gate lives here
  * at the trust boundary, not in any UI: a PR merges only when the ledger says
- * the run shipped (verify green + judge approved, i.e. status "approved") and
- * GitHub says it is mergeable. There is deliberately no --force — a refusal is
+ * the run shipped (status "approved") and GitHub says it is mergeable. Note
+ * that "shipped" is not "verified": a run whose repo has no verifiers ships as
+ * `approved` with `verifyState: "inconclusive"`, and this gate deliberately
+ * does not read the verification state — whether an unverified change may be
+ * co-signed is an open question, not one settled here. The surfaces state the
+ * verification honestly; the human decides.
+ *
+ * There is deliberately no --force — a refusal is
  * the product working, and every refusal names its reason in a structured way
  * so operator surfaces can render it verbatim.
  *

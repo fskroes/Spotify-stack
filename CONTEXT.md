@@ -38,3 +38,24 @@ closed, and by whom. Fetched live at render time and never recorded in the
 ledger (the merge happens after the run, so GitHub stays the source of truth).
 Formerly also called "Cosign" in code, which collided with the co-sign
 *result*; the canonical name is now PR live state (`PrLiveState`).
+
+## Verification state
+
+How deterministic verification ended: `passed`, `failed`, or **`inconclusive`**
+(`VerifyState`). The third value exists because a boolean cannot say *nothing
+ran* — a repo with no detectable verifiers is a legitimate state, but claiming a
+pass for it is an assertion the fleet has not earned.
+
+Orthogonal to [run status](#run-status-vs-verification-state). Every surface
+reads the state from its field — `VerifyResult.state`, or the ledger line's
+`verifyState` — and none may infer it by string-matching summary prose. A
+missing field (any line written before the tri-state existed) means *not
+known*, which is not the same as green and must never render as green.
+
+## Run status vs. verification state
+
+Two independent questions, deliberately not merged. Run status answers *what
+happened to the change* (the seven-value `RunStatus`); verification state
+answers *what was proven about it*. A run that shipped a good diff against a
+repo with no verifiers is `approved` with `verifyState: "inconclusive"` — the
+run succeeded, and what is unproven is the verification, not the run.

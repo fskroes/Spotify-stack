@@ -203,6 +203,8 @@ button svg { width: 15px; height: 15px; flex: 0 0 auto; }
 .gate-pill.ok .gate-pill-v, .gate-pill.ok .gate-pill-ic { color: var(--green); }
 .gate-pill.bad { border-color: #5a2e31; }
 .gate-pill.bad .gate-pill-v, .gate-pill.bad .gate-pill-ic { color: var(--red); }
+.gate-pill.warn { border-color: #5a4a2a; }
+.gate-pill.warn .gate-pill-v, .gate-pill.warn .gate-pill-ic { color: var(--yellow); }
 .gate-pill.working { border-color: #5a3d36; }
 .gate-pill.working .gate-pill-v, .gate-pill.working .gate-pill-ic { color: var(--accent); }
 .gate-pill.working .gate-pill-ic svg { animation: spin 1.5s linear infinite; }

@@ -77,7 +77,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
     expect(hook).not.toContain("__CONTROL_REPO__"); // placeholders resolved
 
     // Real verification ran and passed.
-    expect(result.verify?.ok).toBe(true);
+    expect(result.verify?.state).toBe("passed");
     expect(result.verify?.summary).toContain("VERIFY PASSED");
 
     // Dry-run artifacts.
@@ -274,7 +274,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
     });
 
     expect(result.status).toBe("verify-failed");
-    expect(result.verify?.ok).toBe(false);
+    expect(result.verify?.state).toBe("failed");
     expect(result.verify?.summary).toContain("VERIFY FAILED");
     // Verification stops at the first failing check; the broken change trips
     // eslint (unused var) before tsc even runs — either error is fine.

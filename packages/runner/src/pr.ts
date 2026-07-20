@@ -4,16 +4,20 @@
  * Kept pure (string in, string out) so the body is unit-testable and can be
  * previewed in dry-run as the pr-preview.md artifact.
  */
+import type { VerifyState } from "@fleet/contract";
 import type { Verdict } from "@fleet/judge";
 import { formatRecordLine, type FleetRecord } from "./ledger.js";
 import type { Task } from "./task.js";
 
-/** Per-check result shape from @fleet/mcp-verify (plain JS, typed here). */
+/** Per-check result shape from @fleet/mcp-verify (plain JS, typed here).
+ *  `skipped` = detected but never executed, which a boolean could not say. */
+export type CheckStatus = "passed" | "failed" | "skipped";
+
 export interface VerifyCheck {
   name: string;
   label: string;
-  ok: boolean;
-  /** Empty when ok; capped failure summary when not. */
+  status: CheckStatus;
+  /** Empty unless the check failed; capped failure summary when it did. */
   summary: string;
   durationMs: number;
 }
@@ -22,6 +26,9 @@ export interface PrBodyInput {
   task: Task;
   diff: string;
   verifyChecks: VerifyCheck[];
+  /** How verification ended. Read from the field, never inferred from the
+   *  summary prose — the co-sign body's claims depend on getting this right. */
+  verifyState: VerifyState;
   verifySummary: string;
   verdict: Verdict;
   /** Veto verdicts absorbed before the final approval, in order. */
@@ -60,6 +67,9 @@ export function buildPrBody(input: PrBodyInput): string {
   const { task, verdict, record } = input;
   const stats = diffStats(input.diff);
   const sha = input.sha ?? "<sha>";
+  // Asked once: two sections of this body make claims that are only true when
+  // something actually verified the change.
+  const unverified = input.verifyState === "inconclusive";
 
   const scopeSection = task.scope
     ? [
@@ -73,12 +83,19 @@ export function buildPrBody(input: PrBodyInput): string {
         STANDING_RULE,
       ];
 
-  const checkLines =
-    input.verifyChecks.length > 0
-      ? input.verifyChecks.map(
-          (c) => `- ${c.ok ? "✔" : "✖"} \`${c.label}\` ${c.ok ? "passed" : "FAILED"} (${(c.durationMs / 1000).toFixed(1)}s)`,
-        )
-      : ["- (no verifiers detected for this repository)"];
+  // What actually ran — and, when nothing did, the fact that nothing did. The
+  // reviewer is being asked to co-sign on this section's word; an empty check
+  // set that reads like silence would let them assume a pass.
+  const checkLines = unverified
+    ? [
+        `- ⚠ **No verifiers detected for this repository** — nothing was executed.`,
+        `- This change is **unverified**: no build, test, or lint gate has run against it.`,
+      ]
+    : input.verifyChecks.map((c) =>
+        c.status === "skipped"
+          ? `- – \`${c.label}\` did not run (earlier check failed)`
+          : `- ${c.status === "passed" ? "✔" : "✖"} \`${c.label}\` ${c.status === "passed" ? "passed" : "FAILED"} (${(c.durationMs / 1000).toFixed(1)}s)`,
+      );
 
   const vetoTrail =
     input.vetoes.length > 0
@@ -91,8 +108,14 @@ export function buildPrBody(input: PrBodyInput): string {
         ]
       : [];
 
+  // The banner's claim has to survive the verify state. "A verified change" is
+  // only true when something verified it.
+  const banner = unverified
+    ? `> **Risk: ${task.risk}** · Proposed by the fleet runner and reviewed by the judge, but **the fleet could not verify it** — this repository has no verifiers, so no check ran. Read the diff.`
+    : `> **Risk: ${task.risk}** · Proposed and pre-vetted by the fleet runner. You are co-signing a verified change, not reviewing raw agent output.`;
+
   return [
-    `> **Risk: ${task.risk}** · Proposed and pre-vetted by the fleet runner. You are co-signing a verified change, not reviewing raw agent output.`,
+    banner,
     ``,
     `## What changed`,
     ``,
