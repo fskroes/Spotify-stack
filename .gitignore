@@ -19,6 +19,10 @@ fleet/repos.local.yaml
 # run appends its ledger line. Machine-local and worthless a second later.
 fleet/inflight/
 
+# per-run model-usage evidence written by local runs. Machine-local and may hold
+# real transcript-derived usage; never commit it into the public repo.
+fleet/evidence/
+
 # local Claude Code session config (personal/machine-local; the fleet injects its
 # own .claude/ into sandboxes from agent-config/ at run time)
 .claude/

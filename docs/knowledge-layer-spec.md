@@ -264,11 +264,15 @@ Three reasons for a file rather than prompt text alone:
 file in the workspace would be staged, land in the diff, and trip `scope-violation` on every scoped
 run — a mechanical false positive, not a judgement call.
 
-The runner already solves this exact problem: it injects `.claude/` config into the workspace and
-excludes it with a pathspec — `git add -A -- . ':(exclude).claude'`. The knowledge file is the same
-kind of thing (runner-injected, never the agent's work) and should extend the same exclusion rather
-than invent a second mechanism. This makes the injected path part of the workspace contract, which
-is where it belongs; a target-side `.gitignore` edit would be the target's file, not ours.
+The runner already solves this exact problem for `.claude/`. The invariant is that
+runner-injected paths never enter the reviewable diff. `stagedDiff` enforces it in two steps:
+stage all task changes (`git add -A -- .`), then explicitly unstage the injected paths
+(`git reset -q -- .claude`) before computing the diff. It cannot name the injected path in the
+`add` pathspec — the earlier `git add -A -- . ':(exclude).claude'` broke on targets that gitignore
+their own `.claude`, because Git rejects an explicitly named ignored path. The knowledge file is the
+same kind of thing (runner-injected, never the agent's work) and should extend the same unstage step
+rather than invent a second mechanism. This makes the injected path part of the workspace contract,
+which is where it belongs; a target-side `.gitignore` edit would be the target's file, not ours.
 
 **Recompile-before-dispatch** (§6) runs as part of workspace preparation, before the agent starts.
 

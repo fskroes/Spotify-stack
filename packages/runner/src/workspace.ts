@@ -117,7 +117,11 @@ export function injectAgentConfig(opts: { controlRepo: string; workspace: string
  * PR. The exclusion also carries into the PR commit, which commits this index.
  */
 export function stagedDiff(workspace: string): string {
-  git(workspace, ["add", "-A", "--", ".", ":(exclude).claude"]);
+  git(workspace, ["add", "-A", "--", "."]);
+  // Do not name .claude in the add pathspec: Git rejects an explicitly named
+  // ignored path, even when it is an exclusion. Reset keeps harness config out
+  // of the staged diff for both ignored and tracked target configurations.
+  git(workspace, ["reset", "-q", "--", ".claude"]);
   return git(workspace, ["diff", "--cached"]);
 }
 
