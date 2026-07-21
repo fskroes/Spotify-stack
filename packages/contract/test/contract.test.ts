@@ -7,6 +7,10 @@ import {
   KILL_STATUSES,
   LedgerEntrySchema,
   LedgerResponseSchema,
+  ModelUsageEvidenceSchema,
+  knownBillingSource,
+  knownUsageAvailability,
+  knownUsageRail,
   parseCosignStdout,
   parseLedgerJsonl,
   parseWire,
@@ -144,6 +148,121 @@ describe("verification state", () => {
     // A reader must render that as unknown, never as "nothing was outstanding".
     expect(LedgerEntrySchema.parse(entry()).unmetGates).toBeUndefined();
     expect(LedgerEntrySchema.safeParse({ ...entry(), unmetGates: "test" }).success).toBe(false);
+  });
+});
+
+describe("model usage evidence", () => {
+  const tokens = {
+    inputTokens: 28,
+    cacheCreationInputTokens: 99_586,
+    cacheReadInputTokens: 96_034,
+    outputTokens: 342,
+  };
+
+  const evidence = {
+    v: 1,
+    runId: "run-usage",
+    completedAt: "2026-07-21T10:00:00.000Z",
+    attempts: [
+      {
+        rail: "agent",
+        ordinal: 1,
+        role: "initial",
+        producer: { source: "claude-cli-result", version: "2.1.216" },
+        billing: { source: "unknown", evidence: "credential-provenance-not-observed" },
+        modelUsage: { availability: "observed", value: [{ model: "claude-haiku-4-5", tokens }] },
+        reportedCost: { availability: "observed", value: { kind: "claude-cli-estimate", usd: 0.6213254 } },
+        providerRetries: { availability: "unavailable", reason: "json-output-has-no-retry-events" },
+      },
+    ],
+  };
+
+  it("preserves the four token counters and an emitted zero as observed evidence", () => {
+    const parsed = ModelUsageEvidenceSchema.parse({
+      ...evidence,
+      attempts: [
+        {
+          ...evidence.attempts[0],
+          modelUsage: {
+            availability: "observed",
+            value: [{ model: "claude-haiku-4-5", tokens: { ...tokens, cacheReadInputTokens: 0 } }],
+          },
+        },
+      ],
+    });
+    expect(parsed.attempts[0].modelUsage).toEqual({
+      availability: "observed",
+      value: [{ model: "claude-haiku-4-5", tokens: { ...tokens, cacheReadInputTokens: 0 } }],
+    });
+  });
+
+  it("records present-day unavailable evidence distinctly from historical ledger absence", () => {
+    expect(ModelUsageEvidenceSchema.parse({
+      ...evidence,
+      attempts: [{ ...evidence.attempts[0], modelUsage: { availability: "unavailable", reason: "no-final-envelope" } }],
+    }).attempts[0].modelUsage).toEqual({ availability: "unavailable", reason: "no-final-envelope" });
+    expect(LedgerEntrySchema.parse(entry()).modelUsage).toBeUndefined();
+  });
+
+  it("keeps ledger usage optional and tolerates future vocabulary", () => {
+    const parsed = LedgerEntrySchema.parse(entry({
+      modelUsage: {
+        artifact: { version: 1, sha256: "a".repeat(64) },
+        agent: {
+          attempts: 1,
+          availability: "observed",
+          models: ["claude-haiku-4-5"],
+          tokens,
+          reportedCost: { kind: "claude-cli-estimate", usd: 0.6213254 },
+          billingSources: ["future-provider"],
+        },
+        judge: { attempts: 1, availability: "unavailable", billingSources: ["unknown"] },
+      },
+    }));
+    expect(parsed.modelUsage?.agent.tokens).toEqual(tokens);
+    expect(parsed.modelUsage?.agent.billingSources).toEqual(["future-provider"]);
+  });
+
+  it("rejects a new artifact shape version, malformed observed usage, and content-bearing fields", () => {
+    expect(ModelUsageEvidenceSchema.safeParse({ ...evidence, v: 2 }).success).toBe(false);
+    expect(ModelUsageEvidenceSchema.safeParse({
+      ...evidence,
+      attempts: [{ ...evidence.attempts[0], modelUsage: { availability: "observed", value: [] } }],
+    }).success).toBe(false);
+    expect(ModelUsageEvidenceSchema.safeParse({ ...evidence, prompt: "private task body" }).success).toBe(false);
+  });
+
+  it("requires the known agent and judge attempt sequence to be composeable", () => {
+    expect(ModelUsageEvidenceSchema.safeParse({
+      ...evidence,
+      attempts: [{ ...evidence.attempts[0], rail: "judge", role: "initial", ordinal: 2 }],
+    }).success).toBe(false);
+    expect(ModelUsageEvidenceSchema.safeParse({
+      ...evidence,
+      attempts: [
+        evidence.attempts[0],
+        { ...evidence.attempts[0], ordinal: 3, role: "resume" },
+      ],
+    }).success).toBe(false);
+  });
+
+  it("keeps ledger projections tolerant while writers prevent false partial totals", () => {
+    expect(LedgerEntrySchema.safeParse(entry({
+      modelUsage: {
+        artifact: { version: 1, sha256: "b".repeat(64) },
+        agent: { attempts: 2, availability: "partial", tokens, billingSources: ["unknown"] },
+        judge: { attempts: 1, availability: "unavailable", billingSources: ["unknown"] },
+      },
+    })).success).toBe(true);
+  });
+
+  it("narrows known open vocabularies without rejecting a future writer's values", () => {
+    expect(knownUsageRail("agent")).toBe("agent");
+    expect(knownUsageRail("planning")).toBeUndefined();
+    expect(knownUsageAvailability("partial")).toBe("partial");
+    expect(knownUsageAvailability("estimated")).toBeUndefined();
+    expect(knownBillingSource("api")).toBe("api");
+    expect(knownBillingSource("partner-billing")).toBeUndefined();
   });
 });
 
