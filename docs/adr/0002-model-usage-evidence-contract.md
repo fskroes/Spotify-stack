@@ -2,8 +2,9 @@
 
 Wayfinder ticket #73 defines what Fleet may say about model usage without
 turning client estimates or missing evidence into billing claims. It is the
-contract handoff for #74; this ADR deliberately does not add runtime collection,
-artifact writes, cloud upload changes, or a usage UI.
+contract handoff for #74; as authored, this ADR deliberately did not add runtime
+collection, artifact writes, cloud upload changes, or a usage UI — those landed
+in #74 (see the rollout status below).
 
 > **Rollout status (2026-07-21):** #73 and #74 are both closed. #74 implemented
 > this contract in PR #76, merged to `main` at `d8777d7`. It is validated by two
