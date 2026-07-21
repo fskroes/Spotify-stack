@@ -5,6 +5,13 @@ turning client estimates or missing evidence into billing claims. It is the
 contract handoff for #74; this ADR deliberately does not add runtime collection,
 artifact writes, cloud upload changes, or a usage UI.
 
+> **Rollout status (2026-07-21):** #73 and #74 are both closed. #74 implemented
+> this contract in PR #76, merged to `main` at `d8777d7`. It is validated by two
+> real local runs — a no-change run (proving availability semantics with no diff)
+> and an approved-diff run (proving agent, verification, and judge evidence
+> through to the ledger projection). Cloud/Actions validation remains open; see
+> [implementation status](#74-implementation-status-and-remaining-validation).
+
 ## Decision
 
 A Fleet run has one canonical, sanitized model-usage evidence document:
@@ -109,19 +116,41 @@ The canonical artifact uses a strict `v: 1` discriminant: a later shape fork
 must fail loudly until its migration is explicitly understood. Ledger readers
 remain tolerant of future optional fields and vocabulary.
 
-## #74 implementation handoff
+## #74 implementation status and remaining validation
 
-1. Extend the agent CLI and judge seams to retain sanitized final-envelope or
-   SDK-response evidence alongside their existing result/verdict data.
-2. Collect ordered agent invocations and judge attempts in `run.ts`, including
-   unavailable attempts that produced no usable envelope.
-3. Write and hash the canonical evidence document before appending its compact
-   ledger projection. Never write a digest for an artifact that was not written.
-4. Commit `fleet/evidence/` with the ledger for cloud runs, and revise the cloud
-   artifact policy so raw transcripts are not uploaded by default.
-5. Add the sanitized artifact to review-safe retrieval, then render the compact
-   projection in HTML and Operator: “not recorded” for historical absence,
-   availability for current gaps, separate agent/judge summaries, and explicitly
-   labeled estimates rather than a cost dashboard.
-6. Prove end-to-end composition with a sanitized initial-agent → veto → resumed-
-   agent → fresh-judge fixture, including a measured zero and partial evidence.
+Delivered in PR #76 (merged to `main` at `d8777d7`) and validated by the two
+real local runs noted above:
+
+1. **Agent and judge capture.** The agent CLI and judge seams retain sanitized
+   final-envelope / SDK-response evidence alongside their existing result and
+   verdict data.
+2. **Ordered attempts.** `run.ts` collects ordered agent invocations and judge
+   attempts, including unavailable attempts that produced no usable envelope.
+3. **Canonical write/hash then ledger projection.** The canonical evidence
+   document is written and hashed before its compact projection is appended to
+   the ledger; a digest is never written for an artifact that was not written.
+4. **Retrieval and presentation.** The sanitized artifact is part of review-safe
+   retrieval, and the compact projection renders in HTML and Operator: “not
+   recorded” for historical absence, availability for current gaps, separate
+   agent/judge summaries, and explicitly labeled estimates rather than a cost
+   dashboard.
+5. **End-to-end fixture.** Composition is proven by a sanitized initial-agent →
+   veto → resumed-agent → fresh-judge fixture, including a measured zero and
+   partial evidence.
+
+The cloud path is implemented in code — `cloud-sync` places the canonical
+`fleet/evidence/<runId>/` document into the control repo on retrieval, and the
+cloud artifact policy avoids shipping raw transcripts by default — but it is
+**not yet validated by a real cloud/Actions dispatch.**
+
+### Remaining validation (open)
+
+One real cloud/Actions dispatch must prove, end to end: the canonical evidence
+artifact uploads from the cloud run; a cloud review retrieves it **without a
+transcript**; and its ledger and Operator/HTML projection render from that
+retrieved artifact. This is the only remaining operational gate for Wayfinder
+map #71, which stays open until it passes.
+
+The local runs above support the delivered claims but their evidence is
+machine-local (`fleet/evidence/` is gitignored) and is deliberately not added to
+this committed public prose.
