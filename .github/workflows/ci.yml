@@ -33,6 +33,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
       # The hermetic runner e2e installs the demo repo's own deps and runs
       # real eslint/tsc/vitest inside temp workspaces.
       - run: pnpm test

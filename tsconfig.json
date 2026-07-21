@@ -13,6 +13,6 @@
     "checkJs": false,
     "noEmit": true
   },
-  "include": ["packages/**/*.ts", "packages/**/*.mjs"],
+  "include": ["packages/**/*.ts", "packages/**/*.mjs", "scripts/**/*.ts"],
   "exclude": ["node_modules", "demo-repos", "**/fixtures/**"]
 }
