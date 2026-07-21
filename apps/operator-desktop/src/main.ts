@@ -1141,6 +1141,22 @@ function cosignRows(run: FleetRun): Array<[string, string]> {
   return rows;
 }
 
+function modelUsageRows(run: FleetRun | undefined): Array<[string, string]> {
+  if (!run || run.kind === "inflight") return [];
+  const usage = run.data.modelUsage;
+  if (!usage) return [["Model usage", "Not recorded"]];
+  const rail = (label: string, value: typeof usage.agent): [string, string] => {
+    if (value.availability !== "observed" || !value.tokens) return [label, `${value.availability} · ${value.attempts} attempts`];
+    const t = value.tokens;
+    return [label, `${value.attempts} attempts · in ${t.inputTokens} · cache write ${t.cacheCreationInputTokens} · cache read ${t.cacheReadInputTokens} · out ${t.outputTokens}`];
+  };
+  const rows = [rail("Model usage · Agent", usage.agent), rail("Model usage · Judge", usage.judge)];
+  for (const [label, value] of [["Agent", usage.agent], ["Judge", usage.judge]] as const) {
+    if (value.reportedCost) rows.push([`${label} reported estimate`, `$${value.reportedCost.usd.toFixed(4)}`]);
+  }
+  return rows;
+}
+
 function renderMetadata(run: FleetRun | undefined): void {
   const list = $("#run-metadata");
   const rows: Array<[string, string]> = !run ? [["Status", "—"], ["Task", "—"], ["Repository", "—"], ["Started", "—"]] : run.kind === "inflight" ? [
@@ -1151,6 +1167,7 @@ function renderMetadata(run: FleetRun | undefined): void {
     ["Completed", new Date(run.data.ts).toLocaleString()], ["Mode", run.data.mode], ["Duration", duration(run.data.elapsedMs)],
     ...(run.data.sha ? [["Commit", run.data.sha] as [string, string]] : []), ...(run.data.vetoes ? [["Vetoes", String(run.data.vetoes)] as [string, string]] : []),
     ...cosignRows(run),
+    ...modelUsageRows(run),
   ];
   renderDefinitionRows(list, rows);
   renderCosignDecision(run);

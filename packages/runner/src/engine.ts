@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { AGENT_TIMEOUT_MS } from "./timeouts.js";
+import { unavailableProducerUsage, type ProducerUsage } from "./model-usage.js";
 import { git } from "./workspace.js";
 
 export interface EngineResult {
@@ -12,6 +13,8 @@ export interface EngineResult {
   sessionId: string;
   /** Raw engine output, saved as the run transcript. */
   transcript: string;
+  /** Sanitized final-envelope usage; no transcript content crosses this boundary. */
+  usage: ProducerUsage;
 }
 
 export interface Engine {
@@ -49,6 +52,44 @@ export interface ExecFailure {
   code?: string | null;
   stderr?: unknown;
   stdout?: unknown;
+}
+
+function tokenVector(value: unknown) {
+  if (!value || typeof value !== "object") return undefined;
+  const fields = ["inputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens"] as const;
+  if (!fields.every((field) => typeof (value as Record<string, unknown>)[field] === "number" && Number.isInteger((value as Record<string, unknown>)[field]) && (value as Record<string, number>)[field] >= 0)) {
+    return undefined;
+  }
+  return Object.fromEntries(fields.map((field) => [field, (value as Record<string, number>)[field]])) as {
+    inputTokens: number;
+    cacheCreationInputTokens: number;
+    cacheReadInputTokens: number;
+    outputTokens: number;
+  };
+}
+
+/** Extract only content-free usage facts from a final Claude CLI result envelope. */
+export function extractCliUsage(envelope: Record<string, unknown>): ProducerUsage {
+  const modelUsage = envelope.modelUsage;
+  const vectors = modelUsage && typeof modelUsage === "object"
+    ? Object.entries(modelUsage as Record<string, unknown>)
+        .map(([model, usage]) => ({ model, tokens: tokenVector(usage) }))
+        .filter((entry): entry is { model: string; tokens: NonNullable<ReturnType<typeof tokenVector>> } => entry.tokens !== undefined)
+    : [];
+  const usage = vectors.length > 0
+    ? { availability: "observed" as const, value: vectors }
+    : { availability: "unavailable" as const, reason: "final CLI envelope did not expose valid model usage" };
+  const usd = envelope.total_cost_usd;
+  return {
+    producer: { source: "claude-cli-result" },
+    billing: { source: "unknown", evidence: "CLI result does not expose credential provenance" },
+    modelUsage: usage,
+    reportedCost:
+      typeof usd === "number" && Number.isFinite(usd) && usd >= 0
+        ? { availability: "observed", value: { kind: "claude-cli-estimate", usd } }
+        : { availability: "unavailable", reason: "final CLI envelope did not expose a reported estimate" },
+    providerRetries: { availability: "unavailable", reason: "final CLI envelope does not expose provider retries" },
+  };
 }
 
 /**
@@ -144,11 +185,12 @@ export function claudeEngine(opts: { workspace: string; mcpConfigPath: string })
           `stderr: ${tail(e.stderr) || "(empty)"}\nstdout tail: ${tail(e.stdout) || "(empty)"}`,
       );
     }
-    const parsed = JSON.parse(stdout) as { result?: string; session_id?: string };
+    const parsed = JSON.parse(stdout) as Record<string, unknown>;
     return {
-      resultText: parsed.result ?? "",
-      sessionId: parsed.session_id ?? "",
+      resultText: typeof parsed.result === "string" ? parsed.result : "",
+      sessionId: typeof parsed.session_id === "string" ? parsed.session_id : "",
       transcript: stdout,
+      usage: extractCliUsage(parsed),
     };
   }
 
@@ -164,13 +206,15 @@ export function claudeEngine(opts: { workspace: string; mcpConfigPath: string })
  * On resume it applies `<patch>.retry.patch` when present (simulating a
  * self-correction) and otherwise makes no further changes.
  */
-export function mockEngine(opts: { workspace: string; mockPatch: string }): Engine {
+export function mockEngine(opts: { workspace: string; mockPatch: string; usage?: ProducerUsage[] }): Engine {
+  const nextUsage = () => opts.usage?.shift() ?? unavailableProducerUsage("mock engine does not produce model usage evidence");
   function apply(patchPath: string, label: string): EngineResult {
     git(opts.workspace, ["apply", "--whitespace=nowarn", patchPath]);
     return {
       resultText: `mock engine applied ${path.basename(patchPath)} (${label})`,
       sessionId: "mock",
       transcript: JSON.stringify({ engine: "mock", patch: patchPath, label }),
+      usage: nextUsage(),
     };
   }
 
@@ -181,6 +225,7 @@ export function mockEngine(opts: { workspace: string; mockPatch: string }): Engi
           resultText: "NO_CHANGES_NEEDED",
           sessionId: "mock",
           transcript: JSON.stringify({ engine: "mock", patch: null }),
+          usage: nextUsage(),
         };
       }
       return apply(opts.mockPatch, "initial");
@@ -194,6 +239,7 @@ export function mockEngine(opts: { workspace: string; mockPatch: string }): Engi
         resultText: "mock engine: no further changes",
         sessionId: "mock",
         transcript: JSON.stringify({ engine: "mock", resumed: true }),
+        usage: nextUsage(),
       };
     },
   };

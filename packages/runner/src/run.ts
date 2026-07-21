@@ -5,9 +5,10 @@ import path from "node:path";
 import picomatch from "picomatch";
 import { type RunStatus, type VerifyState } from "@fleet/contract";
 import { runVerify } from "@fleet/mcp-verify";
-import { createCliJudgeClient, judge, type JudgeClient, type Verdict } from "@fleet/judge";
+import { createCliJudgeClient, judgeWithEvidence, type JudgeClient, type JudgeResult, type Verdict } from "@fleet/judge";
 import { prepareRunArtifactsDir, REVIEW_ARTIFACTS } from "./artifacts.js";
-import { claudeEngine, mockEngine, type Engine } from "./engine.js";
+import { claudeEngine, mockEngine, type Engine, type EngineResult } from "./engine.js";
+import { createUsageCollector, unavailableProducerUsage, writeModelUsageEvidence, type ProducerUsage } from "./model-usage.js";
 import { findRepo, type FleetRepo } from "./fleet.js";
 import { beginInflight, sweepInflight } from "./inflight.js";
 import { appendLedger, defaultLedgerPath, fleetRecord, readLedger } from "./ledger.js";
@@ -37,8 +38,12 @@ export interface RunOptions {
   /** Print/record the result instead of pushing a branch + opening a PR. */
   dryRun?: boolean;
   engine?: "claude" | "mock";
+  /** Injectable engine seam for hermetic end-to-end protocol fixtures. */
+  engineOverride?: Engine;
   /** Patch file for the mock engine ("NONE" = simulate NO_CHANGES_NEEDED). */
   mockPatch?: string;
+  /** Ordered agent observations for the mock engine (initial, then resumes). */
+  mockUsage?: ProducerUsage[];
   judgeMode?: "claude" | "cli" | "approve" | "veto" | "veto-once";
   judgeClient?: JudgeClient;
   maxJudgeRetries?: number;
@@ -103,42 +108,47 @@ export function defaultJudgeMode(): NonNullable<RunOptions["judgeMode"]> {
   return process.env.GITHUB_ACTIONS ? "claude" : "cli";
 }
 
-function makeJudge(opts: RunOptions): (input: { taskMarkdown: string; diff: string; verifySummary: string }) => Promise<Verdict> {
+function makeJudge(opts: RunOptions): (input: { taskMarkdown: string; diff: string; verifySummary: string }) => Promise<JudgeResult> {
   const mode = opts.judgeMode ?? defaultJudgeMode();
+  const stub = (verdict: Verdict): JudgeResult => ({
+    verdict,
+    usage: unavailableProducerUsage("stub judge does not produce model usage evidence"),
+  });
   let calls = 0;
   return async (input) => {
     calls += 1;
     switch (mode) {
       case "approve":
-        return { verdict: "approve", violations: [], guidance: "", rationale: "stub judge: auto-approved (no review performed)" };
+        return stub({ verdict: "approve", violations: [], guidance: "", rationale: "stub judge: auto-approved (no review performed)" });
       case "veto":
-        return {
+        return stub({
           verdict: "veto",
           violations: ["stub: change rejected"],
           guidance: "stub guidance: correct the diff",
           rationale: "stub judge: auto-vetoed",
-        };
+        });
       case "veto-once":
-        return calls === 1
+        return stub(calls === 1
           ? {
               verdict: "veto",
               violations: ["stub: first attempt rejected"],
               guidance: "stub guidance: try again",
               rationale: "stub judge: auto-vetoed first attempt",
             }
-          : { verdict: "approve", violations: [], guidance: "", rationale: "stub judge: auto-approved after retry" };
+          : { verdict: "approve", violations: [], guidance: "", rationale: "stub judge: auto-approved after retry" });
       case "cli":
-        return judge({ ...input, client: opts.judgeClient ?? createCliJudgeClient() });
+        return judgeWithEvidence({ ...input, client: opts.judgeClient ?? createCliJudgeClient() });
       case "claude":
-        return judge({ ...input, client: opts.judgeClient });
+        return judgeWithEvidence({ ...input, client: opts.judgeClient });
     }
   };
 }
 
 function makeEngine(opts: RunOptions, workspace: string, mcpConfigPath: string): Engine {
+  if (opts.engineOverride) return opts.engineOverride;
   if ((opts.engine ?? "claude") === "mock") {
     if (!opts.mockPatch) throw new Error("--engine mock requires --mock-patch");
-    return mockEngine({ workspace, mockPatch: opts.mockPatch });
+    return mockEngine({ workspace, mockPatch: opts.mockPatch, usage: opts.mockUsage });
   }
   return claudeEngine({ workspace, mcpConfigPath });
 }
@@ -327,6 +337,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
   const ledgerPath = opts.ledgerPath ?? defaultLedgerPath(opts.controlRepo);
   const vetoes: Verdict[] = [];
   const runId = randomUUID();
+  const usage = createUsageCollector();
 
   // Phase timings, accumulated across the (possibly repeated) agent→verify→judge
   // loop. `finish` reads these by reference after the phases have run.
@@ -386,7 +397,17 @@ export async function run(opts: RunOptions): Promise<RunResult> {
 
     const finish = (result: Omit<RunResult, "vetoes" | "runId">, scopeOffenders?: string[]): RunResult => {
       const full: RunResult = { ...result, vetoes, runId };
-      artifact("result.json", JSON.stringify({ ...full, task: task.id, repo: repo.name }, null, 2));
+      const modelUsageEvidence = usage.evidence(runId, new Date().toISOString());
+      // A custom ledger is the runner's hermetic-test seam. Keep its durable
+      // evidence beside that ledger instead of leaking test runs into the control
+      // repo's committed fleet/evidence directory.
+      const persistedUsage = writeModelUsageEvidence({
+        controlRepo: opts.ledgerPath ? path.dirname(ledgerPath) : opts.controlRepo,
+        evidence: modelUsageEvidence,
+      });
+      const modelUsage = usage.projection(modelUsageEvidence, persistedUsage.sha256);
+      artifact("model-usage.json", persistedUsage.content);
+      artifact("result.json", JSON.stringify({ ...full, task: task.id, repo: repo.name, modelUsage }, null, 2));
       appendLedger(ledgerPath, {
         ts: new Date().toISOString(),
         runId,
@@ -408,6 +429,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         // This is the *composed* state, not a passthrough of verify.state: it
         // folds in whether the task's mandated gates actually ran.
         verifyState: composedVerifyState(full),
+        modelUsage,
         // Only when something is outstanding. Omitted for a run that declared no
         // gates and for one whose gates were all met — neither has anything to
         // report, and an empty array would read as a positive all-clear.
@@ -446,7 +468,22 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       inScope ? stagedFiles(workspace).filter((file) => !inScope(file)) : [];
 
     log("· running agent…");
-    let engineResult = await timed("agentMs", () => engine.run(buildPreamble(task)));
+    let engineResult: EngineResult;
+    try {
+      engineResult = await timed("agentMs", () => engine.run(buildPreamble(task)));
+      usage.recordAgent(engineResult.usage);
+    } catch (error) {
+      usage.recordAgent(unavailableProducerUsage("agent invocation failed before a usable final envelope"));
+      return finish({
+        task,
+        repo,
+        workspace,
+        artifactsDir,
+        diff: "",
+        resultText: error instanceof Error ? error.message : String(error),
+        status: "engine-failed",
+      });
+    }
     artifact("transcript.json", engineResult.transcript);
 
     let diff = stagedDiff(workspace);
@@ -522,7 +559,23 @@ export async function run(opts: RunOptions): Promise<RunResult> {
 
     // Judge loop — veto feeds guidance back into the same session (part 3).
     inflight.enter("judge");
-    let verdict = await timed("judgeMs", () => judgeOnce({ taskMarkdown: task.raw, diff, verifySummary: verify.summary }));
+    let judgeResult: JudgeResult;
+    try {
+      judgeResult = await timed("judgeMs", () => judgeOnce({ taskMarkdown: task.raw, diff, verifySummary: verify.summary }));
+      usage.recordJudge(judgeResult.usage);
+    } catch (error) {
+      usage.recordJudge(unavailableProducerUsage("judge invocation failed before a usable producer response"));
+      artifact("diff.patch", diff);
+      return finish({
+        ...base,
+        diff,
+        verify,
+        unmetGates,
+        resultText: error instanceof Error ? error.message : String(error),
+        status: "engine-failed",
+      });
+    }
+    let verdict = judgeResult.verdict;
     let retries = 0;
     while (verdict.verdict === "veto" && retries < maxRetries) {
       retries += 1;
@@ -539,7 +592,9 @@ export async function run(opts: RunOptions): Promise<RunResult> {
             `A reviewer rejected your change:\n${verdict.violations.map((v) => `- ${v}`).join("\n")}\n\n${verdict.guidance}\nCorrect the change, then call the verify tool again.`,
           ),
         );
+        usage.recordAgent(engineResult.usage);
       } catch (error) {
+        usage.recordAgent(unavailableProducerUsage("agent resume failed before a usable final envelope"));
         artifact("diff.patch", diff);
         return finish({
           ...base,
@@ -567,7 +622,23 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         return finish({ ...base, diff, verify, unmetGates, status: "verify-failed" });
       }
       inflight.enter("judge");
-      verdict = await timed("judgeMs", () => judgeOnce({ taskMarkdown: task.raw, diff, verifySummary: verify.summary }));
+      try {
+        judgeResult = await timed("judgeMs", () => judgeOnce({ taskMarkdown: task.raw, diff, verifySummary: verify.summary }));
+        usage.recordJudge(judgeResult.usage);
+      } catch (error) {
+        usage.recordJudge(unavailableProducerUsage("judge invocation failed before a usable producer response"));
+        artifact("diff.patch", diff);
+        return finish({
+          ...base,
+          diff,
+          verify,
+          unmetGates,
+          verdict,
+          resultText: error instanceof Error ? error.message : String(error),
+          status: "engine-failed",
+        });
+      }
+      verdict = judgeResult.verdict;
     }
 
     artifact("diff.patch", diff);

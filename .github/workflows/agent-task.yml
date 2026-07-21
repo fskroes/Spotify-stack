@@ -78,12 +78,27 @@ jobs:
           --repo '${{ inputs.target_repo }}'
           --pr
 
+      # Only the review-safe archive and sanitized canonical usage evidence leave
+      # the runner. Raw Claude transcripts remain local diagnostics.
+      - name: Stage review-safe run artifacts
+        if: always()
+        run: |
+          rm -rf .fleet-upload
+          mkdir -p .fleet-upload
+          find artifacts/runs -maxdepth 2 -type f -exec cp {} .fleet-upload/ \; 2>/dev/null || true
+          # Keep each newly-created canonical artifact under its run-id path.
+          # Flattening would make a prior committed model-usage.json overwrite
+          # this run's file and break CloudArtifactSync's run-id validation.
+          git diff --name-only -- fleet/evidence | while read -r file; do
+            [ -n "$file" ] && cp --parents "$file" .fleet-upload/
+          done
+
       - name: Upload run artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: "${{ inputs.task_id }}-${{ inputs.target_repo }}"
-          path: artifacts/
+          path: .fleet-upload/
           if-no-files-found: ignore
 
       # Runs even when the fleet run failed — kills matter most in the record.
@@ -92,13 +107,13 @@ jobs:
       - name: Commit the run's ledger line to main
         if: always()
         run: |
-          if git diff --quiet -- fleet/ledger.jsonl; then
-            echo "no ledger change to record"
+          if git diff --quiet -- fleet/ledger.jsonl fleet/evidence; then
+            echo "no ledger or evidence change to record"
             exit 0
           fi
           git config user.name "Honk Fleet Runner"
           git config user.email "fleet@users.noreply.github.com"
-          git add fleet/ledger.jsonl
+          git add fleet/ledger.jsonl fleet/evidence
           git commit -m "ledger: ${{ inputs.task_id }} on ${{ inputs.target_repo }}"
           for attempt in 1 2 3 4 5; do
             if git push origin HEAD:main; then

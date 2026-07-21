@@ -1015,6 +1015,24 @@ function dispatchCard(e: LedgerEntry): string {
   </div>`;
 }
 
+function renderUsageRail(label: string, rail: NonNullable<LedgerEntry["modelUsage"]>["agent"]): string {
+  const state = rail.availability === "observed"
+    ? rail.tokens
+      ? `${rail.attempts} attempt${rail.attempts === 1 ? "" : "s"} · input ${rail.tokens.inputTokens} · cache write ${rail.tokens.cacheCreationInputTokens} · cache read ${rail.tokens.cacheReadInputTokens} · output ${rail.tokens.outputTokens}`
+      : `${rail.attempts} attempt${rail.attempts === 1 ? "" : "s"}`
+    : rail.availability === "partial"
+      ? `partial evidence · ${rail.attempts} attempts · token totals withheld`
+      : `usage unavailable · ${rail.attempts} attempts`;
+  const models = rail.models?.length ? `<div style="font-family:var(--mono);font-size:10px;color:${C.dim};margin-top:4px">${esc(rail.models.join(", "))}</div>` : "";
+  const estimate = rail.reportedCost ? `<div style="font-size:11px;color:${C.dim};margin-top:4px">Reported estimate · $${rail.reportedCost.usd.toFixed(4)}</div>` : "";
+  return `<div style="padding:10px 0;border-top:1px solid rgba(236,239,244,0.08)"><div style="font-size:11px;font-weight:600;color:${C.text}">${label}</div><div style="font-size:11px;color:${C.dim};line-height:1.5;margin-top:3px">${state}</div>${models}${estimate}</div>`;
+}
+
+function renderModelUsage(e: LedgerEntry): string {
+  if (!e.modelUsage) return `<div style="margin-bottom:24px"><div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:${C.dim};margin-bottom:8px">Model usage</div><div style="font-size:12px;color:${C.dim}">Not recorded for this historical run.</div></div>`;
+  return `<div style="margin-bottom:24px"><div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:${C.dim};margin-bottom:8px">Model usage</div>${renderUsageRail("Agent", e.modelUsage.agent)}${renderUsageRail("Judge", e.modelUsage.judge)}</div>`;
+}
+
 /** The slide-over detail for one run — trace, evidence, what we do and don't record. */
 function renderDrawer(e: LedgerEntry, idx: number, cosign?: PrLiveState): string {
   const v = verdictFor(e.status);
@@ -1065,6 +1083,7 @@ function renderDrawer(e: LedgerEntry, idx: number, cosign?: PrLiveState): string
         <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:${C.dim};margin-bottom:12px">Pipeline trace${e.elapsedMs != null ? ` · ${fmtDur(e.elapsedMs)} total` : ""}</div>
         <div style="margin-bottom:24px">${renderTimeline(e, cosign)}</div>
         ${evidence}
+        ${renderModelUsage(e)}
         ${prLine}
       </div>
       <div style="padding:14px 22px;border-top:1px solid rgba(236,239,244,0.09);flex:none;background:${C.bg}">

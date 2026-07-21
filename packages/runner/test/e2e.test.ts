@@ -389,6 +389,57 @@ describe("runner e2e (mock engine, hermetic)", () => {
     expect(preview).toContain("Attempt 1 vetoed (stub: first attempt rejected)");
   });
 
+  it("records usage across initial agent, veto, resume, and fresh judge review", async () => {
+    const ledgerPath = tmpLedger();
+    const observedAgent = (inputTokens: number) => ({
+      producer: { source: "claude-cli-result" as const },
+      billing: { source: "unknown", evidence: "fixture" },
+      modelUsage: { availability: "observed" as const, value: [{ model: "claude-opus-4-8", tokens: { inputTokens, cacheCreationInputTokens: 0, cacheReadInputTokens: 2, outputTokens: 4 } }] },
+      reportedCost: { availability: "observed" as const, value: { kind: "claude-cli-estimate", usd: 0 } },
+      providerRetries: { availability: "unavailable" as const, reason: "fixture" },
+    });
+    let reviews = 0;
+    const judgeClient: JudgeClient = {
+      messages: {
+        async parse() {
+          reviews += 1;
+          return {
+            parsed_output: reviews === 1
+              ? { verdict: "veto", violations: ["fixture veto"], guidance: "retry", rationale: "fixture" }
+              : { verdict: "approve", violations: [], guidance: "", rationale: "fixture" },
+            model: "claude-opus-4-8",
+            usage: { input_tokens: 0, cache_creation_input_tokens: 1, cache_read_input_tokens: 3, output_tokens: 5 },
+          };
+        },
+      },
+    };
+
+    const result = await run({
+      controlRepo: CONTROL_REPO,
+      taskPath: TASK_001,
+      repoName: "demo-ts-service",
+      local: true,
+      dryRun: true,
+      engine: "mock",
+      mockPatch: GOOD_PATCH,
+      mockUsage: [observedAgent(10), { ...observedAgent(8), modelUsage: { availability: "unavailable", reason: "fixture resume unavailable" } }],
+      judgeMode: "claude",
+      judgeClient,
+      ledgerPath,
+      log: quiet,
+    });
+
+    const evidence = JSON.parse(readFileSync(path.join(path.dirname(ledgerPath), "fleet", "evidence", result.runId, "model-usage.json"), "utf8"));
+    expect(evidence.attempts.map(({ rail, ordinal, role }: { rail: string; ordinal: number; role: string }) => `${rail}:${ordinal}:${role}`)).toEqual([
+      "agent:1:initial", "judge:1:review", "agent:2:resume", "judge:2:review",
+    ]);
+    expect(evidence.attempts[0].modelUsage.value[0].tokens.cacheCreationInputTokens).toBe(0);
+    const recorded = readLedger(ledgerPath)[0].modelUsage;
+    expect(recorded?.agent).toMatchObject({ availability: "partial", attempts: 2 });
+    expect(recorded?.agent.tokens).toBeUndefined();
+    expect(recorded?.judge.tokens).toEqual({ inputTokens: 0, cacheCreationInputTokens: 2, cacheReadInputTokens: 6, outputTokens: 10 });
+  });
+
   it("judge veto exhausted: retries used up → vetoed, no PR", async () => {
     const vetoLedger = tmpLedger();
     const result = await run({

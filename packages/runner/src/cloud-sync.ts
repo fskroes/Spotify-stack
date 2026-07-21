@@ -19,10 +19,10 @@
  * Kept pure over an injected async `gh` runner, matching cosign.ts's `gh` seam,
  * so every path is testable without GitHub.
  */
-import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, readFileSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import type { LedgerEntry, SyncState } from "@fleet/contract";
+import { ModelUsageEvidenceSchema, type LedgerEntry, type SyncState } from "@fleet/contract";
 import { REVIEW_ARTIFACTS, runArtifactsDir, runArtifactsRoot } from "./artifacts.js";
 
 /** Runs `gh` asynchronously (spawn-based, so a slow download never blocks the
@@ -47,6 +47,19 @@ export interface CloudArtifactSyncOptions {
  *  runs before the ledger line is pushed, so a genuinely missing artifact is
  *  permanent: expired past retention, or never uploaded (the run crashed first). */
 const GONE_PATTERNS = [/no valid artifact/i, /no artifact/i, /artifact not found/i, /expired/i];
+
+function findDownloadedFile(root: string, name: string): string | undefined {
+  for (const entry of readdirSync(root)) {
+    const candidate = path.join(root, entry);
+    if (statSync(candidate).isDirectory()) {
+      const nested = findDownloadedFile(candidate, name);
+      if (nested) return nested;
+    } else if (entry === name) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
 
 export class CloudArtifactSync {
   private readonly controlRepo: string;
@@ -155,8 +168,15 @@ export class CloudArtifactSync {
     const dest = runArtifactsDir(this.controlRepo, runId);
     let moved = 0;
     for (const name of REVIEW_ARTIFACTS.keys()) {
-      const from = path.join(tmp, name);
-      if (!existsSync(from)) continue;
+      const from = findDownloadedFile(tmp, name);
+      if (!from || !existsSync(from)) continue;
+      if (name === "model-usage.json") {
+        const evidence = ModelUsageEvidenceSchema.parse(JSON.parse(readFileSync(from, "utf8")));
+        if (evidence.runId !== runId) throw new Error("cloud model usage evidence run id does not match requested run");
+        const canonicalDir = path.join(this.controlRepo, "fleet", "evidence", runId);
+        mkdirSync(canonicalDir, { recursive: true });
+        copyFileSync(from, path.join(canonicalDir, name));
+      }
       if (moved === 0) mkdirSync(dest, { recursive: true });
       renameSync(from, path.join(dest, name));
       moved += 1;
