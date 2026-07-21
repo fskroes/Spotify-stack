@@ -10,6 +10,7 @@ import { execFileSync } from "node:child_process";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
+import type { UsageAttempt } from "@fleet/contract";
 
 export const VerdictSchema = z.object({
   verdict: z.enum(["approve", "veto"]),
@@ -20,11 +21,49 @@ export const VerdictSchema = z.object({
 });
 
 export type Verdict = z.infer<typeof VerdictSchema>;
+export type JudgeUsage = Pick<UsageAttempt, "producer" | "billing" | "modelUsage" | "reportedCost" | "providerRetries">;
+export interface JudgeResult {
+  verdict: Verdict;
+  usage: JudgeUsage;
+}
+
+function unavailableJudgeUsage(reason: string, source: "claude-cli-result" | "anthropic-messages-response" = "anthropic-messages-response"): JudgeUsage {
+  return {
+    producer: { source },
+    billing: { source: "unknown", evidence: "producer evidence unavailable" },
+    modelUsage: { availability: "unavailable", reason },
+    reportedCost: { availability: "unavailable", reason },
+    providerRetries: { availability: "unavailable", reason },
+  };
+}
+
+function sdkUsage(response: Record<string, unknown>): JudgeUsage {
+  const raw = response.usage;
+  const model = response.model;
+  if (!raw || typeof raw !== "object" || typeof model !== "string") return unavailableJudgeUsage("SDK response did not expose valid model usage");
+  const counters = raw as Record<string, unknown>;
+  const names = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"] as const;
+  if (!names.every((name) => typeof counters[name] === "number" && Number.isInteger(counters[name]) && (counters[name] as number) >= 0)) {
+    return unavailableJudgeUsage("SDK response did not expose valid model usage");
+  }
+  return {
+    producer: { source: "anthropic-messages-response" },
+    billing: { source: "unknown", evidence: "SDK response does not expose credential provenance" },
+    modelUsage: { availability: "observed", value: [{ model, tokens: {
+      inputTokens: counters.input_tokens as number,
+      cacheCreationInputTokens: counters.cache_creation_input_tokens as number,
+      cacheReadInputTokens: counters.cache_read_input_tokens as number,
+      outputTokens: counters.output_tokens as number,
+    } }] },
+    reportedCost: { availability: "unavailable", reason: "SDK response does not expose a reported estimate" },
+    providerRetries: { availability: "unavailable", reason: "SDK response does not expose provider retries" },
+  };
+}
 
 /** The subset of the Anthropic client the judge uses — mockable in tests. */
 export interface JudgeClient {
   messages: {
-    parse(params: Record<string, unknown>): Promise<{ parsed_output: unknown }>;
+    parse(params: Record<string, unknown>): Promise<{ parsed_output: unknown; model?: unknown; usage?: unknown; usageEvidence?: JudgeUsage }>;
   };
 }
 
@@ -76,7 +115,7 @@ export function createJudgeClient(): JudgeClient {
  * after JSON at position N (line 2 column 1)". So don't trust that the whole
  * stream is one object: take the last JSON line that carries a string `result`.
  */
-export function extractCliResult(stdout: string): string {
+export function extractCliEnvelope(stdout: string): Record<string, unknown> {
   const envelopes: unknown[] = [];
   try {
     // Fast path: the whole stream is exactly one JSON object.
@@ -99,10 +138,43 @@ export function extractCliResult(stdout: string): string {
   for (let i = envelopes.length - 1; i >= 0; i--) {
     const env = envelopes[i];
     if (env && typeof env === "object" && typeof (env as { result?: unknown }).result === "string") {
-      return (env as { result: string }).result;
+      return env as Record<string, unknown>;
     }
   }
   throw new Error(`cli judge: no JSON result envelope in claude output: ${stdout.slice(0, 500)}`);
+}
+
+export function extractCliResult(stdout: string): string {
+  return extractCliEnvelope(stdout).result as string;
+}
+
+function cliUsage(envelope: Record<string, unknown>): JudgeUsage {
+  const raw = envelope.modelUsage;
+  const vectors = raw && typeof raw === "object"
+    ? Object.entries(raw as Record<string, unknown>).flatMap(([model, value]) => {
+        if (!value || typeof value !== "object") return [];
+        const usage = value as Record<string, unknown>;
+        const names = ["inputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens"] as const;
+        if (!names.every((name) => typeof usage[name] === "number" && Number.isInteger(usage[name]) && (usage[name] as number) >= 0)) return [];
+        return [{ model, tokens: {
+          inputTokens: usage.inputTokens as number,
+          cacheCreationInputTokens: usage.cacheCreationInputTokens as number,
+          cacheReadInputTokens: usage.cacheReadInputTokens as number,
+          outputTokens: usage.outputTokens as number,
+        } }];
+      })
+    : [];
+  if (vectors.length === 0) return unavailableJudgeUsage("final CLI envelope did not expose valid model usage", "claude-cli-result");
+  const usd = envelope.total_cost_usd;
+  return {
+    producer: { source: "claude-cli-result" },
+    billing: { source: "unknown", evidence: "CLI result does not expose credential provenance" },
+    modelUsage: { availability: "observed", value: vectors },
+    reportedCost: typeof usd === "number" && Number.isFinite(usd) && usd >= 0
+      ? { availability: "observed", value: { kind: "claude-cli-estimate", usd } }
+      : { availability: "unavailable", reason: "final CLI envelope did not expose a reported estimate" },
+    providerRetries: { availability: "unavailable", reason: "final CLI envelope does not expose provider retries" },
+  };
 }
 
 /**
@@ -114,7 +186,7 @@ export function extractCliResult(stdout: string): string {
 export function createCliJudgeClient(): JudgeClient {
   return {
     messages: {
-      async parse(params: Record<string, unknown>): Promise<{ parsed_output: unknown }> {
+      async parse(params: Record<string, unknown>): Promise<{ parsed_output: unknown; model?: unknown; usage?: unknown; usageEvidence?: JudgeUsage }> {
         const messages = params.messages as Array<{ content: string }>;
         const prompt = [
           messages[0].content,
@@ -137,14 +209,15 @@ export function createCliJudgeClient(): JudgeClient {
           ],
           { encoding: "utf8", timeout: 5 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 },
         );
-        const result = extractCliResult(stdout);
+        const envelope = extractCliEnvelope(stdout);
+        const result = envelope.result as string;
         // Tolerate a fenced or prose-wrapped reply: parse the outermost object.
         const start = result.indexOf("{");
         const end = result.lastIndexOf("}");
         if (start === -1 || end <= start) {
           throw new Error(`cli judge returned no JSON object: ${result.slice(0, 500)}`);
         }
-        return { parsed_output: JSON.parse(result.slice(start, end + 1)) };
+        return { parsed_output: JSON.parse(result.slice(start, end + 1)), ...envelope, usageEvidence: cliUsage(envelope) };
       },
     },
   };
@@ -168,7 +241,7 @@ export function buildUserPrompt(input: Pick<JudgeInput, "taskMarkdown" | "diff" 
   ].join("\n");
 }
 
-export async function judge(input: JudgeInput): Promise<Verdict> {
+export async function judgeWithEvidence(input: JudgeInput): Promise<JudgeResult> {
   const client = input.client ?? createJudgeClient();
   const response = await client.messages.parse({
     model: input.model ?? "claude-opus-4-8",
@@ -182,5 +255,13 @@ export async function judge(input: JudgeInput): Promise<Verdict> {
   if (!parsed.success) {
     throw new Error(`judge returned an unparseable verdict: ${parsed.error.message}`);
   }
-  return parsed.data;
+  const usageEvidence = (response as Record<string, unknown>).usageEvidence;
+  return {
+    verdict: parsed.data,
+    usage: usageEvidence && typeof usageEvidence === "object" ? usageEvidence as JudgeUsage : sdkUsage(response as Record<string, unknown>),
+  };
+}
+
+export async function judge(input: JudgeInput): Promise<Verdict> {
+  return (await judgeWithEvidence(input)).verdict;
 }

@@ -24,6 +24,7 @@ export const REVIEW_ARTIFACTS = new Map<string, string>([
   ["verdict.json", "application/json; charset=utf-8"],
   ["result.json", "application/json; charset=utf-8"],
   ["pr-preview.md", "text/markdown; charset=utf-8"],
+  ["model-usage.json", "application/json; charset=utf-8"],
 ]);
 
 /** Run ids are UUIDs; pruning must never touch anything else that ends up

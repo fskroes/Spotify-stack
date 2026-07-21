@@ -1,6 +1,34 @@
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { describeFailure, type ExecFailure } from "../src/engine.js";
+import { describeFailure, extractCliUsage, type ExecFailure } from "../src/engine.js";
+
+describe("agent CLI usage extraction", () => {
+  it("retains final-envelope token vectors, including observed zeroes", () => {
+    expect(
+      extractCliUsage({
+        modelUsage: {
+          "claude-opus-4-8": {
+            inputTokens: 10,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 2,
+            outputTokens: 4,
+          },
+        },
+        total_cost_usd: 0.02,
+      }),
+    ).toMatchObject({
+      modelUsage: {
+        availability: "observed",
+        value: [{ model: "claude-opus-4-8", tokens: { cacheCreationInputTokens: 0 } }],
+      },
+      reportedCost: { availability: "observed", value: { kind: "claude-cli-estimate", usd: 0.02 } },
+    });
+  });
+
+  it("calls a missing final envelope unavailable instead of zero", () => {
+    expect(extractCliUsage({})).toMatchObject({ modelUsage: { availability: "unavailable" } });
+  });
+});
 
 describe("agent failure diagnosis", () => {
   // The whole point of the ETIMEDOUT branch is that it matches what Node
