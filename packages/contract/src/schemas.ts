@@ -130,6 +130,201 @@ export type RunMode = (typeof RUN_MODES)[number];
 export const STAGES = ["agent", "scope", "verify", "judge", "shipping"] as const;
 export type Stage = (typeof STAGES)[number];
 
+// --- Model usage evidence (sanitized per-run artifact + ledger projection) ---
+
+/** Open wire vocabularies with known values for reader-side presentation. */
+export const USAGE_RAILS = ["agent", "judge"] as const;
+export type UsageRail = (typeof USAGE_RAILS)[number];
+export const USAGE_ATTEMPT_ROLES = ["initial", "resume", "review"] as const;
+export type UsageAttemptRole = (typeof USAGE_ATTEMPT_ROLES)[number];
+export const USAGE_PRODUCER_SOURCES = ["claude-cli-result", "anthropic-messages-response"] as const;
+export type UsageProducerSource = (typeof USAGE_PRODUCER_SOURCES)[number];
+export const BILLING_SOURCES = ["api", "subscription", "unknown"] as const;
+export type BillingSource = (typeof BILLING_SOURCES)[number];
+export const REPORTED_COST_KINDS = ["claude-cli-estimate"] as const;
+export type ReportedCostKind = (typeof REPORTED_COST_KINDS)[number];
+export const USAGE_AVAILABILITIES = ["observed", "partial", "unavailable"] as const;
+export type UsageAvailability = (typeof USAGE_AVAILABILITIES)[number];
+
+function knownOpenValue<T extends readonly string[]>(values: T, value: string | undefined): T[number] | undefined {
+  return values.includes(value as T[number]) ? (value as T[number]) : undefined;
+}
+
+export function knownUsageRail(value: string | undefined): UsageRail | undefined {
+  return knownOpenValue(USAGE_RAILS, value);
+}
+export function knownUsageAttemptRole(value: string | undefined): UsageAttemptRole | undefined {
+  return knownOpenValue(USAGE_ATTEMPT_ROLES, value);
+}
+export function knownUsageProducerSource(value: string | undefined): UsageProducerSource | undefined {
+  return knownOpenValue(USAGE_PRODUCER_SOURCES, value);
+}
+export function knownBillingSource(value: string | undefined): BillingSource | undefined {
+  return knownOpenValue(BILLING_SOURCES, value);
+}
+export function knownReportedCostKind(value: string | undefined): ReportedCostKind | undefined {
+  return knownOpenValue(REPORTED_COST_KINDS, value);
+}
+export function knownUsageAvailability(value: string | undefined): UsageAvailability | undefined {
+  return knownOpenValue(USAGE_AVAILABILITIES, value);
+}
+
+/** The four counters a producer exposes for one actual served model. They remain
+ * separate because cache categories have different prices and explain materially
+ * different execution shapes; no stored scalar may replace this vector. */
+export const TokenVectorSchema = z
+  .object({
+    inputTokens: z.number().int().nonnegative(),
+    cacheCreationInputTokens: z.number().int().nonnegative(),
+    cacheReadInputTokens: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+  })
+  .strict();
+export type TokenVector = z.infer<typeof TokenVectorSchema>;
+
+/** A value the current producer did observe, as distinct from a fact it could
+ * not expose. A ledger field omitted entirely remains the third case: historical
+ * "not recorded". */
+function observationSchema<T extends z.ZodType>(value: T) {
+  return z.discriminatedUnion("availability", [
+    z.object({ availability: z.literal("observed"), value }).strict(),
+    z.object({ availability: z.literal("unavailable"), reason: z.string() }).strict(),
+  ]);
+}
+
+export const ModelTokenUsageSchema = z
+  .object({
+    /** Actual model identity returned by the producer, never a configured default. */
+    model: z.string(),
+    tokens: TokenVectorSchema,
+  })
+  .strict();
+export type ModelTokenUsage = z.infer<typeof ModelTokenUsageSchema>;
+
+export const ReportedCostSchema = z
+  .object({
+    /** Known value: `claude-cli-estimate`; stays open for future producer labels. */
+    kind: z.string(),
+    /** A producer-reported estimate, never an authoritative billed amount. */
+    usd: z.number().nonnegative(),
+  })
+  .strict();
+export type ReportedCost = z.infer<typeof ReportedCostSchema>;
+
+export const UsageAttemptSchema = z
+  .object({
+    /** Known values: `agent`, `judge`; open so a future rail does not break readers. */
+    rail: z.string(),
+    /** 1-based within one rail: every resume and fresh judge call gets its own row. */
+    ordinal: z.number().int().positive(),
+    /** Known values: agent `initial`/`resume`, judge `review`; intentionally open. */
+    role: z.string(),
+    producer: z
+      .object({
+        /** Known values: `claude-cli-result`, `anthropic-messages-response`. */
+        source: z.string(),
+        /** CLI or SDK version, only when the producer exposed it. */
+        version: z.string().optional(),
+      })
+      .strict(),
+    billing: z
+      .object({
+        /** Known values: `api`, `subscription`, `unknown`; independent of run mode. */
+        source: z.string(),
+        /** Coarse, non-sensitive proof category — never credential details. */
+        evidence: z.string(),
+      })
+      .strict(),
+    /** One vector per actual model in a final CLI envelope or SDK response. */
+    modelUsage: observationSchema(z.array(ModelTokenUsageSchema).min(1)),
+    /** CLI estimates only; no token-to-dollar conversion is permitted. */
+    reportedCost: observationSchema(ReportedCostSchema),
+    /** Current JSON CLI and SDK paths cannot observe provider retry counts. */
+    providerRetries: observationSchema(z.number().int().nonnegative()),
+  })
+  .strict();
+export type UsageAttempt = z.infer<typeof UsageAttemptSchema>;
+
+/** The canonical, content-free evidence document. It holds attempts; its
+ * agent/judge and whole-run summaries are reader-derived, never persisted here. */
+export const ModelUsageEvidenceSchema = z
+  .object({
+    /** Structural discriminant: an unknown artifact shape must fail loudly. */
+    v: z.literal(1),
+    runId: z.string(),
+    completedAt: z.string(),
+    attempts: z.array(UsageAttemptSchema),
+  })
+  .strict()
+  .superRefine((evidence, ctx) => {
+    const ordinals = { agent: 0, judge: 0 };
+    for (const [index, attempt] of evidence.attempts.entries()) {
+      if (attempt.rail !== "agent" && attempt.rail !== "judge") continue;
+      const expectedOrdinal = ++ordinals[attempt.rail];
+      if (attempt.ordinal !== expectedOrdinal) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["attempts", index, "ordinal"],
+          message: `${attempt.rail} attempt ordinals must be consecutive from 1`,
+        });
+      }
+      const expectedRole = attempt.rail === "agent" ? (attempt.ordinal === 1 ? "initial" : "resume") : "review";
+      if (attempt.role !== expectedRole) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["attempts", index, "role"],
+          message: `${attempt.rail} attempt ${attempt.ordinal} must use role ${expectedRole}`,
+        });
+      }
+    }
+    const first = evidence.attempts[0];
+    if (first && (first.rail !== "agent" || first.ordinal !== 1 || first.role !== "initial")) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["attempts", 0],
+        message: "a recorded Fleet sequence starts with agent attempt 1 in the initial role",
+      });
+    }
+  });
+export type ModelUsageEvidence = z.infer<typeof ModelUsageEvidenceSchema>;
+
+/** Ledger objects stay tolerant even though the canonical artifact is strict:
+ * a newer runner must not make an older reader discard an entire historical line. */
+const LedgerTokenVectorSchema = z.object({
+  inputTokens: z.number().int().nonnegative(),
+  cacheCreationInputTokens: z.number().int().nonnegative(),
+  cacheReadInputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+});
+const LedgerReportedCostSchema = z.object({ kind: z.string(), usd: z.number().nonnegative() });
+
+const LedgerUsageRailSchema = z.object({
+  attempts: z.number().int().nonnegative(),
+  /** Known values: `observed`, `partial`, `unavailable`; kept open on the wire. */
+  availability: z.string(),
+  /** Actual returned models; present only when the compact projection has them. */
+  models: z.array(z.string()).optional(),
+  /** Present only when every attempt in the rail has observed usage. */
+  tokens: LedgerTokenVectorSchema.optional(),
+  /** Compatible reported estimates only; never billed cost. */
+  reportedCost: LedgerReportedCostSchema.optional(),
+  /** Coarse source categories observed across the rail's attempts. */
+  billingSources: z.array(z.string()),
+});
+export type LedgerUsageRail = z.infer<typeof LedgerUsageRailSchema>;
+
+/** Compact, public-ledger projection of the canonical per-run artifact. Omitted
+ * on historical lines — absence means "not recorded", never a zero-usage run. */
+export const LedgerUsageProjectionSchema = z.object({
+  artifact: z.object({
+    version: z.number().int().positive(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/i),
+  }),
+  agent: LedgerUsageRailSchema,
+  judge: LedgerUsageRailSchema,
+});
+export type LedgerUsageProjection = z.infer<typeof LedgerUsageProjectionSchema>;
+
 // --- Ledger entry (persisted in fleet/ledger.jsonl, one line per run) ---
 
 /** Cumulative wall-clock spent in each pipeline phase (summed across judge retries). */
@@ -185,6 +380,10 @@ export const LedgerEntrySchema = z.object({
    *  as unknown rather than as an empty set — the latter would assert that
    *  nothing was outstanding, which no historical line ever established. */
   unmetGates: z.array(z.string()).optional(),
+  /** Compact projection of the sanitized per-run usage artifact. Absent on
+   * historical lines means "not recorded"; a present `unavailable` rail means
+   * a current producer could not expose its evidence, and is never a zero. */
+  modelUsage: LedgerUsageProjectionSchema.optional(),
 
   // --- Cloud provenance (written by run.ts only when GITHUB_ACTIONS is set;
   // recorded, never derived by readers). They let the operator pull a cloud
