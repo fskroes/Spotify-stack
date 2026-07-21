@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { sanitizeCliEnvelopeUsage } from "@fleet/contract";
 import { describeFailure, extractCliUsage, type ExecFailure } from "../src/engine.js";
 
 describe("agent CLI usage extraction", () => {
@@ -27,6 +28,19 @@ describe("agent CLI usage extraction", () => {
 
   it("calls a missing final envelope unavailable instead of zero", () => {
     expect(extractCliUsage({})).toMatchObject({ modelUsage: { availability: "unavailable" } });
+  });
+
+  // #77: the agent engine must extract CLI-envelope usage through the one shared
+  // sanitizer the CLI judge also uses, so the two can never drift. Exercise the
+  // envelopes that once diverged — including a cost reported without token usage.
+  it("delegates verbatim to the shared @fleet/contract sanitizer", () => {
+    for (const envelope of [
+      { modelUsage: { "claude-opus-4-8": { inputTokens: 1, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 2 } }, total_cost_usd: 0.02 },
+      { total_cost_usd: 0.5 }, // cost present, usage absent — judge previously dropped the cost here
+      {},
+    ]) {
+      expect(extractCliUsage(envelope)).toEqual(sanitizeCliEnvelopeUsage(envelope));
+    }
   });
 });
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { sanitizeCliEnvelopeUsage } from "@fleet/contract";
 import { buildUserPrompt, extractCliResult, judge, type JudgeClient } from "../src/index.js";
 
 function mockClient(parsedOutput: unknown): { client: JudgeClient; calls: Record<string, unknown>[] } {
@@ -109,6 +110,31 @@ describe("extractCliResult", () => {
 
   it("throws a legible error when no result envelope is present", () => {
     expect(() => extractCliResult('{"type":"system"}\nnot json')).toThrow(/no JSON result envelope/);
+  });
+});
+
+// #77: the CLI judge's usage evidence is the same shared @fleet/contract
+// sanitizer the agent engine uses — the judge's `createCliJudgeClient` calls it
+// on the final envelope. These pin the content-free shape the judge depends on,
+// including the convergence that a reported cost now survives absent token usage
+// (the old private `cliUsage` dropped it).
+describe("cli judge usage evidence (shared sanitizer)", () => {
+  it("reports content-free usage for a well-formed CLI envelope", () => {
+    const usage = sanitizeCliEnvelopeUsage({
+      modelUsage: { "claude-opus-4-8": { inputTokens: 8, cacheCreationInputTokens: 0, cacheReadInputTokens: 1, outputTokens: 3 } },
+      total_cost_usd: 0.01,
+      result: "the verdict JSON — must never cross the usage boundary",
+    });
+    expect(usage.producer).toEqual({ source: "claude-cli-result" });
+    expect(usage.modelUsage.availability).toBe("observed");
+    expect(usage.reportedCost).toEqual({ availability: "observed", value: { kind: "claude-cli-estimate", usd: 0.01 } });
+    expect(usage).not.toHaveProperty("result");
+  });
+
+  it("keeps a reported cost even when the envelope exposed no token usage", () => {
+    const usage = sanitizeCliEnvelopeUsage({ total_cost_usd: 0.5 });
+    expect(usage.modelUsage.availability).toBe("unavailable");
+    expect(usage.reportedCost).toEqual({ availability: "observed", value: { kind: "claude-cli-estimate", usd: 0.5 } });
   });
 });
 

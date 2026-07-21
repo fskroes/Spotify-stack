@@ -5,15 +5,14 @@ import {
   ModelUsageEvidenceSchema,
   type LedgerUsageProjection,
   type ModelUsageEvidence,
+  type ProducerUsageEvidence,
   type TokenVector,
   type UsageAttempt,
 } from "@fleet/contract";
 
-/** Sanitized producer facts. The runner assigns rail, ordinal, and role. */
-export type ProducerUsage = Pick<
-  UsageAttempt,
-  "producer" | "billing" | "modelUsage" | "reportedCost" | "providerRetries"
->;
+/** Sanitized producer facts. The runner assigns rail, ordinal, and role.
+ *  One shape, defined once in the contract — the runner and judge both use it. */
+export type ProducerUsage = ProducerUsageEvidence;
 
 export function unavailableProducerUsage(reason: string): ProducerUsage {
   return {
