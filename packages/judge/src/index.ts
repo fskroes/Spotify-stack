@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
-import type { UsageAttempt } from "@fleet/contract";
+import { sanitizeCliEnvelopeUsage, type ProducerUsageEvidence } from "@fleet/contract";
 
 export const VerdictSchema = z.object({
   verdict: z.enum(["approve", "veto"]),
@@ -21,15 +21,19 @@ export const VerdictSchema = z.object({
 });
 
 export type Verdict = z.infer<typeof VerdictSchema>;
-export type JudgeUsage = Pick<UsageAttempt, "producer" | "billing" | "modelUsage" | "reportedCost" | "providerRetries">;
+/** The judge's content-free usage evidence — the one shape defined in the
+ *  contract, shared with the runner's agent rail. */
+export type JudgeUsage = ProducerUsageEvidence;
 export interface JudgeResult {
   verdict: Verdict;
   usage: JudgeUsage;
 }
 
-function unavailableJudgeUsage(reason: string, source: "claude-cli-result" | "anthropic-messages-response" = "anthropic-messages-response"): JudgeUsage {
+/** Unavailable usage for the Anthropic SDK judge path; the CLI path routes
+ *  through the shared {@link sanitizeCliEnvelopeUsage} sanitizer instead. */
+function unavailableJudgeUsage(reason: string): JudgeUsage {
   return {
-    producer: { source },
+    producer: { source: "anthropic-messages-response" },
     billing: { source: "unknown", evidence: "producer evidence unavailable" },
     modelUsage: { availability: "unavailable", reason },
     reportedCost: { availability: "unavailable", reason },
@@ -148,35 +152,6 @@ export function extractCliResult(stdout: string): string {
   return extractCliEnvelope(stdout).result as string;
 }
 
-function cliUsage(envelope: Record<string, unknown>): JudgeUsage {
-  const raw = envelope.modelUsage;
-  const vectors = raw && typeof raw === "object"
-    ? Object.entries(raw as Record<string, unknown>).flatMap(([model, value]) => {
-        if (!value || typeof value !== "object") return [];
-        const usage = value as Record<string, unknown>;
-        const names = ["inputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens"] as const;
-        if (!names.every((name) => typeof usage[name] === "number" && Number.isInteger(usage[name]) && (usage[name] as number) >= 0)) return [];
-        return [{ model, tokens: {
-          inputTokens: usage.inputTokens as number,
-          cacheCreationInputTokens: usage.cacheCreationInputTokens as number,
-          cacheReadInputTokens: usage.cacheReadInputTokens as number,
-          outputTokens: usage.outputTokens as number,
-        } }];
-      })
-    : [];
-  if (vectors.length === 0) return unavailableJudgeUsage("final CLI envelope did not expose valid model usage", "claude-cli-result");
-  const usd = envelope.total_cost_usd;
-  return {
-    producer: { source: "claude-cli-result" },
-    billing: { source: "unknown", evidence: "CLI result does not expose credential provenance" },
-    modelUsage: { availability: "observed", value: vectors },
-    reportedCost: typeof usd === "number" && Number.isFinite(usd) && usd >= 0
-      ? { availability: "observed", value: { kind: "claude-cli-estimate", usd } }
-      : { availability: "unavailable", reason: "final CLI envelope did not expose a reported estimate" },
-    providerRetries: { availability: "unavailable", reason: "final CLI envelope does not expose provider retries" },
-  };
-}
-
 /**
  * JudgeClient backed by the local `claude` CLI instead of the API SDK, so
  * local runs bill the judge to the user's subscription — same model, same
@@ -217,7 +192,7 @@ export function createCliJudgeClient(): JudgeClient {
         if (start === -1 || end <= start) {
           throw new Error(`cli judge returned no JSON object: ${result.slice(0, 500)}`);
         }
-        return { parsed_output: JSON.parse(result.slice(start, end + 1)), ...envelope, usageEvidence: cliUsage(envelope) };
+        return { parsed_output: JSON.parse(result.slice(start, end + 1)), ...envelope, usageEvidence: sanitizeCliEnvelopeUsage(envelope) };
       },
     },
   };
