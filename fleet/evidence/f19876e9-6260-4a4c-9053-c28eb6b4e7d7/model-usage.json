@@ -1,0 +1,31 @@
+{
+  "v": 1,
+  "runId": "f19876e9-6260-4a4c-9053-c28eb6b4e7d7",
+  "completedAt": "2026-07-21T15:18:12.183Z",
+  "attempts": [
+    {
+      "rail": "agent",
+      "ordinal": 1,
+      "role": "initial",
+      "producer": {
+        "source": "claude-cli-result"
+      },
+      "billing": {
+        "source": "unknown",
+        "evidence": "producer evidence unavailable"
+      },
+      "modelUsage": {
+        "availability": "unavailable",
+        "reason": "agent invocation failed before a usable final envelope"
+      },
+      "reportedCost": {
+        "availability": "unavailable",
+        "reason": "agent invocation failed before a usable final envelope"
+      },
+      "providerRetries": {
+        "availability": "unavailable",
+        "reason": "agent invocation failed before a usable final envelope"
+      }
+    }
+  ]
+}
