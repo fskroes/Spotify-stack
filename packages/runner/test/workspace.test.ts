@@ -9,7 +9,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { FleetRepo } from "../src/fleet.js";
 import { resolveLocalPath } from "../src/fleet.js";
-import { git, prepareWorkspace } from "../src/workspace.js";
+import { git, prepareWorkspace, stagedDiff } from "../src/workspace.js";
 
 const CONTROL_REPO = mkdtempSync(path.join(os.tmpdir(), "fleet-control-"));
 
@@ -78,6 +78,25 @@ describe("prepareWorkspace with local_path", () => {
     expect(lstatSync(path.join(workspace, "node_modules")).isSymbolicLink()).toBe(true);
     // Baseline commit exists.
     expect(git(workspace, ["log", "--oneline"])).toContain("baseline");
+  });
+
+  it("stages normal changes when the target ignores injected .claude config", () => {
+    const src = sourceRepo();
+    writeFileSync(path.join(src, ".gitignore"), ".claude/\n");
+    const workspace = prepareWorkspace({
+      controlRepo: CONTROL_REPO,
+      repo: repo(src),
+      taskId: "t-ignored-claude",
+      local: true,
+    });
+    mkdirSync(path.join(workspace, ".claude"), { recursive: true });
+    writeFileSync(path.join(workspace, ".claude", "settings.json"), "{}\n");
+    writeFileSync(path.join(workspace, "index.ts"), "export const x = 2;\n");
+
+    const diff = stagedDiff(workspace);
+
+    expect(diff).toContain("export const x = 2;");
+    expect(diff).not.toContain(".claude");
   });
 
   it("throws a clear error when local_path does not exist", () => {
