@@ -11,7 +11,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...actual, execFileSync: execFileSyncMock };
 });
 
-import { loadFleet, resolveOwner } from "../src/fleet.js";
+import { findRepo, loadFleet, resolveLocalSource, resolveOwner } from "../src/fleet.js";
 import { defaultJudgeMode } from "../src/run.js";
 
 const savedOwner = process.env.GH_OWNER;
@@ -86,6 +86,28 @@ describe("loadFleet overlay (fleet/repos.local.yaml)", () => {
     expect(repos).toHaveLength(1);
     expect(repos[0].default_branch).toBe("dev");
     expect(repos[0].language).toBe("javascript");
+  });
+
+  it("finds a merged registry target without resolving the GitHub owner", () => {
+    delete process.env.GH_OWNER;
+
+    const repo = findRepo(control(BASE), "demo", { resolveOwner: false });
+
+    expect(repo.name).toBe("demo");
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("uses local_path first and the demo-repo fallback second", () => {
+    const controlRepo = "/control";
+    const repo = {
+      name: "demo",
+      url: "https://example.invalid/demo",
+      language: "typescript",
+      default_branch: "main",
+    };
+
+    expect(resolveLocalSource(repo, controlRepo)).toBe("/control/demo-repos/demo");
+    expect(resolveLocalSource({ ...repo, local_path: "/source/demo" }, controlRepo)).toBe("/source/demo");
   });
 });
 
