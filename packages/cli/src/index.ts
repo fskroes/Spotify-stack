@@ -3,8 +3,9 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { Command } from "commander";
 import { run } from "@fleet/runner";
+import { buildRepoMap, renderMap } from "@fleet/knowledge";
 import { loadTask } from "@fleet/runner/task";
-import { resolveOwner, targetRepos } from "@fleet/runner/fleet";
+import { findRepo, resolveLocalSource, resolveOwner, targetRepos } from "@fleet/runner/fleet";
 import type { LedgerEntry, PrLiveState } from "@fleet/contract";
 import { defaultLedgerPath, fleetRecord, formatRecordLine, readLedger } from "@fleet/runner/ledger";
 import { readUnionLedger } from "@fleet/runner/ledger-union";
@@ -58,6 +59,31 @@ function ghAsync(args: string[]): Promise<string> {
 const program = new Command()
   .name("fleet")
   .description("Background coding agent fleet (Spotify Honk-style reference implementation)");
+
+program
+  .command("knowledge")
+  .description("Build deterministic structural knowledge from local fleet targets")
+  .command("map")
+  .description("Render a deterministic structural map without network or model calls")
+  .argument("<target>", "repo name from fleet/repos.yaml")
+  .option("--budget <tokens>", "positive token budget", "15000")
+  .action(async (target: string, options: { budget: string }) => {
+    if (!/^\d+$/.test(options.budget)) throw new Error("--budget must be a positive integer");
+    const budgetTokens = Number(options.budget);
+    if (!Number.isSafeInteger(budgetTokens) || budgetTokens <= 0) {
+      throw new Error("--budget must be a positive integer");
+    }
+
+    const repo = findRepo(controlRepo, target, { resolveOwner: false });
+    const repoDir = resolveLocalSource(repo, controlRepo);
+    if (!existsSync(repoDir)) {
+      throw new Error(
+        `target "${target}" has no local source at ${repoDir}; set local_path in fleet/repos.local.yaml or add demo-repos/${target}`,
+      );
+    }
+
+    process.stdout.write(renderMap(await buildRepoMap(repoDir, { budgetTokens })));
+  });
 
 program
   .command("run")

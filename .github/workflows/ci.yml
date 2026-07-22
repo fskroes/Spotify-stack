@@ -52,5 +52,7 @@ jobs:
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
       - run: pnpm install --frozen-lockfile
+      # Exercise the vendored WASM grammars on macOS as well as Ubuntu's root test job.
+      - run: pnpm --filter @fleet/knowledge test
       - run: pnpm --filter @fleet/operator-desktop build
       - run: cargo test --manifest-path apps/operator-desktop/src-tauri/Cargo.toml

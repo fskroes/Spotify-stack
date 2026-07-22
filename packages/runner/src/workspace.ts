@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { FleetRepo } from "./fleet.js";
+import { resolveLocalSource, type FleetRepo } from "./fleet.js";
 
 const GIT_IDENTITY = [
   "-c",
@@ -35,8 +35,7 @@ export function prepareWorkspace(opts: {
   mkdirSync(workspace, { recursive: true });
 
   if (opts.local) {
-    const source =
-      opts.repo.local_path ?? path.join(opts.controlRepo, "demo-repos", opts.repo.name);
+    const source = resolveLocalSource(opts.repo, opts.controlRepo);
     if (!existsSync(source)) {
       throw new Error(`local repo not found: ${source}`);
     }

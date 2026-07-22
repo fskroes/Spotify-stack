@@ -6,6 +6,7 @@
   "type": "module",
   "dependencies": {
     "@fleet/contract": "workspace:*",
+    "@fleet/knowledge": "workspace:*",
     "@fleet/runner": "workspace:*",
     "commander": "^14.0.0"
   }

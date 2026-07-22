@@ -1,0 +1,16 @@
+{
+  "name": "@fleet/knowledge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic structural repository maps for fleet targets",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run --root ../.. packages/knowledge/test"
+  },
+  "dependencies": {
+    "web-tree-sitter": "0.26.11"
+  }
+}

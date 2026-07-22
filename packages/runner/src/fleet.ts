@@ -17,6 +17,11 @@ export interface FleetRepo {
   local_path?: string;
 }
 
+export interface FleetLoadOptions {
+  /** Preserve the default owner lookup for run/dispatch while offline commands opt out. */
+  resolveOwner?: boolean;
+}
+
 /**
  * Resolve a repos.yaml `local_path` to an absolute directory: interpolate any
  * `${ENV_VAR}` (mirrors the `${GH_OWNER}` convention on `url`), expand a leading
@@ -27,6 +32,11 @@ export function resolveLocalPath(raw: string, controlRepo: string): string {
     .replace(/\$\{(\w+)\}/g, (_, name) => process.env[name] ?? "")
     .replace(/^~(?=\/|$)/, homedir());
   return path.resolve(controlRepo, expanded);
+}
+
+/** The local source a registry target maps to, without preparing or mutating it. */
+export function resolveLocalSource(repo: FleetRepo, controlRepo: string): string {
+  return repo.local_path ?? path.join(controlRepo, "demo-repos", repo.name);
 }
 
 /**
@@ -57,8 +67,8 @@ function readRepos(file: string): FleetRepo[] {
  * override), so you can keep private targets local instead of committing them —
  * the parallel of `tasks/private/` (see the repos.yaml header).
  */
-export function loadFleet(controlRepo: string): FleetRepo[] {
-  const owner = resolveOwner();
+export function loadFleet(controlRepo: string, options: FleetLoadOptions = {}): FleetRepo[] {
+  const owner = options.resolveOwner === false ? (process.env.GH_OWNER ?? "") : resolveOwner();
   const merged = new Map<string, FleetRepo>();
   for (const r of readRepos(path.join(controlRepo, "fleet", "repos.yaml"))) merged.set(r.name, r);
   const overlay = path.join(controlRepo, "fleet", "repos.local.yaml");
@@ -70,8 +80,8 @@ export function loadFleet(controlRepo: string): FleetRepo[] {
   }));
 }
 
-export function findRepo(controlRepo: string, name: string): FleetRepo {
-  const repo = loadFleet(controlRepo).find((r) => r.name === name);
+export function findRepo(controlRepo: string, name: string, options?: FleetLoadOptions): FleetRepo {
+  const repo = loadFleet(controlRepo, options).find((r) => r.name === name);
   if (!repo) {
     throw new Error(`repo "${name}" not found in fleet/repos.yaml`);
   }
