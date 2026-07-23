@@ -6,7 +6,7 @@
  * engine is the same code path with a different spawn.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -140,8 +140,13 @@ describe("runner e2e (mock engine, hermetic)", () => {
   it("injects the target's compiled knowledge, archives it per run, and keeps it out of the diff", async () => {
     // Provision a compiled artifact for the target just for this run. The prose
     // references a real workspace file so it grounds cleanly (no stale banner).
-    const artifactPath = path.join(CONTROL_REPO, "knowledge", "demo-ts-service.md");
+    // knowledge/ is uncommitted, so it may not exist in a fresh CI checkout —
+    // create it if needed and remove whatever we created in the finally.
+    const knowledgeDir = path.join(CONTROL_REPO, "knowledge");
+    const artifactPath = path.join(knowledgeDir, "demo-ts-service.md");
     if (existsSync(artifactPath)) throw new Error("unexpected pre-existing artifact — test would clobber it");
+    const knowledgeDirPreexisted = existsSync(knowledgeDir);
+    mkdirSync(knowledgeDir, { recursive: true });
     writeFileSync(
       artifactPath,
       ["---", "sha: " + "c".repeat(40), "grounding_ratio: 1", "---", "", "The service centers on src/userService.ts.", ""].join("\n"),
@@ -176,6 +181,9 @@ describe("runner e2e (mock engine, hermetic)", () => {
       expect(readFileSync(path.join(result.artifactsDir, "diff.patch"), "utf8")).not.toContain(".fleet-knowledge.md");
     } finally {
       rmSync(artifactPath, { force: true });
+      // Only tear down knowledge/ if this test created it (CI); never touch a
+      // developer's populated dir.
+      if (!knowledgeDirPreexisted) rmSync(knowledgeDir, { recursive: true, force: true });
     }
   });
 
