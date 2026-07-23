@@ -68,6 +68,8 @@ describe("fleet knowledge drift", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("# Knowledge drift — drift-target @");
+    expect(result.stdout).toContain("structural-reference coverage");
+    expect(result.stdout).toContain("not behavioral verification");
     expect(result.stdout).toContain("baseline: 1.000");
     expect(result.stdout).toContain("current:  0.000");
     expect(result.stdout).toContain("drift:    recompile required");

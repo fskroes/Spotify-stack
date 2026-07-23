@@ -110,6 +110,28 @@ describe("fleet knowledge compile", () => {
     expect(invocation.args.join("\n")).toContain("# Repo map — target @");
   });
 
+  it("sanitizes model wrapper prose and reports structural grounding on compile", () => {
+    const fixture = createCompileFixture();
+    const wrapped = `Sure — here is the knowledge artifact.\n\n${PROSE.trimEnd()}\n\nLet me know if you want it written to a file.`;
+    writeFileSync(
+      path.join(fixture.binDir, "claude"),
+      `#!/usr/bin/env node\nconsole.log(JSON.stringify({ type: "result", result: ${JSON.stringify(wrapped)} }));\n`,
+    );
+    chmodSync(path.join(fixture.binDir, "claude"), 0o755);
+
+    const result = runCli(fixture.controlRepo, fixture.binDir, fixture.argsPath, ["knowledge", "compile", "compile-target"]);
+    const stored = readFileSync(path.join(fixture.controlRepo, "knowledge", "compile-target.md"), "utf8");
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("structural grounding:");
+    expect(result.stdout).toContain("behavioral prose is not verified by this ratio");
+    // The stored artifact holds only the ordered sections and the labeled envelope.
+    expect(stored).toContain("grounding_basis: structural-references");
+    expect(stored).not.toContain("here is the knowledge artifact");
+    expect(stored).not.toContain("Let me know if you want");
+    expect(parseKnowledgeArtifact(stored).prose).toBe(PROSE);
+  });
+
   it("stores local-overlay targets privately and never creates a public copy", () => {
     const fixture = createCompileFixture("private");
     const result = runCli(fixture.controlRepo, fixture.binDir, fixture.argsPath, ["knowledge", "compile", "compile-target"]);

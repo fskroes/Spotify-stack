@@ -83,6 +83,8 @@ function formatKnowledgeDrift(target: string, report: ReturnType<typeof checkKno
   const lines = [
     `# Knowledge drift — ${target} @ ${revision}`,
     `# Stored prose @ ${report.artifactSha}`,
+    `# baseline/current are structural-reference coverage (do referenced files and symbols exist),`,
+    `# not behavioral verification of the prose itself.`,
     `baseline: ${report.baseline.toFixed(3)}`,
     `current:  ${report.current.toFixed(3)}`,
     `delta:    ${report.delta.toFixed(3)}`,
@@ -134,6 +136,9 @@ knowledge
     mkdirSync(path.dirname(artifactPath), { recursive: true });
     writeFileSync(artifactPath, artifact.markdown);
     console.log(`knowledge compiled: ${target} → ${path.relative(controlRepo, artifactPath)}`);
+    console.log(
+      `structural grounding: ${artifact.grounding.verified}/${artifact.grounding.checked} references resolved (${artifact.grounding.groundedRatio.toFixed(3)}); behavioral prose is not verified by this ratio`,
+    );
   });
 
 knowledge

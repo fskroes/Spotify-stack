@@ -1,5 +1,13 @@
 import type { RepoIndex } from "./types.js";
 
+/**
+ * What `groundedRatio` measures: the share of referenced files and symbols that
+ * exist in the structural index. It is broad structural coverage, not direct
+ * behavioral evidence — a high ratio confirms the nouns are real, not that the
+ * prose describing their behavior is correct.
+ */
+export const GROUNDING_BASIS = "structural-references" as const;
+
 const CHECKABLE_EXTENSIONS = new Set([
   ".ts",
   ".tsx",
@@ -32,6 +40,8 @@ export interface GroundingReport {
   verified: number;
   notFound: number;
   proposed: number;
+  /** Denominator of groundedRatio: verified + notFound (excludes proposed). */
+  checked: number;
   groundedRatio: number;
 }
 
@@ -91,7 +101,7 @@ export function checkGrounding(text: string, index: RepoIndex): GroundingReport 
   const proposed = claims.filter((claim) => claim.verdict === "proposed").length;
   const checked = verified + notFound;
 
-  return { claims, verified, notFound, proposed, groundedRatio: checked === 0 ? 1 : verified / checked };
+  return { claims, verified, notFound, proposed, checked, groundedRatio: checked === 0 ? 1 : verified / checked };
 }
 
 /**
