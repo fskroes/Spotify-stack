@@ -6,6 +6,7 @@ export type { GroundingBaselineComparison, GroundingClaim, GroundingReport } fro
 export { buildIndex, buildRepoMap, buildRepoMapFromIndex, renderMap } from "./map.js";
 export { buildKnowledgeProsePrompt, compileKnowledgeArtifact, KNOWLEDGE_PROSE_SECTIONS, stripDeliveryWrapper, validateKnowledgeProse } from "./prose.js";
 export type { CompiledKnowledgeArtifact } from "./prose.js";
+export { buildRunKnowledgeFile, buildRunPreamble } from "./run-seam.js";
 export type {
   ParsedFile,
   ParsedSymbol,

@@ -1,7 +1,23 @@
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import {
+  buildIndex,
+  buildRepoMapFromIndex,
+  buildRunKnowledgeFile,
+  checkKnowledgeDrift,
+  parseKnowledgeArtifact,
+  type KnowledgeDriftReport,
+} from "@fleet/knowledge";
 import { resolveLocalSource, type FleetRepo } from "./fleet.js";
+import { knowledgeArtifactPath } from "./knowledge.js";
+
+/**
+ * The compiled-knowledge file injected into a run's workspace. Named as a
+ * dotfile at the repo root so it reads as harness scaffolding, and kept out of
+ * the reviewable diff (see stagedDiff) exactly as `.claude/` is.
+ */
+export const RUN_KNOWLEDGE_FILE = ".fleet-knowledge.md";
 
 const GIT_IDENTITY = [
   "-c",
@@ -108,19 +124,71 @@ export function injectAgentConfig(opts: { controlRepo: string; workspace: string
   return { mcpConfigPath };
 }
 
+export interface InjectKnowledgeResult {
+  /** False when no compiled artifact exists for the target — the run proceeds
+   *  cold; knowledge is an enhancement, never a precondition. */
+  injected: boolean;
+  /** Repo-relative path of the written file, present only when injected. */
+  relPath?: string;
+  /** The written body, so the caller can archive it as run evidence. */
+  content?: string;
+  /** Commit the injected prose was compiled at (its stamped SHA). */
+  artifactSha?: string;
+  /** Drift of the stored prose against the workspace tree at injection time. */
+  drift?: KnowledgeDriftReport;
+}
+
+/**
+ * Inject the target's compiled knowledge into the workspace as
+ * `.fleet-knowledge.md`, the secondary consumer of the #80 knowledge layer.
+ *
+ * When a compiled artifact exists, one fresh index built from the workspace
+ * tree is used twice — for the structural map and for the drift check (the
+ * Stage-4 `fleet ask` pattern) — then the file is written from
+ * `buildRunKnowledgeFile`. This never spends: it renders the *existing* prose,
+ * flagging staleness rather than recompiling (recompile is the CLI's opt-in
+ * pre-step). Missing artifact → `{ injected: false }` and the run runs cold.
+ */
+export async function injectKnowledge(opts: {
+  controlRepo: string;
+  workspace: string;
+  repo: FleetRepo;
+}): Promise<InjectKnowledgeResult> {
+  const artifactPath = knowledgeArtifactPath(opts.controlRepo, opts.repo.name, opts.repo.visibility);
+  if (!existsSync(artifactPath)) return { injected: false };
+
+  const artifact = parseKnowledgeArtifact(readFileSync(artifactPath, "utf8"));
+  const index = await buildIndex(opts.workspace);
+  // The index is built from the throwaway workspace, so buildIndex names it after
+  // that timestamped dir. Relabel with the target's real name before rendering,
+  // so neither the file title nor the map header leaks run-dir naming to the agent.
+  index.repo = opts.repo.name;
+  const map = buildRepoMapFromIndex(index);
+  const drift = checkKnowledgeDrift(artifact, index);
+  const content = buildRunKnowledgeFile(map, artifact.prose, drift);
+
+  writeFileSync(path.join(opts.workspace, RUN_KNOWLEDGE_FILE), content);
+  return { injected: true, relPath: RUN_KNOWLEDGE_FILE, content, artifactSha: artifact.sha, drift };
+}
+
 /**
  * Stage everything and return the staged diff against the baseline.
- * `.claude/` is excluded: injectAgentConfig overwrites it, and the .gitignore
- * it drops there only hides *untracked* files — target repos that commit
- * their own .claude config would otherwise leak the harness config into the
- * PR. The exclusion also carries into the PR commit, which commits this index.
+ * `.claude/` and `.fleet-knowledge.md` are excluded: both are injected by the
+ * harness (injectAgentConfig, injectKnowledge), and the .gitignore .claude
+ * drops only hides *untracked* files — a target that commits its own .claude
+ * config would otherwise leak the harness config into the PR. The knowledge
+ * file is a root dotfile the target never commits, but the same reset keeps it
+ * out of the diff regardless, so a scoped run never trips scope-violation on
+ * it. The exclusions carry into the PR commit, which commits this index.
  */
 export function stagedDiff(workspace: string): string {
   git(workspace, ["add", "-A", "--", "."]);
-  // Do not name .claude in the add pathspec: Git rejects an explicitly named
-  // ignored path, even when it is an exclusion. Reset keeps harness config out
-  // of the staged diff for both ignored and tracked target configurations.
+  // Do not name these in the add pathspec: Git rejects an explicitly named
+  // ignored path, even when it is an exclusion. Reset keeps harness-injected
+  // files out of the staged diff for both ignored and tracked configurations,
+  // and out of stagedFiles, so scope enforcement never sees them.
   git(workspace, ["reset", "-q", "--", ".claude"]);
+  git(workspace, ["reset", "-q", "--", RUN_KNOWLEDGE_FILE]);
   return git(workspace, ["diff", "--cached"]);
 }
 

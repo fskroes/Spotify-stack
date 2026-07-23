@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseKnowledgeArtifact } from "@fleet/knowledge";
-import { knowledgeArtifactPath } from "../src/knowledge-artifact.js";
+import { knowledgeArtifactPath } from "@fleet/runner/knowledge";
 
 const projectRoot = process.cwd();
 const cli = path.join(projectRoot, "packages", "cli", "src", "index.ts");

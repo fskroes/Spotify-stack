@@ -6,7 +6,7 @@
  * engine is the same code path with a different spawn.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -135,6 +135,48 @@ describe("runner e2e (mock engine, hermetic)", () => {
     // fleet-wide store itself survives, since concurrent runs live in it.
     expect(readInflight(ledgerPath)).toEqual([]);
     expect(existsSync(inflightDir(ledgerPath))).toBe(true);
+  });
+
+  it("injects the target's compiled knowledge, archives it per run, and keeps it out of the diff", async () => {
+    // Provision a compiled artifact for the target just for this run. The prose
+    // references a real workspace file so it grounds cleanly (no stale banner).
+    const artifactPath = path.join(CONTROL_REPO, "knowledge", "demo-ts-service.md");
+    if (existsSync(artifactPath)) throw new Error("unexpected pre-existing artifact — test would clobber it");
+    writeFileSync(
+      artifactPath,
+      ["---", "sha: " + "c".repeat(40), "grounding_ratio: 1", "---", "", "The service centers on src/userService.ts.", ""].join("\n"),
+    );
+    try {
+      const result = await run({
+        controlRepo: CONTROL_REPO,
+        taskPath: TASK_001,
+        repoName: "demo-ts-service",
+        local: true,
+        dryRun: true,
+        engine: "mock",
+        mockPatch: GOOD_PATCH,
+        judgeMode: "approve",
+        ledgerPath: tmpLedger(),
+        log: quiet,
+      });
+
+      expect(result.status).toBe("approved");
+
+      // The compiled artifact was injected into the workspace as a root dotfile...
+      const injected = readFileSync(path.join(result.workspace, ".fleet-knowledge.md"), "utf8");
+      expect(injected).toContain("# Target knowledge — demo-ts-service");
+      expect(injected).toContain("The service centers on src/userService.ts.");
+
+      // ...archived per run as its own evidence, byte-identical to what shipped...
+      const runDir = path.join(CONTROL_REPO, "artifacts", "runs", result.runId);
+      expect(readFileSync(path.join(runDir, ".fleet-knowledge.md"), "utf8")).toBe(injected);
+
+      // ...and never reaches the reviewable diff, so a scoped run can't trip on it.
+      expect(result.diff).not.toContain(".fleet-knowledge.md");
+      expect(readFileSync(path.join(result.artifactsDir, "diff.patch"), "utf8")).not.toContain(".fleet-knowledge.md");
+    } finally {
+      rmSync(artifactPath, { force: true });
+    }
   });
 
   it("records cloud provenance in the ledger when running under GitHub Actions", async () => {

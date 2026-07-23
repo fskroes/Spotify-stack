@@ -99,6 +99,9 @@ importers:
       '@fleet/judge':
         specifier: workspace:*
         version: link:../judge
+      '@fleet/knowledge':
+        specifier: workspace:*
+        version: link:../knowledge
       '@fleet/mcp-verify':
         specifier: workspace:*
         version: link:../mcp-verify
