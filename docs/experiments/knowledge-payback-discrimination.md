@@ -1,7 +1,7 @@
 # Discriminating knowledge-payback e2e (issue #91)
 
-**Status:** designed + harnessed, **not yet run**. The real-spend run is a
-separate authorized session (per #91). This document is the target-neutral
+**Status:** designed, harnessed, and **run** (2026-07-23, issue #93 — see
+[Result](#result-2026-07-23-issue-93)). This document is the target-neutral
 method: the question, the discrimination model, the harness, and how to read a
 result. The concrete candidate analysis for the chosen private fleet target
 lives with that target's private task definition (git-ignored `tasks/private/`),
@@ -131,9 +131,56 @@ The harness, per arm × rep:
   even a non-local coupling self-teaches on a well-documented repo, and that the
   layer's payback lies elsewhere (under-documented / large-context targets).
 
-## Scope boundary of this work
+## Result (2026-07-23, issue #93)
 
-This session **designed, authored, and harnessed only**. No fleet run was
-launched and nothing was spent. Executing the real-spend run — and recording its
-SUMMARY — is a separate authorized session, per #91 and the operator's explicit
-choice.
+The discriminating run was executed on a private, meticulously-commented target —
+the candidate whose private analysis predicted self-teaching as the dominant tie
+risk. Task: add a persisted field to a shared model behind a versioned storage
+schema + migration plan, with the migration *source* file held **out of scope**
+so an over-eager schema bump would trip `scope-violation`. 3× primed / 3× cold,
+real subscription spend.
+
+| arm | verify passed | vetoes | unmetGates | mean total USD |
+|---|---|---|---|---|
+| primed | 3/3 | 0 | 0 | **$1.07** |
+| cold | 3/3 | 0 | 0 | **$0.62** |
+
+**Harness bucket: Discriminating (bet weakened).** The two axes split:
+
+- **Outcome tied.** All six runs — primed and cold alike — produced the
+  *identical* correct diff: the one-line additive inline default on the model
+  (`var … = false`) plus the required migration test, both files in scope,
+  neither touching the out-of-scope migration source. **The cold arm self-taught
+  the winning pattern in all three reps** — it took neither predicted trap (no
+  out-of-scope schema bump → no `scope-violation`; no missing-default → no
+  migration-test failure). This is exactly the *self-teaching* risk the design
+  named as the strongest reason to tie: a neighbouring field on the same model is
+  already inline-defaulted with a migrate-lightweight comment, and the cold agent
+  copied ground truth for free.
+- **Cost diverged.** Primed cost more in all 3 reps: per-rep +124% / +43% / +42%;
+  comparing arm means, $1.07 vs $0.62 = **+72%** (inflated by rep 1's ~2× primed
+  outlier — the per-rep median gap is +43%). No outcome benefit bought that spend.
+
+Because cost was *not* comparable, this is **not** the harness's *null (tie)*
+bucket (which requires both arms passing at comparable cost); and it is not
+*payback* (cold never failed, vetoed, or took the trap detour — and cold cost
+*less*). It is *bet weakened* in its milder, **overhead** form — priming cost
+more for no benefit — rather than the stronger *misled-into-the-trap* form
+(primed also produced the correct diff, so priming did not actively mislead).
+
+Substantively this **reproduces and strengthens the 004 finding**
+(`demo-feed-service`, +16–65% overhead): even a *deliberately non-local* coupling
+is discovered for free on a well-documented target, so the designed
+outcome-discrimination never fired and only the overhead remained (here +72%).
+It is a valid, publishable answer — it refines *where* the layer pays back:
+**not on well-documented, self-teaching targets. Look to under-documented or
+large-context targets**, where cold cannot read ground truth at the landing zone.
+Per-run IDs, diffs, and cost breakdown are in the private companion and the
+machine-local evidence dir.
+
+## Scope boundary
+
+The design session (#91) **designed, authored, and harnessed only** — nothing
+was spent. The execution session (#93, 2026-07-23) launched the real-spend run
+above and recorded its SUMMARY; the raw evidence lives under the git-ignored
+`fleet/evidence/knowledge-payback/<ts>/`.
