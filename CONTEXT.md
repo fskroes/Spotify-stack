@@ -102,3 +102,26 @@ happened to the change* (the seven-value `RunStatus`); verification state
 answers *what was proven about it*. A run that shipped a good diff against a
 repo with no verifiers is `approved` with `verifyState: "inconclusive"` — the
 run succeeded, and what is unproven is the verification, not the run.
+
+## Knowledge prose
+
+The stored, fleet-generated explanatory layer for one target. It is distinct
+from a run artifact: knowledge prose lives under `knowledge/`, is stamped with
+the target SHA, and is checked against an ephemeral structural map before a
+consumer trusts it.
+
+## Grounding ratio
+
+The fraction of checkable file and symbol claims in text that the target's
+freshly rebuilt structural index confirms. It is intentionally approximate:
+framework vocabulary can be reported missing, while suffix file matches and
+name-level dotted symbols can be overly permissive. It compares a knowledge
+prose's current result to the same mechanic's compile-time baseline; it is not
+a precision claim about correctness.
+
+## Drift
+
+A knowledge prose layer whose grounding ratio has fallen more than 0.05 below
+its compile-time baseline. The relative comparison preserves a stable
+framework-vocabulary floor that an absolute threshold would incorrectly flag.
+Drift requests recompilation; it does not itself make the structural map stale.

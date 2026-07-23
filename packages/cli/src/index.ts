@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { Command } from "commander";
 import { run } from "@fleet/runner";
-import { buildRepoMap, renderMap } from "@fleet/knowledge";
+import { buildIndex, buildRepoMap, checkKnowledgeDrift, parseKnowledgeArtifact, renderMap } from "@fleet/knowledge";
 import { loadTask } from "@fleet/runner/task";
 import { findRepo, resolveLocalSource, resolveOwner, targetRepos } from "@fleet/runner/fleet";
 import type { LedgerEntry, PrLiveState } from "@fleet/contract";
@@ -56,13 +56,44 @@ function ghAsync(args: string[]): Promise<string> {
   });
 }
 
+function resolveKnowledgeRepo(target: string): string {
+  const repo = findRepo(controlRepo, target, { resolveOwner: false });
+  const repoDir = resolveLocalSource(repo, controlRepo);
+  if (!existsSync(repoDir)) {
+    throw new Error(
+      `target "${target}" has no local source at ${repoDir}; set local_path in fleet/repos.local.yaml or add demo-repos/${target}`,
+    );
+  }
+  return repoDir;
+}
+
+function formatKnowledgeDrift(target: string, report: ReturnType<typeof checkKnowledgeDrift>): string {
+  const revision = report.dirty ? `${report.currentSha.slice(0, 7)} + working tree changes` : report.currentSha.slice(0, 7);
+  const lines = [
+    `# Knowledge drift — ${target} @ ${revision}`,
+    `# Stored prose @ ${report.artifactSha}`,
+    `baseline: ${report.baseline.toFixed(3)}`,
+    `current:  ${report.current.toFixed(3)}`,
+    `delta:    ${report.delta.toFixed(3)}`,
+    `drift:    ${report.recompileRequired ? "recompile required" : "within baseline tolerance"}`,
+  ];
+  const unconfirmed = report.grounding.claims.filter((claim) => claim.verdict === "not-found");
+  if (unconfirmed.length > 0) {
+    lines.push("unconfirmed claims:");
+    for (const claim of unconfirmed) lines.push(`- ${claim.kind}: ${claim.value}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 const program = new Command()
   .name("fleet")
   .description("Background coding agent fleet (Spotify Honk-style reference implementation)");
 
-program
+const knowledge = program
   .command("knowledge")
-  .description("Build deterministic structural knowledge from local fleet targets")
+  .description("Build deterministic structural knowledge from local fleet targets");
+
+knowledge
   .command("map")
   .description("Render a deterministic structural map without network or model calls")
   .argument("<target>", "repo name from fleet/repos.yaml")
@@ -74,15 +105,22 @@ program
       throw new Error("--budget must be a positive integer");
     }
 
-    const repo = findRepo(controlRepo, target, { resolveOwner: false });
-    const repoDir = resolveLocalSource(repo, controlRepo);
-    if (!existsSync(repoDir)) {
-      throw new Error(
-        `target "${target}" has no local source at ${repoDir}; set local_path in fleet/repos.local.yaml or add demo-repos/${target}`,
-      );
+    process.stdout.write(renderMap(await buildRepoMap(resolveKnowledgeRepo(target), { budgetTokens })));
+  });
+
+knowledge
+  .command("drift")
+  .description("Check stored knowledge prose against the target's current structural index")
+  .argument("<target>", "repo name from fleet/repos.yaml")
+  .action(async (target: string) => {
+    const artifactPath = path.join(controlRepo, "knowledge", `${target}.md`);
+    if (!existsSync(artifactPath)) {
+      throw new Error(`knowledge artifact not found: ${artifactPath}; run fleet knowledge compile ${target} first`);
     }
 
-    process.stdout.write(renderMap(await buildRepoMap(repoDir, { budgetTokens })));
+    const index = await buildIndex(resolveKnowledgeRepo(target));
+    const report = checkKnowledgeDrift(parseKnowledgeArtifact(readFileSync(artifactPath, "utf8")), index);
+    process.stdout.write(formatKnowledgeDrift(target, report));
   });
 
 program
