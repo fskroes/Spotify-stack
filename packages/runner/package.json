@@ -7,6 +7,7 @@
   "exports": {
     ".": "./src/run.ts",
     "./fleet": "./src/fleet.ts",
+    "./knowledge": "./src/knowledge.ts",
     "./task": "./src/task.ts",
     "./ledger": "./src/ledger.ts",
     "./ledger-union": "./src/ledger-union.ts",
@@ -19,6 +20,7 @@
   "dependencies": {
     "@fleet/contract": "workspace:*",
     "@fleet/judge": "workspace:*",
+    "@fleet/knowledge": "workspace:*",
     "@fleet/mcp-verify": "workspace:*",
     "picomatch": "^4.0.2",
     "yaml": "^2.8.0"

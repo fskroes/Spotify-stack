@@ -14,8 +14,9 @@ import { beginInflight, sweepInflight } from "./inflight.js";
 import { appendLedger, defaultLedgerPath, fleetRecord, readLedger } from "./ledger.js";
 import { defaultLedgerHtmlPath, writeLedgerHtml } from "./ledger-html.js";
 import { buildPrBody, type VerifyCheck } from "./pr.js";
+import { buildRunPreamble } from "@fleet/knowledge";
 import { loadTask, type Task } from "./task.js";
-import { git, injectAgentConfig, prepareWorkspace, stagedDiff, stagedFiles } from "./workspace.js";
+import { git, injectAgentConfig, injectKnowledge, prepareWorkspace, RUN_KNOWLEDGE_FILE, stagedDiff, stagedFiles } from "./workspace.js";
 
 interface VerifyResult {
   /** Tri-state: `inconclusive` means no verifier ran, which is not a pass.
@@ -91,11 +92,14 @@ Complete the task below. Rules of engagement:
   with exactly: NO_CHANGES_NEEDED
 `;
 
-export function buildPreamble(task: Task): string {
+export function buildPreamble(task: Task, knowledgePreamble?: string): string {
   const scopeRule = task.scope
     ? `- You may only modify files matching: ${task.scope.join(", ")}. The runner\n  mechanically kills any run whose diff touches other files — before verify,\n  judge, or review.\n`
     : "";
-  return `${HARNESS_RULES}${scopeRule}\n--- TASK ---\n${task.raw}`;
+  // The knowledge block sits after the rules of engagement and before the task,
+  // so the agent knows the injected file is available while reading what to do.
+  const knowledgeBlock = knowledgePreamble ? `\n${knowledgePreamble}\n` : "";
+  return `${HARNESS_RULES}${scopeRule}${knowledgeBlock}\n--- TASK ---\n${task.raw}`;
 }
 
 /**
@@ -392,6 +396,18 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       local: opts.local ?? false,
     });
     const { mcpConfigPath } = injectAgentConfig({ controlRepo: opts.controlRepo, workspace });
+    // Prime the run with the target's compiled knowledge, if any exists. Never
+    // spends (renders the stored prose, flags drift); a missing artifact runs
+    // cold. Archived to the run's evidence directly — not via REVIEW_ARTIFACTS,
+    // which doubles as the operator's served set (Stage 6's concern, and would
+    // expose private-target structure).
+    const knowledge = await injectKnowledge({ controlRepo: opts.controlRepo, workspace, repo });
+    if (knowledge.injected && knowledge.content) {
+      writeFileSync(path.join(runDir, RUN_KNOWLEDGE_FILE), knowledge.content);
+      log(`· injected knowledge → ${knowledge.relPath}${knowledge.drift?.recompileRequired ? " (stale — drift banner included)" : ""}`);
+    } else {
+      log("· no compiled knowledge for this target — running cold");
+    }
     const engine = makeEngine(opts, workspace, mcpConfigPath);
     const judgeOnce = makeJudge(opts);
 
@@ -470,7 +486,14 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     log("· running agent…");
     let engineResult: EngineResult;
     try {
-      engineResult = await timed("agentMs", () => engine.run(buildPreamble(task)));
+      // The knowledge preamble need only be in the first prompt: the file
+      // persists on disk across veto-retries (the workspace is not recreated)
+      // and engine.resume carries the session, so the agent keeps both.
+      const knowledgePreamble =
+        knowledge.injected && knowledge.relPath && knowledge.artifactSha
+          ? buildRunPreamble(knowledge.relPath, knowledge.artifactSha, knowledge.drift?.recompileRequired ?? false)
+          : undefined;
+      engineResult = await timed("agentMs", () => engine.run(buildPreamble(task, knowledgePreamble)));
       usage.recordAgent(engineResult.usage);
     } catch (error) {
       usage.recordAgent(unavailableProducerUsage("agent invocation failed before a usable final envelope"));

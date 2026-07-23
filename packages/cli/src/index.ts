@@ -19,7 +19,8 @@ import {
   type KnowledgeDriftReport,
 } from "@fleet/knowledge";
 import { loadTask } from "@fleet/runner/task";
-import { resolveFleetRepo, resolveLocalSource, resolveOwner, targetRepos, type FleetRepoVisibility } from "@fleet/runner/fleet";
+import { resolveOwner, targetRepos } from "@fleet/runner/fleet";
+import { knowledgeArtifactPath, resolveKnowledgeRepo } from "@fleet/runner/knowledge";
 import { extractCliEnvelope, sanitizeCliEnvelopeUsage, type LedgerEntry, type PrLiveState } from "@fleet/contract";
 import { invokeClaudeCli } from "./knowledge-cli.js";
 import { defaultLedgerPath, fleetRecord, formatRecordLine, readLedger } from "@fleet/runner/ledger";
@@ -27,7 +28,6 @@ import { readUnionLedger } from "@fleet/runner/ledger-union";
 import { writeLedgerHtml } from "@fleet/runner/ledger-html";
 import { serveLedger } from "@fleet/runner/ledger-serve";
 import { cosign, formatCosignResult } from "@fleet/runner/cosign";
-import { knowledgeArtifactPath } from "./knowledge-artifact.js";
 import { compileKnowledgeProse } from "./knowledge-compile.js";
 
 const controlRepo = process.cwd();
@@ -71,17 +71,6 @@ function ghAsync(args: string[]): Promise<string> {
       code === 0 ? resolve(stdout) : reject(new Error(stderr.trim() || `gh exited with code ${code}`)),
     );
   });
-}
-
-function resolveKnowledgeRepo(target: string): { repoDir: string; visibility: FleetRepoVisibility } {
-  const { repo, visibility } = resolveFleetRepo(controlRepo, target);
-  const repoDir = resolveLocalSource(repo, controlRepo);
-  if (!existsSync(repoDir)) {
-    throw new Error(
-      `target "${target}" has no local source at ${repoDir}; set local_path in fleet/repos.local.yaml or add demo-repos/${target}`,
-    );
-  }
-  return { repoDir, visibility };
 }
 
 function formatKnowledgeDrift(target: string, report: ReturnType<typeof checkKnowledgeDrift>): string {
@@ -178,7 +167,7 @@ knowledge
       throw new Error("--budget must be a positive integer");
     }
 
-    process.stdout.write(renderMap(await buildRepoMap(resolveKnowledgeRepo(target).repoDir, { budgetTokens })));
+    process.stdout.write(renderMap(await buildRepoMap(resolveKnowledgeRepo(controlRepo, target).repoDir, { budgetTokens })));
   });
 
 knowledge
@@ -186,7 +175,7 @@ knowledge
   .description("Compile grounded knowledge prose from a target's structural map")
   .argument("<target>", "repo name from fleet/repos.yaml")
   .action(async (target: string) => {
-    const { repoDir, visibility } = resolveKnowledgeRepo(target);
+    const { repoDir, visibility } = resolveKnowledgeRepo(controlRepo, target);
     const index = await buildIndex(repoDir);
     const map = buildRepoMapFromIndex(index);
     const prose = compileKnowledgeProse(repoDir, buildKnowledgeProsePrompt(map));
@@ -206,7 +195,7 @@ knowledge
   .description("Check stored knowledge prose against the target's current structural index")
   .argument("<target>", "repo name from fleet/repos.yaml")
   .action(async (target: string) => {
-    const { repoDir, visibility } = resolveKnowledgeRepo(target);
+    const { repoDir, visibility } = resolveKnowledgeRepo(controlRepo, target);
     const artifactPath = knowledgeArtifactPath(controlRepo, target, visibility);
     if (!existsSync(artifactPath)) {
       throw new Error(`knowledge artifact not found: ${artifactPath}; run fleet knowledge compile ${target} first`);
@@ -223,7 +212,7 @@ program
   .argument("<target>", "repo name from fleet/repos.yaml")
   .argument("<question>", "the ideation question (quote it)")
   .action(async (target: string, question: string) => {
-    const { repoDir, visibility } = resolveKnowledgeRepo(target);
+    const { repoDir, visibility } = resolveKnowledgeRepo(controlRepo, target);
     const artifactPath = knowledgeArtifactPath(controlRepo, target, visibility);
     if (!existsSync(artifactPath)) {
       throw new Error(`knowledge artifact not found: ${artifactPath}; run fleet knowledge compile ${target} first`);
@@ -252,6 +241,46 @@ program
     process.stdout.write(`\n${formatAskReport(elapsedMs, grounding, envelope)}\n`);
   });
 
+/**
+ * The opt-in recompile pre-step for `fleet run --recompile-knowledge`. Reuses
+ * the exact Stage-3 flow `fleet knowledge compile` runs — the only path that
+ * spends real agent tokens (~$0.79). Recompiles only when the stored prose has
+ * actually drifted; fresh prose, or a target with no artifact yet, is a no-op,
+ * and the runner injects (or skips) whatever is on disk. The flag is the spend
+ * authorization: absent it, a run never recompiles, matching `fleet ask`.
+ */
+async function recompileKnowledgeIfStale(target: string): Promise<void> {
+  const { repoDir, visibility } = resolveKnowledgeRepo(controlRepo, target);
+  const artifactPath = knowledgeArtifactPath(controlRepo, target, visibility);
+  if (!existsSync(artifactPath)) {
+    console.log(
+      `--recompile-knowledge: no artifact for ${target} yet (run fleet knowledge compile ${target} first). Proceeding; the run will inject nothing.`,
+    );
+    return;
+  }
+
+  const index = await buildIndex(repoDir);
+  const drift = checkKnowledgeDrift(parseKnowledgeArtifact(readFileSync(artifactPath, "utf8")), index);
+  if (!drift.recompileRequired) {
+    console.log(
+      `--recompile-knowledge: ${target} prose fresh — grounding ${drift.current.toFixed(3)} within ${drift.baseline.toFixed(3)} baseline tolerance; no recompile.`,
+    );
+    return;
+  }
+
+  console.log(
+    `--recompile-knowledge: ${target} prose drifted (Δ${drift.delta.toFixed(3)} > 0.05) — recompiling now (~$0.79 of agent spend)…`,
+  );
+  const map = buildRepoMapFromIndex(index);
+  const prose = compileKnowledgeProse(repoDir, buildKnowledgeProsePrompt(map));
+  const artifact = compileKnowledgeArtifact(prose, index);
+  mkdirSync(path.dirname(artifactPath), { recursive: true });
+  writeFileSync(artifactPath, artifact.markdown);
+  console.log(
+    `--recompile-knowledge: rewrote ${path.relative(controlRepo, artifactPath)} (structural grounding ${artifact.grounding.groundedRatio.toFixed(3)}).`,
+  );
+}
+
 program
   .command("run")
   .description("Run a task against one repo (the per-repo agent loop)")
@@ -262,7 +291,9 @@ program
   .option("--engine <engine>", "claude | mock", "claude")
   .option("--mock-patch <path>", "patch file for the mock engine (or NONE)")
   .option("--judge <mode>", "claude | cli | approve | veto | veto-once (default: cli locally on your subscription, claude/SDK in CI)")
+  .option("--recompile-knowledge", "recompile drifted knowledge before the run (opt-in real agent spend, ~$0.79)", false)
   .action(async (taskArg: string, options) => {
+    if (options.recompileKnowledge) await recompileKnowledgeIfStale(options.repo);
     const result = await run({
       controlRepo,
       taskPath: resolveTaskPath(taskArg),
