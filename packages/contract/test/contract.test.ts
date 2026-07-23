@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   dedupeInflight,
   Endpoints,
+  extractCliEnvelope,
   InflightRecordSchema,
   isKillStatus,
   KILL_STATUSES,
@@ -86,6 +87,19 @@ describe("tolerant reading", () => {
     expect(bad.ok).toBe(false);
     const v2 = InflightRecordSchema.safeParse({ ...inflight(), v: 2 });
     expect(v2.success).toBe(false);
+  });
+});
+
+describe("Claude CLI envelopes", () => {
+  it("takes the final result envelope after hook-contaminated stdout", () => {
+    const stdout = [
+      "SessionStart hook: ready",
+      JSON.stringify({ type: "system", subtype: "init" }),
+      JSON.stringify({ type: "result", result: "first" }),
+      JSON.stringify({ type: "result", result: "final" }),
+    ].join("\n");
+
+    expect(extractCliEnvelope(stdout).result).toBe("final");
   });
 });
 

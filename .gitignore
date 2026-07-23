@@ -15,6 +15,9 @@ demo-repos/*/.build/
 # private fleet overlay (targets kept local, not committed)
 fleet/repos.local.yaml
 
+# Locally compiled prose for private fleet targets. Public knowledge/*.md stays trackable.
+knowledge/private/
+
 # live state of currently-running tasks: one file per process, deleted when the
 # run appends its ledger line. Machine-local and worthless a second later.
 fleet/inflight/

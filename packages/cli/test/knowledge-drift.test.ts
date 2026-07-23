@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -44,12 +44,32 @@ function createDriftFixture() {
 }
 
 describe("fleet knowledge drift", () => {
+  it("finds private artifacts through the local-overlay resolver", () => {
+    const controlRepo = createDriftFixture();
+    const publicRegistry = readFileSync(path.join(controlRepo, "fleet", "repos.yaml"), "utf8");
+    writeFileSync(path.join(controlRepo, "fleet", "repos.yaml"), "repos:\n");
+    writeFileSync(path.join(controlRepo, "fleet", "repos.local.yaml"), publicRegistry);
+    mkdirSync(path.join(controlRepo, "knowledge", "private"));
+    writeFileSync(
+      path.join(controlRepo, "knowledge", "private", "drift-target.md"),
+      readFileSync(path.join(controlRepo, "knowledge", "drift-target.md"), "utf8"),
+    );
+    rmSync(path.join(controlRepo, "knowledge", "drift-target.md"));
+
+    const result = runCli(controlRepo, ["knowledge", "drift", "drift-target"]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("# Knowledge drift — drift-target @");
+  });
+
   it("checks stored prose locally and reports when its relative baseline requires recompilation", () => {
     const result = runCli(createDriftFixture(), ["knowledge", "drift", "drift-target"]);
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("# Knowledge drift — drift-target @");
+    expect(result.stdout).toContain("structural-reference coverage");
+    expect(result.stdout).toContain("not behavioral verification");
     expect(result.stdout).toContain("baseline: 1.000");
     expect(result.stdout).toContain("current:  0.000");
     expect(result.stdout).toContain("drift:    recompile required");
