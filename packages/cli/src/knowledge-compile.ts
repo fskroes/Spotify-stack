@@ -1,20 +1,7 @@
-import { execFileSync } from "node:child_process";
 import { extractCliResult } from "@fleet/contract";
+import { invokeClaudeCli } from "./knowledge-cli.js";
 
-/** Invoke the logged-in local Claude CLI once, from the target repository. */
+/** Compile grounded prose: invoke the shared local Claude CLI seam and keep only its result string. */
 export function compileKnowledgeProse(repoDir: string, prompt: string): string {
-  const stdout = execFileSync(
-    "claude",
-    [
-      "-p",
-      prompt,
-      "--output-format",
-      "json",
-      "--permission-mode",
-      "plan",
-      "--strict-mcp-config",
-    ],
-    { cwd: repoDir, encoding: "utf8", timeout: 5 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 },
-  );
-  return extractCliResult(stdout);
+  return extractCliResult(invokeClaudeCli(repoDir, prompt));
 }

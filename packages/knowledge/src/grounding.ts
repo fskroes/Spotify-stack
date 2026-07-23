@@ -45,6 +45,11 @@ export interface GroundingReport {
   groundedRatio: number;
 }
 
+/** The references a grounding pass could not resolve — a text's dead-ends. */
+export function ungroundedClaims(report: GroundingReport): GroundingClaim[] {
+  return report.claims.filter((claim) => claim.verdict === "not-found");
+}
+
 export interface GroundingBaselineComparison {
   baseline: number;
   current: number;
