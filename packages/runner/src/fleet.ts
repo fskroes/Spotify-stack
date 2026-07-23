@@ -4,11 +4,15 @@ import { homedir } from "node:os";
 import path from "node:path";
 import YAML from "yaml";
 
+export type FleetRepoVisibility = "public" | "private";
+
 export interface FleetRepo {
   name: string;
   url: string;
   language: string;
   default_branch: string;
+  /** The registry file that supplied this target after the local overlay merged. */
+  visibility: FleetRepoVisibility;
   /**
    * Optional source directory for `--local` runs. When set, local mode copies
    * from here instead of `demo-repos/<name>`. After load this holds a resolved
@@ -57,8 +61,10 @@ export function resolveOwner(): string {
   }
 }
 
-function readRepos(file: string): FleetRepo[] {
-  return (YAML.parse(readFileSync(file, "utf8")) as { repos?: FleetRepo[] }).repos ?? [];
+type FleetRepoDefinition = Omit<FleetRepo, "visibility">;
+
+function readRepos(file: string): FleetRepoDefinition[] {
+  return (YAML.parse(readFileSync(file, "utf8")) as { repos?: FleetRepoDefinition[] }).repos ?? [];
 }
 
 /**
@@ -69,10 +75,14 @@ function readRepos(file: string): FleetRepo[] {
  */
 export function loadFleet(controlRepo: string, options: FleetLoadOptions = {}): FleetRepo[] {
   const owner = options.resolveOwner === false ? (process.env.GH_OWNER ?? "") : resolveOwner();
-  const merged = new Map<string, FleetRepo>();
-  for (const r of readRepos(path.join(controlRepo, "fleet", "repos.yaml"))) merged.set(r.name, r);
+  const merged = new Map<string, FleetRepoDefinition & { visibility: FleetRepoVisibility }>();
+  for (const r of readRepos(path.join(controlRepo, "fleet", "repos.yaml"))) {
+    merged.set(r.name, { ...r, visibility: "public" });
+  }
   const overlay = path.join(controlRepo, "fleet", "repos.local.yaml");
-  if (existsSync(overlay)) for (const r of readRepos(overlay)) merged.set(r.name, r);
+  if (existsSync(overlay)) {
+    for (const r of readRepos(overlay)) merged.set(r.name, { ...r, visibility: "private" });
+  }
   return [...merged.values()].map((r) => ({
     ...r,
     url: r.url.replaceAll("${GH_OWNER}", owner),
@@ -86,6 +96,12 @@ export function findRepo(controlRepo: string, name: string, options?: FleetLoadO
     throw new Error(`repo "${name}" not found in fleet/repos.yaml`);
   }
   return repo;
+}
+
+/** Resolve one target and its storage visibility without shelling out to GitHub. */
+export function resolveFleetRepo(controlRepo: string, name: string): { repo: FleetRepo; visibility: FleetRepoVisibility } {
+  const repo = findRepo(controlRepo, name, { resolveOwner: false });
+  return { repo, visibility: repo.visibility };
 }
 
 /** Repos a task applies to ("all" targets every repo in the fleet). */

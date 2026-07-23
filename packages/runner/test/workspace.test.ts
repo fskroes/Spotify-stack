@@ -59,6 +59,7 @@ describe("prepareWorkspace with local_path", () => {
     url: "https://example.invalid/my-repo",
     language: "typescript",
     default_branch: "main",
+    visibility: "public",
     local_path,
   });
 

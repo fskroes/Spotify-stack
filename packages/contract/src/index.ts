@@ -18,3 +18,4 @@ export * from "./parse.js";
 export * from "./dedupe.js";
 export * from "./endpoints.js";
 export * from "./producer-usage.js";
+export * from "./cli-envelope.js";

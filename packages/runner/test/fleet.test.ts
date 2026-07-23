@@ -11,7 +11,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...actual, execFileSync: execFileSyncMock };
 });
 
-import { findRepo, loadFleet, resolveLocalSource, resolveOwner } from "../src/fleet.js";
+import { findRepo, loadFleet, resolveFleetRepo, resolveLocalSource, resolveOwner } from "../src/fleet.js";
 import { defaultJudgeMode } from "../src/run.js";
 
 const savedOwner = process.env.GH_OWNER;
@@ -68,6 +68,7 @@ describe("loadFleet overlay (fleet/repos.local.yaml)", () => {
     const repos = loadFleet(control(BASE));
     expect(repos.map((r) => r.name)).toEqual(["demo"]);
     expect(repos[0].url).toBe("https://github.com/acme/demo"); // ${GH_OWNER} expanded
+    expect(repos[0].visibility).toBe("public");
   });
 
   it("merges private targets from repos.local.yaml", () => {
@@ -76,6 +77,7 @@ describe("loadFleet overlay (fleet/repos.local.yaml)", () => {
       "repos:\n  - name: secret\n    url: https://github.com/${GH_OWNER}/secret\n    language: javascript\n    default_branch: main\n";
     const repos = loadFleet(control(BASE, overlay));
     expect(repos.map((r) => r.name).sort()).toEqual(["demo", "secret"]);
+    expect(repos.find((r) => r.name === "secret")?.visibility).toBe("private");
   });
 
   it("lets an overlay entry override a public one by name", () => {
@@ -86,6 +88,7 @@ describe("loadFleet overlay (fleet/repos.local.yaml)", () => {
     expect(repos).toHaveLength(1);
     expect(repos[0].default_branch).toBe("dev");
     expect(repos[0].language).toBe("javascript");
+    expect(repos[0].visibility).toBe("private");
   });
 
   it("finds a merged registry target without resolving the GitHub owner", () => {
@@ -97,6 +100,18 @@ describe("loadFleet overlay (fleet/repos.local.yaml)", () => {
     expect(execFileSyncMock).not.toHaveBeenCalled();
   });
 
+  it("resolves target visibility without resolving the GitHub owner", () => {
+    delete process.env.GH_OWNER;
+    const overlay =
+      "repos:\n  - name: demo\n    url: https://example.invalid/private-demo\n    language: typescript\n    default_branch: main\n";
+
+    const resolved = resolveFleetRepo(control(BASE, overlay), "demo");
+
+    expect(resolved.visibility).toBe("private");
+    expect(resolved.repo.visibility).toBe("private");
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
   it("uses local_path first and the demo-repo fallback second", () => {
     const controlRepo = "/control";
     const repo = {
@@ -104,6 +119,7 @@ describe("loadFleet overlay (fleet/repos.local.yaml)", () => {
       url: "https://example.invalid/demo",
       language: "typescript",
       default_branch: "main",
+      visibility: "public" as const,
     };
 
     expect(resolveLocalSource(repo, controlRepo)).toBe("/control/demo-repos/demo");

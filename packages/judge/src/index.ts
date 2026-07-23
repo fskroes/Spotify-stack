@@ -10,7 +10,8 @@ import { execFileSync } from "node:child_process";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
-import { sanitizeCliEnvelopeUsage, type ProducerUsageEvidence } from "@fleet/contract";
+import { extractCliEnvelope, sanitizeCliEnvelopeUsage, type ProducerUsageEvidence } from "@fleet/contract";
+export { extractCliEnvelope, extractCliResult } from "@fleet/contract";
 
 export const VerdictSchema = z.object({
   verdict: z.enum(["approve", "veto"]),
@@ -109,47 +110,6 @@ export interface JudgeInput {
 /** Construct the real Anthropic client (requires credentials in the env). */
 export function createJudgeClient(): JudgeClient {
   return new Anthropic() as unknown as JudgeClient;
-}
-
-/**
- * Pull the assistant's `result` text out of `claude --output-format json`
- * stdout. That stdout is *normally* a single JSON envelope, but a SessionStart
- * hook or a CLI notice fired by the spawned session can prepend its own line —
- * then `JSON.parse(stdout)` dies with "Unexpected non-whitespace character
- * after JSON at position N (line 2 column 1)". So don't trust that the whole
- * stream is one object: take the last JSON line that carries a string `result`.
- */
-export function extractCliEnvelope(stdout: string): Record<string, unknown> {
-  const envelopes: unknown[] = [];
-  try {
-    // Fast path: the whole stream is exactly one JSON object.
-    envelopes.push(JSON.parse(stdout));
-  } catch {
-    // Contaminated stream (a prepended notice line, or stream-json events):
-    // parse it line by line and skip any non-JSON preamble.
-    for (const line of stdout.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        envelopes.push(JSON.parse(trimmed));
-      } catch {
-        // Plain-text notice line — not the envelope we're after.
-      }
-    }
-  }
-  // The result envelope is the object carrying a string `result`; scan from the
-  // end since stream-json emits it last, after any system/assistant events.
-  for (let i = envelopes.length - 1; i >= 0; i--) {
-    const env = envelopes[i];
-    if (env && typeof env === "object" && typeof (env as { result?: unknown }).result === "string") {
-      return env as Record<string, unknown>;
-    }
-  }
-  throw new Error(`cli judge: no JSON result envelope in claude output: ${stdout.slice(0, 500)}`);
-}
-
-export function extractCliResult(stdout: string): string {
-  return extractCliEnvelope(stdout).result as string;
 }
 
 /**

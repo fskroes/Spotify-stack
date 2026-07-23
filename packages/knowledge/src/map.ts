@@ -80,17 +80,16 @@ function renderFile(file: RankedFile): string {
   return `${file.file}\n${lines.join("\n")}\n`;
 }
 
-/** Build a fresh, deterministic map without retaining target content or map state. */
-export async function buildRepoMap(
-  repoDir: string,
+/** Construct a deterministic structural map from one already-built target snapshot. */
+export function buildRepoMapFromIndex(
+  index: RepoIndex,
   options: { budgetTokens?: number } = {},
-): Promise<RepoMap> {
+): RepoMap {
   const budgetTokens = options.budgetTokens ?? defaultBudgetTokens;
   if (!Number.isSafeInteger(budgetTokens) || budgetTokens <= 0) {
     throw new Error("budgetTokens must be a positive integer");
   }
 
-  const index = await buildIndex(repoDir);
   const scores = rankFiles(index.parsedFiles);
   const candidates: RankedFile[] = index.parsedFiles
     .filter((file) => file.symbols.length > 0)
@@ -114,6 +113,14 @@ export async function buildRepoMap(
     filesSkipped: index.filesSkipped,
     files: budgeted.kept.map(({ text: _text, ...file }) => file),
   };
+}
+
+/** Build a fresh, deterministic map without retaining target content or map state. */
+export async function buildRepoMap(
+  repoDir: string,
+  options: { budgetTokens?: number } = {},
+): Promise<RepoMap> {
+  return buildRepoMapFromIndex(await buildIndex(repoDir), options);
 }
 
 /** Render the map data without side effects so repeated maps produce identical stdout. */

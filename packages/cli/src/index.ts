@@ -1,17 +1,28 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Command } from "commander";
 import { run } from "@fleet/runner";
-import { buildIndex, buildRepoMap, checkKnowledgeDrift, parseKnowledgeArtifact, renderMap } from "@fleet/knowledge";
+import {
+  buildIndex,
+  buildKnowledgeProsePrompt,
+  buildRepoMap,
+  buildRepoMapFromIndex,
+  checkKnowledgeDrift,
+  compileKnowledgeArtifact,
+  parseKnowledgeArtifact,
+  renderMap,
+} from "@fleet/knowledge";
 import { loadTask } from "@fleet/runner/task";
-import { findRepo, resolveLocalSource, resolveOwner, targetRepos } from "@fleet/runner/fleet";
+import { resolveFleetRepo, resolveLocalSource, resolveOwner, targetRepos, type FleetRepoVisibility } from "@fleet/runner/fleet";
 import type { LedgerEntry, PrLiveState } from "@fleet/contract";
 import { defaultLedgerPath, fleetRecord, formatRecordLine, readLedger } from "@fleet/runner/ledger";
 import { readUnionLedger } from "@fleet/runner/ledger-union";
 import { writeLedgerHtml } from "@fleet/runner/ledger-html";
 import { serveLedger } from "@fleet/runner/ledger-serve";
 import { cosign, formatCosignResult } from "@fleet/runner/cosign";
+import { knowledgeArtifactPath } from "./knowledge-artifact.js";
+import { compileKnowledgeProse } from "./knowledge-compile.js";
 
 const controlRepo = process.cwd();
 
@@ -56,15 +67,15 @@ function ghAsync(args: string[]): Promise<string> {
   });
 }
 
-function resolveKnowledgeRepo(target: string): string {
-  const repo = findRepo(controlRepo, target, { resolveOwner: false });
+function resolveKnowledgeRepo(target: string): { repoDir: string; visibility: FleetRepoVisibility } {
+  const { repo, visibility } = resolveFleetRepo(controlRepo, target);
   const repoDir = resolveLocalSource(repo, controlRepo);
   if (!existsSync(repoDir)) {
     throw new Error(
       `target "${target}" has no local source at ${repoDir}; set local_path in fleet/repos.local.yaml or add demo-repos/${target}`,
     );
   }
-  return repoDir;
+  return { repoDir, visibility };
 }
 
 function formatKnowledgeDrift(target: string, report: ReturnType<typeof checkKnowledgeDrift>): string {
@@ -105,7 +116,24 @@ knowledge
       throw new Error("--budget must be a positive integer");
     }
 
-    process.stdout.write(renderMap(await buildRepoMap(resolveKnowledgeRepo(target), { budgetTokens })));
+    process.stdout.write(renderMap(await buildRepoMap(resolveKnowledgeRepo(target).repoDir, { budgetTokens })));
+  });
+
+knowledge
+  .command("compile")
+  .description("Compile grounded knowledge prose from a target's structural map")
+  .argument("<target>", "repo name from fleet/repos.yaml")
+  .action(async (target: string) => {
+    const { repoDir, visibility } = resolveKnowledgeRepo(target);
+    const index = await buildIndex(repoDir);
+    const map = buildRepoMapFromIndex(index);
+    const prose = compileKnowledgeProse(repoDir, buildKnowledgeProsePrompt(map));
+    const artifact = compileKnowledgeArtifact(prose, index);
+    const artifactPath = knowledgeArtifactPath(controlRepo, target, visibility);
+
+    mkdirSync(path.dirname(artifactPath), { recursive: true });
+    writeFileSync(artifactPath, artifact.markdown);
+    console.log(`knowledge compiled: ${target} → ${path.relative(controlRepo, artifactPath)}`);
   });
 
 knowledge
@@ -113,12 +141,13 @@ knowledge
   .description("Check stored knowledge prose against the target's current structural index")
   .argument("<target>", "repo name from fleet/repos.yaml")
   .action(async (target: string) => {
-    const artifactPath = path.join(controlRepo, "knowledge", `${target}.md`);
+    const { repoDir, visibility } = resolveKnowledgeRepo(target);
+    const artifactPath = knowledgeArtifactPath(controlRepo, target, visibility);
     if (!existsSync(artifactPath)) {
       throw new Error(`knowledge artifact not found: ${artifactPath}; run fleet knowledge compile ${target} first`);
     }
 
-    const index = await buildIndex(resolveKnowledgeRepo(target));
+    const index = await buildIndex(repoDir);
     const report = checkKnowledgeDrift(parseKnowledgeArtifact(readFileSync(artifactPath, "utf8")), index);
     process.stdout.write(formatKnowledgeDrift(target, report));
   });
