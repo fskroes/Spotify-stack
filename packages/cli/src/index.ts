@@ -4,18 +4,24 @@ import path from "node:path";
 import { Command } from "commander";
 import { run } from "@fleet/runner";
 import {
+  buildAskPrompt,
   buildIndex,
   buildKnowledgeProsePrompt,
   buildRepoMap,
   buildRepoMapFromIndex,
+  checkGrounding,
   checkKnowledgeDrift,
   compileKnowledgeArtifact,
+  formatAnswerGrounding,
   parseKnowledgeArtifact,
   renderMap,
+  ungroundedClaims,
+  type KnowledgeDriftReport,
 } from "@fleet/knowledge";
 import { loadTask } from "@fleet/runner/task";
 import { resolveFleetRepo, resolveLocalSource, resolveOwner, targetRepos, type FleetRepoVisibility } from "@fleet/runner/fleet";
-import type { LedgerEntry, PrLiveState } from "@fleet/contract";
+import { extractCliEnvelope, sanitizeCliEnvelopeUsage, type LedgerEntry, type PrLiveState } from "@fleet/contract";
+import { invokeClaudeCli } from "./knowledge-cli.js";
 import { defaultLedgerPath, fleetRecord, formatRecordLine, readLedger } from "@fleet/runner/ledger";
 import { readUnionLedger } from "@fleet/runner/ledger-union";
 import { writeLedgerHtml } from "@fleet/runner/ledger-html";
@@ -79,7 +85,8 @@ function resolveKnowledgeRepo(target: string): { repoDir: string; visibility: Fl
 }
 
 function formatKnowledgeDrift(target: string, report: ReturnType<typeof checkKnowledgeDrift>): string {
-  const revision = report.dirty ? `${report.currentSha.slice(0, 7)} + working tree changes` : report.currentSha.slice(0, 7);
+  const shortCurrent = shortSha(report.currentSha);
+  const revision = report.dirty ? `${shortCurrent} + working tree changes` : shortCurrent;
   const lines = [
     `# Knowledge drift — ${target} @ ${revision}`,
     `# Stored prose @ ${report.artifactSha}`,
@@ -90,12 +97,65 @@ function formatKnowledgeDrift(target: string, report: ReturnType<typeof checkKno
     `delta:    ${report.delta.toFixed(3)}`,
     `drift:    ${report.recompileRequired ? "recompile required" : "within baseline tolerance"}`,
   ];
-  const unconfirmed = report.grounding.claims.filter((claim) => claim.verdict === "not-found");
+  const unconfirmed = ungroundedClaims(report.grounding);
   if (unconfirmed.length > 0) {
     lines.push("unconfirmed claims:");
     for (const claim of unconfirmed) lines.push(`- ${claim.kind}: ${claim.value}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+function shortSha(sha: string): string {
+  return sha.length >= 7 ? sha.slice(0, 7) : sha;
+}
+
+/**
+ * The human-facing drift flags printed under an `ask` answer. Fresh prose gets
+ * one reassuring line; drifted prose names the claims now unverified at the
+ * current SHA and hands the recompile command to the user — never blocking, and
+ * never spending on their behalf (~$0.79 a compile).
+ */
+function formatAskDrift(target: string, drift: KnowledgeDriftReport): string {
+  const compiledAt = shortSha(drift.artifactSha);
+  if (!drift.recompileRequired) {
+    return `prose fresh: grounding ${drift.current.toFixed(3)} within ${drift.baseline.toFixed(3)} baseline tolerance (compiled @ ${compiledAt}).`;
+  }
+  const unverified = ungroundedClaims(drift.grounding);
+  return [
+    `DRIFT: stored prose (compiled @ ${compiledAt}) has drifted — grounding ${drift.current.toFixed(3)} vs baseline ${drift.baseline.toFixed(3)} (Δ${drift.delta.toFixed(3)} > 0.05).`,
+    "Answered from stale prose above; these claims are unverified at the current SHA:",
+    ...unverified.map((claim) => `- ${claim.kind}: ${claim.value}`),
+    `→ run fleet knowledge compile ${target}   (not run automatically — ~$0.79 per compile)`,
+  ].join("\n");
+}
+
+/** Sum output and total tokens the final CLI envelope exposed; §10 undercount caveat kept inline. */
+function formatAskTokens(envelope: Record<string, unknown>): string {
+  const usage = sanitizeCliEnvelopeUsage(envelope);
+  if (usage.modelUsage.availability !== "observed") {
+    return "tokens: unavailable (final CLI envelope exposed no model usage)";
+  }
+  let output = 0;
+  let total = 0;
+  for (const { tokens } of usage.modelUsage.value) {
+    output += tokens.outputTokens;
+    total += tokens.inputTokens + tokens.cacheCreationInputTokens + tokens.cacheReadInputTokens + tokens.outputTokens;
+  }
+  return `tokens: ${output} output, ${total} total (final CLI envelope — undercounts an exploring run; see §10)`;
+}
+
+/**
+ * The `ask` telemetry, in the §10 order: wall clock first, then dead-ends (the
+ * grounded leg), then tokens last — the least persuasive column, held to the end
+ * because what a reader feels is how long they waited and whether the answer
+ * sent them back into the repo.
+ */
+function formatAskReport(elapsedMs: number, grounding: ReturnType<typeof checkGrounding>, envelope: Record<string, unknown>): string {
+  return [
+    `wall clock: ${(elapsedMs / 1000).toFixed(1)}s`,
+    formatAnswerGrounding(grounding),
+    formatAskTokens(envelope),
+  ].join("\n");
 }
 
 const program = new Command()
@@ -155,6 +215,41 @@ knowledge
     const index = await buildIndex(repoDir);
     const report = checkKnowledgeDrift(parseKnowledgeArtifact(readFileSync(artifactPath, "utf8")), index);
     process.stdout.write(formatKnowledgeDrift(target, report));
+  });
+
+program
+  .command("ask")
+  .description("Answer a placement, wiring, or story→brief question about a target from its compiled knowledge")
+  .argument("<target>", "repo name from fleet/repos.yaml")
+  .argument("<question>", "the ideation question (quote it)")
+  .action(async (target: string, question: string) => {
+    const { repoDir, visibility } = resolveKnowledgeRepo(target);
+    const artifactPath = knowledgeArtifactPath(controlRepo, target, visibility);
+    if (!existsSync(artifactPath)) {
+      throw new Error(`knowledge artifact not found: ${artifactPath}; run fleet knowledge compile ${target} first`);
+    }
+
+    // Rebuild the ephemeral map and drift-check the stored prose against it, so
+    // the answer is grounded in the current tree while the human path never
+    // blocks on staleness — stale prose still answers, its drift merely flagged.
+    const index = await buildIndex(repoDir);
+    const map = buildRepoMapFromIndex(index);
+    const artifact = parseKnowledgeArtifact(readFileSync(artifactPath, "utf8"));
+    const drift = checkKnowledgeDrift(artifact, index);
+
+    const started = Date.now();
+    // extractCliEnvelope only returns an envelope whose `result` is a string, so
+    // the answer read below is guaranteed; a missing result throws there, named.
+    const envelope = extractCliEnvelope(invokeClaudeCli(repoDir, buildAskPrompt(map, artifact.prose, question, drift)));
+    const elapsedMs = Date.now() - started;
+    const answer = (envelope.result as string).trim();
+
+    // The grounded leg is mechanical: score the answer against the same index.
+    const grounding = checkGrounding(answer, index);
+
+    process.stdout.write(`${answer}\n`);
+    process.stdout.write(`\n${formatAskDrift(target, drift)}\n`);
+    process.stdout.write(`\n${formatAskReport(elapsedMs, grounding, envelope)}\n`);
   });
 
 program
