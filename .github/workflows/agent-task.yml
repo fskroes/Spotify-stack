@@ -83,8 +83,14 @@ jobs:
       - name: Stage review-safe run artifacts
         if: always()
         run: |
-          rm -rf .fleet-upload
-          mkdir -p .fleet-upload
+          # Staging dir must NOT be hidden: actions/upload-artifact@v4 excludes
+          # hidden paths by default (include-hidden-files defaults to false), and
+          # a dot-prefixed container like `.fleet-upload` is itself hidden — every
+          # file under it would be skipped ("No files were found"). Keep the
+          # default hidden-file exclusion as defense-in-depth against stray
+          # dotfiles; the container just can't start with a dot.
+          rm -rf fleet-upload
+          mkdir -p fleet-upload
           # Per-run review archive (diff/verify/verdict/result/pr-preview/model-usage),
           # kept under its run-id path so CloudArtifactSync attributes each file to
           # its run. A fresh CI checkout only holds this run's archive, so this
@@ -92,7 +98,7 @@ jobs:
           # excluded so the injected .fleet-knowledge.md (private-target structure,
           # deliberately outside REVIEW_ARTIFACTS) never leaves the runner.
           if [ -d artifacts/runs ]; then
-            find artifacts/runs -mindepth 2 -maxdepth 2 -type f ! -name '.*' -exec cp --parents {} .fleet-upload/ \;
+            find artifacts/runs -mindepth 2 -maxdepth 2 -type f ! -name '.*' -exec cp --parents {} fleet-upload/ \;
           fi
           # Canonical per-run usage evidence is gitignored (machine-local), so it
           # never appears in `git diff` — enumerate the newly-written *untracked*
@@ -100,17 +106,17 @@ jobs:
           # is not a diff, and this excludes the committed baseline evidence while
           # capturing exactly this run's fleet/evidence/<runId>/model-usage.json.
           git ls-files --others -- fleet/evidence | while read -r file; do
-            [ -n "$file" ] && cp --parents "$file" .fleet-upload/
+            [ -n "$file" ] && cp --parents "$file" fleet-upload/
           done
           echo "staged for upload:"
-          find .fleet-upload -type f | sort
+          find fleet-upload -type f | sort
 
       - name: Upload run artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: "${{ inputs.task_id }}-${{ inputs.target_repo }}"
-          path: .fleet-upload/
+          path: fleet-upload/
           if-no-files-found: ignore
 
       # Runs even when the fleet run failed — kills matter most in the record.
