@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -62,5 +62,52 @@ describe("runVerify", () => {
       ["test", "skipped"],
     ]);
     expect(result.checks.find((c) => c.name === "test")?.durationMs).toBe(0);
+  });
+
+  it("runs an independent nested workspace's suite in the nested directory", async () => {
+    pkg({ test: 'node -e "process.exit(0)"' });
+    const mobile = path.join(dir, "mobile");
+    mkdirSync(mobile);
+    // Writes a marker with a RELATIVE path — it lands in whatever cwd the check
+    // ran in, so its location proves the nested suite ran in mobile/, not root.
+    writeFileSync(
+      path.join(mobile, "package.json"),
+      JSON.stringify({ name: "m", scripts: { test: `node -e "require('fs').writeFileSync('ran.txt','x')"` } }),
+    );
+    writeFileSync(path.join(mobile, "package-lock.json"), "{}");
+    mkdirSync(path.join(mobile, "node_modules"));
+
+    const result = await runVerify(dir);
+
+    expect(result.state).toBe("passed");
+    expect(result.checks.map((c) => [c.name, c.status])).toEqual([
+      ["test", "passed"],
+      ["test:mobile", "passed"],
+    ]);
+    expect(existsSync(path.join(mobile, "ran.txt"))).toBe(true);
+    expect(existsSync(path.join(dir, "ran.txt"))).toBe(false);
+  });
+
+  it("summarizes a failing nested suite under its namespaced check name", async () => {
+    pkg({ test: 'node -e "process.exit(0)"' });
+    const mobile = path.join(dir, "mobile");
+    mkdirSync(mobile);
+    writeFileSync(
+      path.join(mobile, "package.json"),
+      JSON.stringify({ name: "m", scripts: { test: `node -e "console.log('not ok 1 - broke'); process.exit(1)"` } }),
+    );
+    writeFileSync(path.join(mobile, "package-lock.json"), "{}");
+    mkdirSync(path.join(mobile, "node_modules"));
+
+    const result = await runVerify(dir);
+
+    expect(result.state).toBe("failed");
+    const m = result.checks.find((c) => c.name === "test:mobile");
+    expect(m?.status).toBe("failed");
+    // Base-name summarizer resolution: `test:mobile` falls back to the `test`
+    // (vitest/node:test) summarizer, which keeps the `not ok` line. The generic
+    // summarizer would drop it (no error/fail token), so its presence proves
+    // the namespaced check reused the right parser rather than falling generic.
+    expect(m?.summary).toContain("not ok 1");
   });
 });

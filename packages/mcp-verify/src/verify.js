@@ -11,10 +11,13 @@ const MAX_BUFFER = 32 * 1024 * 1024;
 
 /**
  * @typedef {object} Check
- * @property {string} name         Stable id, keys into `summarizers`
+ * @property {string} name         Stable id; keys into `summarizers` (a `:dir`
+ *   suffix on a nested-workspace check falls back to the base name there)
  * @property {string} label        Human-readable description
  * @property {string} command
  * @property {string[]} args
+ * @property {string} [cwd]        Directory the check runs in. Absent = the
+ *   verify root; set to a nested workspace's directory for its checks.
  *
  * @typedef {"passed" | "failed" | "skipped"} CheckStatus
  *   `skipped` = detected but never executed (an earlier check failed). A
@@ -53,35 +56,17 @@ export function detect(cwd, { platform = process.platform } = {}) {
   /** @type {Check[]} */
   const checks = [];
 
-  if (existsSync(path.join(cwd, "package.json"))) {
-    const pkg = JSON.parse(readFileSync(path.join(cwd, "package.json"), "utf8"));
-    const scripts = pkg.scripts ?? {};
-    if (!existsSync(path.join(cwd, "node_modules"))) {
-      // npm ci never rewrites the lockfile — plain `npm install` can, and any
-      // such write lands in the run diff and gets the change vetoed.
-      const hasLockfile = existsSync(path.join(cwd, "package-lock.json"));
-      checks.push({
-        name: "npm-install",
-        label: hasLockfile ? "npm ci" : "npm install",
-        command: "npm",
-        args: hasLockfile ? ["ci", "--no-fund", "--no-audit"] : ["install", "--no-fund", "--no-audit"],
-      });
-    }
-    if (scripts.lint) {
-      checks.push({ name: "eslint", label: "npm run lint", command: "npm", args: ["run", "lint"] });
-    }
-    if (scripts.typecheck) {
-      checks.push({ name: "tsc", label: "npm run typecheck", command: "npm", args: ["run", "typecheck"] });
-    } else if (existsSync(path.join(cwd, "tsconfig.json"))) {
-      checks.push({ name: "tsc", label: "tsc --noEmit", command: "npx", args: ["tsc", "--noEmit"] });
-    }
-    if (scripts.test) {
-      // Named for the script, not for one runner: this fires for any `test`
-      // script, so a jest or node:test repo used to get a check called
-      // "vitest". Check names are the task-facing `gates:` vocabulary, so the
-      // misnomer would have been permanent the moment a task mandated it.
-      checks.push({ name: "test", label: "npm run test", command: "npm", args: ["run", "test"] });
-    }
+  // The root workspace first, then any independent nested workspace (its checks
+  // namespaced and run in its own directory). A repo is not always one JS
+  // workspace: a nested `mobile/` app with its own suite is a second one the
+  // root `test` never runs, so a change there used to pass the gate vacuously (#95).
+  checks.push(...npmChecks(cwd, ""));
+  for (const dir of nestedWorkspaces(cwd)) {
+    const nested = npmChecks(path.join(cwd, dir), dir);
+    // Gate a nested workspace only when it has a real verifier, not merely an
+    // install. npmChecks is the single source of "what counts as a verifier",
+    // so this stays in lockstep with the root without re-deriving the predicate.
+    if (nested.some((c) => !c.name.startsWith("npm-install"))) checks.push(...nested);
   }
 
   if (existsSync(path.join(cwd, "Package.swift"))) {
@@ -126,9 +111,97 @@ export function detect(cwd, { platform = process.platform } = {}) {
 }
 
 /**
+ * The npm-shape checks for one JS/TS workspace rooted at `dir`. `relDir` is ""
+ * for the repo root and the nested directory's name (e.g. "mobile") otherwise;
+ * it both namespaces the check ids — the task-facing `gates:` vocabulary, so a
+ * nested test becomes `test:mobile` — and, via each check's `cwd`, routes the
+ * check to run inside `dir`.
+ *
+ * @param {string} dir     Absolute workspace directory (holds package.json)
+ * @param {string} relDir  "" for the root, else the nested dir's name
+ * @returns {Check[]}
+ */
+function npmChecks(dir, relDir) {
+  if (!existsSync(path.join(dir, "package.json"))) return [];
+  const pkg = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8"));
+  const scripts = pkg.scripts ?? {};
+  const suffix = relDir ? `:${relDir}` : "";
+  const where = relDir ? ` (${relDir}/)` : "";
+  /** @type {Check[]} */
+  const checks = [];
+  if (!existsSync(path.join(dir, "node_modules"))) {
+    // npm ci never rewrites the lockfile — plain `npm install` can, and any
+    // such write lands in the run diff and gets the change vetoed.
+    const hasLockfile = existsSync(path.join(dir, "package-lock.json"));
+    checks.push({
+      name: `npm-install${suffix}`,
+      label: `${hasLockfile ? "npm ci" : "npm install"}${where}`,
+      command: "npm",
+      args: hasLockfile ? ["ci", "--no-fund", "--no-audit"] : ["install", "--no-fund", "--no-audit"],
+      cwd: dir,
+    });
+  }
+  if (scripts.lint) {
+    checks.push({ name: `eslint${suffix}`, label: `npm run lint${where}`, command: "npm", args: ["run", "lint"], cwd: dir });
+  }
+  if (scripts.typecheck) {
+    checks.push({ name: `tsc${suffix}`, label: `npm run typecheck${where}`, command: "npm", args: ["run", "typecheck"], cwd: dir });
+  } else if (existsSync(path.join(dir, "tsconfig.json"))) {
+    checks.push({ name: `tsc${suffix}`, label: `tsc --noEmit${where}`, command: "npx", args: ["tsc", "--noEmit"], cwd: dir });
+  }
+  if (scripts.test) {
+    // Named for the script, not for one runner: this fires for any `test`
+    // script, so a jest or node:test repo used to get a check called "vitest".
+    // Check names are the task-facing `gates:` vocabulary, so the misnomer
+    // would have been permanent the moment a task mandated it.
+    checks.push({ name: `test${suffix}`, label: `npm run test${where}`, command: "npm", args: ["run", "test"], cwd: dir });
+  }
+  return checks;
+}
+
+/**
+ * Immediate child directories that are INDEPENDENT npm workspaces: each has its
+ * own package.json and its own package-lock.json. The lockfile is the
+ * discriminator — an independent app carries its own dependency closure, whereas
+ * a hoisted workspace member has none (its deps live in the root lockfile), so
+ * the root runner already covers it and descending would double-run.
+ *
+ * This is a robust proxy, not a proof. It assumes the app commits its lockfile
+ * (the fleet's targets do; an uncommitted one would be silently skipped) and
+ * that an independent closure isn't also chained into the root `test` script (if
+ * it were, the suite would run twice — wasteful, but not a false green). Both
+ * hold for the target shape: a nested `mobile/` app with its own lockfile.
+ *
+ * npm only: npmChecks installs via `npm ci` / `npm install`, so a pnpm- or
+ * yarn-locked nested app is left for a deliberate per-manager follow-up rather
+ * than installed unsoundly. Depth 1 only: covers the `mobile/` shape without
+ * wandering into fixtures or `packages/*`-style nesting. node_modules and dot
+ * directories are never the repo's own workspaces, so they are skipped. Whether
+ * a dir actually carries a verifier is decided by npmChecks (the single source
+ * of truth), not re-derived here.
+ *
+ * @param {string} cwd  The verify root
+ * @returns {string[]}  Nested directory names, sorted for deterministic order
+ */
+function nestedWorkspaces(cwd) {
+  /** @type {string[]} */
+  const found = [];
+  for (const entry of readdirSync(cwd, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+    const dir = path.join(cwd, entry.name);
+    if (!existsSync(path.join(dir, "package.json"))) continue;
+    // Own lockfile ⇒ independent closure. Without one it is a hoisted member the
+    // root runner already covers, so gating it here would only double-run.
+    if (!existsSync(path.join(dir, "package-lock.json"))) continue;
+    found.push(entry.name);
+  }
+  return found.sort();
+}
+
+/**
  * Run one check, capturing combined output.
  *
- * @param {string} cwd
+ * @param {string} cwd    The verify root; a check without its own `cwd` runs here
  * @param {Check} check
  * @returns {Promise<CheckResult>}
  */
@@ -136,7 +209,7 @@ async function runCheck(cwd, check) {
   const started = Date.now();
   try {
     await execFileAsync(check.command, check.args, {
-      cwd,
+      cwd: check.cwd ?? cwd,
       timeout: CHECK_TIMEOUT_MS,
       maxBuffer: MAX_BUFFER,
       env: { ...process.env, CI: "1", NO_COLOR: "1", FORCE_COLOR: "0" },
@@ -144,7 +217,9 @@ async function runCheck(cwd, check) {
     return { name: check.name, label: check.label, status: "passed", summary: "", durationMs: Date.now() - started };
   } catch (/** @type {any} */ err) {
     const output = `${err.stdout ?? ""}\n${err.stderr ?? ""}`;
-    const summarize = summarizers[check.name] ?? summarizeGeneric;
+    // A nested check id (`test:mobile`) has no entry of its own — fall back to
+    // the base name (`test`) so it reuses the right parser, not the generic one.
+    const summarize = summarizers[check.name] ?? summarizers[check.name.split(":")[0]] ?? summarizeGeneric;
     const timedOut = err.killed || err.signal === "SIGTERM";
     const summary = timedOut
       ? `check timed out after ${CHECK_TIMEOUT_MS / 1000}s`
