@@ -1,7 +1,11 @@
 # Discriminating knowledge-payback e2e (issue #91)
 
-**Status:** designed, harnessed, and **run** (2026-07-23, issue #93 — see
-[Result](#result-2026-07-23-issue-93)). This document is the target-neutral
+**Status:** designed, harnessed, and **run three times** — 004 on
+`demo-feed-service`, #93 on a private commented target (both 2026-07-23), and the
+**held-out-oracle variant A** (2026-07-25, see
+[Result](#result-2026-07-25-variant-a-held-out-oracle)). All three tied on
+outcome with priming as overhead; variant A additionally removed the
+"gate-teaches" confound and still tied, and isolated *why*. This document is the target-neutral
 method: the question, the discrimination model, the harness, and how to read a
 result. The concrete candidate analysis for the chosen private fleet target
 lives with that target's private task definition (git-ignored `tasks/private/`),
@@ -178,9 +182,145 @@ large-context targets**, where cold cannot read ground truth at the landing zone
 Per-run IDs, diffs, and cost breakdown are in the private companion and the
 machine-local evidence dir.
 
+## Result (2026-07-25, variant A: held-out oracle)
+
+Both prior runs share one confound: the discriminating test is *in the repo*, so
+the agent iterates against it via the Stop→verify loop. A cold agent can be
+"taught" by the very gate meant to catch it — red test, fix, green. Variant A
+removes that: the oracle is **held out** — absent during the agent's stop-verify
+loop, injected only *after* the agent finishes, then verify runs once as the sole
+authoritative judgment. A cold miss of the coupling therefore stays red; the gate
+cannot teach it. 1× primed / 1× cold, real subscription spend, `--judge approve`.
+
+Target: the private mobile target. Task `brc-ferry-pref` — a saved route must
+restore the ferry-routing preference it was **saved under** across a reopen,
+rather than adopting the live session's value. The coupling is genuinely
+non-local: save builds a snapshot in one function, reopen rehydrates in another,
+and the preference is silently dropped between them. Scope = implementation files
+only (no test files), so the agent gets **zero in-loop signal** about the
+round-trip. The compiled prose names the persistence landing zone
+(`routeStorage.ts`) and the reducer, but **never** names the snapshot round-trip,
+the rehydrate function, or the dropped preference.
+
+| arm | held-out verify | out-tokens | cache-read | total USD | fix site |
+|---|---|---|---|---|---|
+| cold | **passed** | 6068 | 345k | $1.10 | `RideRouteSnapshot` round-trip (1 file) |
+| primed | **passed** | 7825 | 708k | $1.06 | `SavedRoute` wrapper in `routeStorage.ts` (2 files) |
+
+**Harness bucket: Null (tie) — even with the confound removed.** Three findings:
+
+- **Outcome tied, and it is not a gate-teaching artifact.** With the oracle held
+  out, the cold agent still shipped a fix that passes it. It reconstructed the
+  non-local coupling unaided and produced the textbook diff: optional
+  `allowFerries` on the snapshot, populated on save, restored on reopen behind a
+  backward-compat guard mirroring `setAllowFerries` (ref + dispatch).
+- **Priming measurably steered the fix *site*, not the *outcome*.** This is the
+  new signal. The cold arm put the field on the `RideRouteSnapshot` round-trip
+  type — the actual coupling. The primed arm put it on the `SavedRoute` wrapper in
+  `routeStorage.ts` — **exactly the "Local persistence → routeStorage.ts" landing
+  zone the prose named first** — threading it through `SaveRouteInput`/
+  `buildSavedRoute` with a metadata-flag fallback (2 files, more elaborate). So
+  the injected knowledge *did* exert an observable causal pull on the agent — but
+  into an equally-correct alternative implementation, not the predicted trap and
+  not a better outcome. Priming changed the **how**, never the **whether**.
+- **Root cause of the tie, refined: the coupling was *type-visible*.**
+  `RideRouteSnapshot` lacks the field while `RouteState`/`preferences` has it —
+  TypeScript itself advertises the gap at the landing zone the task forces open.
+  The cold agent greps the snapshot type, sees the asymmetry, and closes it. So
+  "non-local" (spanning two functions) was **necessary but not sufficient** for
+  discrimination: the type system self-taught the coupling for free, the same way
+  a neighbouring inline-defaulted field self-taught #93.
+
+Cost: essentially tied in dollars ($1.06 vs $1.10; cache reads are cheap), though
+primed spent +29% output tokens and 2× cache reads carrying the injected doc — a
+faint overhead echo of 004/#93, not a payback.
+
+**This is the cleanest of the three no-payback results**, because it forecloses
+the two standing objections to the prior ties at once: it removes the
+gate-teaches confound (held-out oracle) *and* the scope-hint-leakage confound (no
+test in scope), and the arms *still* tie. It also sharpens the payback-regime
+hypothesis into something testable:
+
+> Run-time knowledge payback requires the missing fact to be **type-invisible** —
+> a coupling carried by string keys, dynamic dispatch, or a runtime contract with
+> **no shared type** advertising it — *in addition to* being non-local and
+> doc-dark. Where the type system encodes the coupling, the compiler teaches the
+> cold agent for free and priming only reroutes the fix.
+
+Caveat: n=1 per arm (vs 3× in the prior runs). The tie is backed by a mechanistic
+explanation (type-visible coupling) rather than repetition, so it reads as
+directional evidence for the refined hypothesis, not a powered estimate. The next
+experiment should target a *type-invisible* coupling to test that hypothesis
+directly. Raw diffs + `model-usage.json` for both arms are preserved in the
+session scratchpad (`results/`); the task spec and held-out oracle live in the
+git-ignored `tasks/private/` + session scratchpad (target-name scrub).
+
+## Next experiment (2026-07-26, e2e #2: a type-invisible coupling)
+
+Invoked as `/implement #99`. **Authored + zero-spend pre-flight only — no
+agent/judge spend.** This is the direct test the variant-A hypothesis asked for:
+a coupling **no shared type advertises**, on the same large + doc-dark central
+file (1609 lines) made mechanically judgeable by the #95 subdir-aware gate.
+
+The coupling. Route-level metadata flags are OR-aggregated from per-segment
+metadata in a hand-written merge function (`mergeRouteMetadata`). The merge
+enumerates each flag it lifts — `merged.flags.hasFerry = … || …` — over a
+`merged` object already fully built by `createEmptyRouteMetadata`. So adding a
+new per-segment advisory and **omitting its OR line produces no compile error**:
+the field already exists on `merged`, and the per-segment→route mapping is a
+manual enumeration, not a type-forced one. Task `brc-unpaved-advisory` asks for a
+route-level "unpaved surface" advisory that is on iff any segment is unpaved —
+modelled on the existing ferry advisory. Scope = one implementation file, no test
+files (zero in-loop signal). The discriminating oracle is **held out** (variant-A
+protocol): a multi-segment route whose later segment carries the advisory,
+asserting the route-level flag; injected only after the agent finishes.
+
+Zero-spend pre-flight proved the coupling is genuinely invisible to the compiler
+and the in-loop gate:
+
+| config | typecheck | existing suite | held-out oracle |
+|---|---|---|---|
+| baseline (clean) | pass | 219/219 | **red** (`undefined`) |
+| naive fix: add the advisory per-segment, **skip the merge OR** | pass | 219/219 | **red** (`false`) |
+| correct fix: + one merge-OR line | pass | — | **green** |
+
+A plausible naive fix type-checks **and** clears every in-scope gate, failing
+**only** the held-out oracle — exactly the type-invisibility the hypothesis
+requires. One sub-finding fell out: the advisory flag must be **optional**. A
+*required* flag makes `tsc` flag every `flags` object literal — including two in
+out-of-scope test files — so a required coupling is self-teaching and turns the
+in-scope gate red on its own. Type-invisibility needs the flag optional (or the
+merge to be the sole gap).
+
+Honest reading — **pass vs tie hinges on what the prime actually carries.** The
+currently-compiled artifact names the file ("ferry handling → the central file")
+and the protected append loop, but **never names the merge, route-level
+aggregation, or the per-segment→route OR**. Handed that artifact, a primed agent
+gets *no* targeted signal on this coupling, so the honest prediction is a **fourth
+tie** — but for a new reason: the knowledge layer, as compiled, does not extract
+fine-grained aggregation-seam facts. That makes the real run a decision between
+two designs (recorded in the private companion): **C** — inject the as-compiled
+artifact (likely tie; a clean data point on what the compiler carries); or **G** —
+inject a one-sentence "gold" prime that *explicitly* states the merge contract,
+testing the upper bound "**if** the knowledge carries the type-invisible fact,
+does it flip the outcome?" G is the only configuration in the program that could
+turn #80's "unproven" into a genuine payback signal (primed-green / cold-red).
+
+Target-name-scrubbed task spec + held-out oracle live in the git-ignored
+`tasks/private/`; the concrete source-level analysis and G/C spend estimate live
+in `knowledge/private/` (also git-ignored). The real run is filed as a separate
+spend-gated ticket and does not run until the user confirms and picks G or C.
+
 ## Scope boundary
 
 The design session (#91) **designed, authored, and harnessed only** — nothing
-was spent. The execution session (#93, 2026-07-23) launched the real-spend run
-above and recorded its SUMMARY; the raw evidence lives under the git-ignored
-`fleet/evidence/knowledge-payback/<ts>/`.
+was spent. The execution session (#93, 2026-07-23) launched the 004 + #93
+real-spend runs and recorded their SUMMARYs; the variant-A session (2026-07-25)
+compiled the private target's knowledge artifact (~$0.79) and ran the two
+held-out-oracle arms above (~$1.06 + $1.10, subscription). The e2e #2 session
+(#99, 2026-07-26) **authored and pre-flighted only** — task spec, held-out
+oracle, and a local zero-spend type-invisibility proof (typecheck + jest against
+a naive and a correct patch, target restored pristine); **no agent/judge spend**,
+and the real run is deferred to a separate spend-gated ticket. Raw evidence lives
+under the git-ignored `fleet/evidence/knowledge-payback/<ts>/` and the session
+scratchpad.
