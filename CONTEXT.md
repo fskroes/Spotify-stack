@@ -3,6 +3,74 @@
 Canonical terms for this codebase. When code, docs, or conversation drift from
 these definitions, either fix the drift or sharpen the term here.
 
+This is the one doc that is *supposed* to be maintained by hand: it holds the
+domain language, which no type name fully carries. Decisions live in
+[`docs/adr/`](docs/adr); navigation lives in [`docs/README.md`](docs/README.md).
+
+## Control repo
+
+This repository — the one holding tasks, the fleet registry, the ledger, and the
+CLI. It is never a target. "Local" paths in the CLI resolve against it, and the
+public/private split (`repos.local.yaml`, `tasks/private/`, `knowledge/private/`)
+exists because the control repo is public and the targets need not be.
+
+## Target
+
+A repo the fleet acts *on*, registered in `fleet/repos.yaml` (or the git-ignored
+`repos.local.yaml`). Targets are read and modified; they never contain fleet
+machinery. `local_path` points at a working tree so a local run can act on
+uncommitted work — which is the point, and also why a stale tree makes a task
+hit its own precondition.
+
+## Task
+
+A version-controlled natural-language prompt in `tasks/`, with frontmatter
+declaring `targets`, [`scope`](#scope-contract), [`gates`](#mandated-gate),
+`risk`, and `why`. It describes an **end state and its preconditions**, not
+steps. A task is the unit that fans out: one prompt, many targets.
+
+## Scope contract
+
+The `scope:` globs a task's diff may touch. The runner kills any run whose diff
+falls outside them (`scope-violation`) **before** verify, judge, or PR —
+mechanically, without a model in the loop. Omitting `scope` means unrestricted,
+and leaves the judge as the only scope police. Distinct from a
+[mandated gate](#mandated-gate): scope constrains *what may change*, gates
+constrain *what must have been proven*.
+
+## Run
+
+One task executed against one target, start to fate. It carries a `runId`, ends
+in exactly one of seven `RunStatus` values, and is appended to the ledger whether
+it shipped or was killed. The status → facts table (`RUN_FACTS`) is the single
+source of truth for what a status means; no surface may re-derive it.
+
+## Engine
+
+The thing that produces the diff — `claude` (headless Claude Code, the default)
+or `mock` (applies a fixture patch, for hermetic tests). Swapping the engine
+changes nothing about the gates: scope, verify, and judge run identically.
+
+## Dispatch
+
+Fanning a task out over targets on GitHub Actions (`fleet dispatch`), as opposed
+to `fleet run --local` on this machine. The workflows are a thin wrapper around
+the same CLI — cloud buys fan-out and autonomy, not different behaviour.
+
+## Dry run
+
+The default everywhere. The full loop executes and writes `diff.patch`,
+`verdict.json`, `verify.log`, and `pr-preview.md` to `artifacts/`, but no branch
+is pushed and no PR opened. `--pr` opts in. A dry run is the honest rehearsal:
+`pr-preview.md` is the *exact* body a real run would have opened.
+
+## Kill log
+
+The half of the ledger recording runs the fleet stopped **before anyone reviewed
+them** — scope violations, red verifiers, judge vetoes — each with its reason. A
+system that showed only its successes would be advertising; the kill log is what
+makes the successes mean something.
+
 ## Wire contract
 
 Everything the runner tells the operator, regardless of transport. Today that
@@ -103,6 +171,14 @@ answers *what was proven about it*. A run that shipped a good diff against a
 repo with no verifiers is `approved` with `verifyState: "inconclusive"` — the
 run succeeded, and what is unproven is the verification, not the run.
 
+## Structural map
+
+The deterministic, token-budgeted rendering of what exists in a target — files
+and symbols, no model call, no network (`fleet knowledge map`). It is rebuilt
+fresh whenever [knowledge prose](#knowledge-prose) is checked, which is why the
+prose can be stale while the check is not. The map is the substrate; the prose is
+the layer grounded against it.
+
 ## Knowledge prose
 
 The stored, fleet-generated explanatory layer for one target. It is distinct
@@ -125,3 +201,50 @@ A knowledge prose layer whose grounding ratio has fallen more than 0.05 below
 its compile-time baseline. The relative comparison preserves a stable
 framework-vocabulary floor that an absolute threshold would incorrectly flag.
 Drift requests recompilation; it does not itself make the structural map stale.
+
+## Primed vs. cold
+
+The two arms of every knowledge-payback experiment. A **primed** run starts with
+the target's compiled prose rendered into `<workspace>/.fleet-knowledge.md`; a
+**cold** run explores the repo from nothing. The vocabulary exists because the
+comparison is the only thing that can justify the layer's run-time half — and so
+far it has not (see [ADR-0006](docs/adr/0006-pre-compiled-knowledge-layer.md)).
+
+## Rail
+
+One of the two independently-accounted model consumers in a run: the **agent**
+rail (the coding CLI invocations, initial plus resumes) and the **judge** rail
+(each logical judge call). They are never collapsed into a single scalar total,
+because attribution across a veto→resume loop is the fact worth keeping.
+
+## Attempt
+
+One model invocation on a rail — a single agent CLI call (`initial` or `resume`)
+or a single judge `review`. Ordinals are 1-based *per rail*. Attempts are ordered
+and recorded even when they produced no usable usage envelope, because an
+attempt that yielded nothing is evidence, not absence.
+
+## Reported estimate
+
+A cost figure a producer emitted, summed only when every component is an observed
+compatible estimate. It is deliberately **not** called a billed charge: API
+response dollars and incremental subscription charges are unavailable, and no
+token-price calculation is permitted anywhere in this codebase.
+
+## Refusal
+
+A structured, named `no` from a gated CLI action — `fleet cosign`'s
+`run-not-found`, `not-shipped`, `no-pr`, `already-merged`, `already-closed`,
+`conflicts`, `not-mergeable`, `merge-failed`, `close-failed`. A refusal is the
+gate working, not an error to route around; there is deliberately no `--force`.
+The code vocabulary is open on the wire, like every other non-structural
+vocabulary ([ADR-0001](docs/adr/0001-tolerant-reader-wire-contract.md)).
+
+## Wayfinder map
+
+The planning shape this repo is developed with: one GitHub issue labelled
+`wayfinder:map` holding Notes / Decisions-so-far / Fog, with child tickets
+(`wayfinder:research` / `prototype` / `grilling` / `task`) linked as sub-issues
+and blocked via native issue dependencies. Commit messages and ADRs cite these
+numbers; [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md) has the
+operations.
