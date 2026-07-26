@@ -2,7 +2,9 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    include: ["packages/**/test/**/*.test.ts", "apps/**/test/**/*.test.ts"],
+    // `test/` at the root holds repo-wide checks (documentation drift locks)
+    // that belong to no single workspace.
+    include: ["packages/**/test/**/*.test.ts", "apps/**/test/**/*.test.ts", "test/**/*.test.ts"],
     exclude: ["**/node_modules/**", "demo-repos/**"],
     // The hermetic e2e installs demo-repo deps and runs real eslint/tsc/vitest
     // inside a temp workspace; give it room.

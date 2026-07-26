@@ -23,8 +23,9 @@ accumulate per run forever on a machine that is also somebody's laptop. The
 archive keeps the newest 20.
 
 **Archive everything including transcripts.** Rejected. The archive is scoped to
-the same `REVIEW_ARTIFACTS` allowlist the operator API serves — `diff.patch`,
-`verify.log`, `verdict.json`, `result.json`, `pr-preview.md`, `model-usage.json`.
+the same `REVIEW_ARTIFACTS` allowlist the operator API serves (defined in
+`packages/runner/src/artifacts.ts` — deliberately not enumerated here, since an
+ADR records a decision and must not become a second copy of a live list).
 Transcripts are large and are not part of the review contract. One allowlist,
 shared by the archive writer, the operator API, and cloud sync, so the three can
 never drift into disagreeing about what a reviewer may see.

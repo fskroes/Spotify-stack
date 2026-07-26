@@ -10,12 +10,17 @@ targets: [demo-ts-service]
 scope: [test/**]
 # Verifier check names that MUST have run for this task's verification to count.
 # Names are the checks verification detects — npm-install, eslint, tsc, test,
-# swift-build, swift-test, xcodebuild-build, xcodebuild-test. Flat and applied
-# to every target, like scope. A gate asserts a check ran; it never supplies one
-# the fleet couldn't already run, so naming a check this repo or host can't
-# produce (or misspelling one) reports it unmet rather than erroring — the run
-# still ships, with verification state `inconclusive` and the gate named on
-# every surface. Omit when whatever verification detects is good enough.
+# swift-build, swift-test, xcodebuild-build, xcodebuild-test. A check in an
+# independent nested workspace carries that workspace's directory as a suffix
+# (`test:packages/api`, `tsc:apps/web`); the root workspace's checks are
+# unsuffixed. Matching is exact, so `test` mandates the ROOT suite only and does
+# not stand in for a nested one — mandate a nested check by its full suffixed
+# name. Flat and applied to every target, like scope. A gate asserts a check
+# ran; it never supplies one the fleet couldn't already run, so naming a check
+# this repo or host can't produce (or misspelling one) reports it unmet rather
+# than erroring — the run still ships, with verification state `inconclusive`
+# and the gate named on every surface. Omit when whatever verification detects
+# is good enough.
 gates: [test]
 # Blast radius shown in the PR header: drudgery | low | medium. Default: low.
 risk: low
