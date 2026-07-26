@@ -67,9 +67,9 @@ it — which is the same reason the app has no direct GitHub path.
   runner machine's local checkout. A dispatched cloud completion does not appear
   merely because dispatch was accepted — that gap is known and named rather than
   papered over.
-- Artifact reads over the API are allowlisted to the `REVIEW_ARTIFACTS` set —
-  `diff.patch`, `verify.log`, `verdict.json`, `result.json`, `pr-preview.md`,
-  `model-usage.json`. Transcripts are not review-safe and are not served. That
+- Artifact reads over the API are allowlisted to the `REVIEW_ARTIFACTS` set
+  (`packages/runner/src/artifacts.ts`; the README carries the reader-facing copy,
+  drift-locked by test). Transcripts are not review-safe and are not served. That
   one allowlist is shared with the per-run archive and cloud sync
   ([ADR-0007](0007-per-run-artifact-archive.md)), so the three cannot drift into
   disagreeing about what a reviewer may see.
