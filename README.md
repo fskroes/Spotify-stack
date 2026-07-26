@@ -97,16 +97,25 @@ worktree lives in the runner.
 ## Layout
 
 ```
-packages/cli         fleet run / dispatch / status
-packages/runner      per-repo loop (workspace, engines, judge loop, PR)
-packages/mcp-verify  verifier detection + summarizers + MCP server + CLI (plain JS)
-packages/judge       LLM-as-judge (@anthropic-ai/sdk, zod structured output)
-agent-config/        settings.json allowlist, MCP config, Stop hook templates
-tasks/               TEMPLATE.md + example migration tasks
-fleet/repos.yaml     target-repo registry
-demo-repos/          demo-ts-service, demo-swift-package, demo-feed-service (fleet targets)
-scripts/             bootstrap-github.sh + workflow helpers
+packages/cli           fleet run / dispatch / status / report / cosign / knowledge / ask
+packages/runner        per-repo loop (workspace, engines, judge loop, git, PR, ledger, operator API)
+packages/mcp-verify    verifier detection + summarizers + MCP server + CLI (plain JS)
+packages/judge         LLM-as-judge (@anthropic-ai/sdk, zod structured output)
+packages/contract      @fleet/contract — the runner↔operator wire schemas + tolerant parsers
+packages/knowledge     structural maps, compiled prose, grounding/drift, the ask seam
+apps/operator-desktop  optional Tauri workbench over the same CLI and ledger server
+agent-config/          settings.json allowlist, MCP config, Stop hook templates
+tasks/                 TEMPLATE.md + example migration tasks (+ git-ignored private/)
+fleet/                 repos.yaml target registry, ledger.jsonl, evidence/
+demo-repos/            demo-ts-service, demo-swift-package, demo-feed-service (fleet targets)
+scripts/               bootstrap-github.sh + workflow helpers
+docs/                  glossary pointers, ADRs, research — see docs/README.md
 ```
+
+**Reading the codebase** (human or agent): [`docs/README.md`](docs/README.md) is
+the map — what each unit owns, the four seams that carry the design weight, and
+where the decisions behind them are recorded. [`CONTEXT.md`](CONTEXT.md) is the
+domain glossary. Neither restates what the code does; that is the code's job.
 
 ## Prerequisites
 
@@ -340,8 +349,9 @@ dashboard and `/events` stream, it exposes read-only operator data under:
 | `/api/artifacts/:task/:repo/:file` | safe review artifacts only |
 
 Artifact reads are limited to `diff.patch`, `verify.log`, `verdict.json`,
-`result.json`, and `pr-preview.md` beneath the configured `artifacts/` root.
-Traversal, symlink escapes, transcripts, and unknown files are rejected.
+`result.json`, `pr-preview.md`, and `model-usage.json` beneath the configured
+`artifacts/` root. Traversal, symlink escapes, transcripts, and unknown files
+are rejected.
 
 The flat `artifacts/<task>/<repo>/` set is latest-run-wins; each run also
 archives its reviewable artifacts under `artifacts/runs/<runId>/` (newest 20
