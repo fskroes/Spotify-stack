@@ -311,6 +311,65 @@ Target-name-scrubbed task spec + held-out oracle live in the git-ignored
 in `knowledge/private/` (also git-ignored). The real run is filed as a separate
 spend-gated ticket and does not run until the user confirms and picks G or C.
 
+## Result (2026-07-27, e2e #2 design G: gold prime, held-out oracle)
+
+Executed as `/implement #100`, end to end: the one-sentence gold prime (the
+merge-aggregation fact the as-compiled artifact omits) hand-inserted into the
+artifact after the ferry landing-zone line — frontmatter/sha untouched, grounding
+unchanged — then primed vs cold with a character-for-character identical
+`fleet run` (the only variable is the artifact's presence). Each arm's produced
+diff was judged once by the **held-out oracle** in a pristine target checkout,
+`npm run mobile:test` as sole authority. Real subscription spend, `--local`,
+`--judge approve` (stub). Both arms' in-loop verify (tsc + the existing 219-test
+suite) passed and both were auto-approved; the oracle was absent from both agents'
+stop→verify loops.
+
+| arm | held-out oracle | new field | fix site | out-tokens | cache-read | total USD |
+|---|---|---|---|---|---|---|
+| primed | **GREEN** | `hasUnpavedSurface` | the central file, incl. the `mergeRouteMetadata` OR line | 3426 | 396k | **$1.00** |
+| cold | **RED** (`undefined`) | `hasUnpaved` | the central file, incl. the `mergeRouteMetadata` OR line | 2845 | 454k | **$0.48** |
+
+**Mechanical bucket (oracle as sole authority, per the runbook table): PAYBACK** —
+primed-green / cold-red. But the mechanism disqualifies it as *genuine* payback.
+The honest reading is a **confounded fourth tie on the coupling**, for three
+reasons:
+
+- **Both arms solved the type-invisible coupling.** Cold, unprimed, added the very
+  `mergeRouteMetadata` OR line the gold prime described
+  (`merged.flags.<flag> = … || …`). The single fact the gold prime carried and the
+  as-compiled artifact omits — the hand-written per-segment→route OR — did **not**
+  discriminate: the cold agent reconstructed it unaided (the task's own Verification
+  section nudges it to "reason about where per-segment metadata is combined into the
+  route," and the neighbouring ferry OR sits three lines up). On the coupling itself
+  the arms tie — exactly the fourth tie the runbook's honest prediction warned of.
+- **The red is a field-NAME miss, not the aggregation miss under test.** The
+  zero-spend pre-flight defined the modelled type-invisible miss as oracle-**`false`**
+  (field present at the route level, its OR dropped). Cold's oracle failure is
+  **`undefined`** — the route metadata carries no `hasUnpavedSurface` at all, because
+  cold named its (fully aggregated) field `hasUnpaved`. Cold did not commit the
+  modelled miss; it diverged on a name, orthogonal to the coupling.
+- **The winning name is specified only by the oracle.** "unpaved" appears nowhere in
+  the target; the directions-response schema knows only `hasFerry*`.
+  Neither the task spec, the codebase, nor the gold sentence pins the property key.
+  `hasUnpavedSurface` (primed) and `hasUnpaved` (cold) are both faithful readings of
+  the task title "unpaved surface"; the held-out oracle arbitrarily rewards the
+  former. At n=1 per arm, which synonym each agent coined is noise, and the gold
+  prime — silent on naming — has no causal path to it.
+
+**Corrected bucket: null (tie) on the coupling, with an oracle artifact manufacturing
+a spurious green/red, and priming as ~2× cost overhead** ($1.00 vs $0.48; +20%
+out-tokens). This is emphatically **not** the program's first genuine payback signal;
+recording it as one would be a false positive. It instead reproduces the standing
+finding a fourth time — even a genuinely type-invisible, doc-dark coupling
+self-teaches on this well-structured target — and it surfaces a **latent oracle flaw
+to fix before any re-run**: an oracle that pins an otherwise-unspecified field name
+conflates "learned the coupling" with "guessed the contract key," so it cannot on its
+own certify payback. A clean re-run must either (a) fix the exact field name in the
+task spec so the oracle isolates the aggregation, or (b) assert on behaviour keyed off
+a name the codebase already establishes. Both `model-usage.json` and the raw diffs are
+preserved under the git-ignored evidence dir + session scratchpad; per-arm runIds
+`280b93bc` (primed) / `ecd5af05` (cold).
+
 ## Scope boundary
 
 The design session (#91) **designed, authored, and harnessed only** — nothing
@@ -321,6 +380,10 @@ held-out-oracle arms above (~$1.06 + $1.10, subscription). The e2e #2 session
 (#99, 2026-07-26) **authored and pre-flighted only** — task spec, held-out
 oracle, and a local zero-spend type-invisibility proof (typecheck + jest against
 a naive and a correct patch, target restored pristine); **no agent/judge spend**,
-and the real run is deferred to a separate spend-gated ticket. Raw evidence lives
+and the real run is deferred to a separate spend-gated ticket. The #100 execution
+session (2026-07-27) then ran design G's two real-spend arms (~$1.00 primed + $0.48
+cold, subscription, no compile spend) and recorded the held-out-oracle result above;
+the gold prime was inserted into a scratchpad copy and the artifact restored
+byte-identical, and the target was left pristine at `dbb154c`. Raw evidence lives
 under the git-ignored `fleet/evidence/knowledge-payback/<ts>/` and the session
 scratchpad.
