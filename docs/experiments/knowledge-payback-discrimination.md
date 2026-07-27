@@ -1,15 +1,23 @@
 # Discriminating knowledge-payback e2e (issue #91)
 
-**Status:** designed, harnessed, and **run three times** — 004 on
-`demo-feed-service`, #93 on a private commented target (both 2026-07-23), and the
+**Status:** designed, harnessed, and **run four times** — 004 on
+`demo-feed-service`, #93 on a private commented target (both 2026-07-23), the
 **held-out-oracle variant A** (2026-07-25, see
-[Result](#result-2026-07-25-variant-a-held-out-oracle)). All three tied on
-outcome with priming as overhead; variant A additionally removed the
-"gate-teaches" confound and still tied, and isolated *why*. This document is the target-neutral
-method: the question, the discrimination model, the harness, and how to read a
-result. The concrete candidate analysis for the chosen private fleet target
-lives with that target's private task definition (git-ignored `tasks/private/`),
-because this repo is public and scrubbed of target names.
+[Result](#result-2026-07-25-variant-a-held-out-oracle)), and **e2e #2 design G**
+(2026-07-27, see [Result](#result-2026-07-27-e2e-2-design-g-gold-prime-held-out-oracle)).
+All four tied on outcome with priming as overhead; variant A and #100 additionally
+removed the "gate-teaches" confound and still tied, and isolated *why*. This
+document is the target-neutral method: the question, the discrimination model, the
+harness, and how to read a result. The concrete candidate analysis for the chosen
+private fleet target lives with that target's private task definition (git-ignored
+`tasks/private/`), because this repo is public and scrubbed of target names.
+
+> **After four ties, see [`knowledge-payback-regime-map.md`](knowledge-payback-regime-map.md)**
+> — a zero-spend step back from task-by-task discrimination to the regime space:
+> which axes these runs varied vs held fixed, why a repo-compiled artifact
+> structurally disfavours *outcome* payback on coherent targets, and the verdict
+> (close outcome-on-coherent-targets; keep a re-scoped *cost*-payback bet + a
+> judge-gated one).
 
 ## The question
 
