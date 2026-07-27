@@ -52,6 +52,16 @@ describe("buildAskPrompt", () => {
     expect(prompt).toMatch(/verify gate/i);
   });
 
+  it("instructs the agent to return the answer inline and never defer to a file or a plan tool", () => {
+    const prompt = buildAskPrompt(buildRepoMapFromIndex(index), prose, "add mute", checkKnowledgeDrift(freshArtifact(), index));
+
+    expect(prompt).toMatch(/Output contract/);
+    expect(prompt).toMatch(/Your reply IS the answer/);
+    expect(prompt).toMatch(/inline/);
+    expect(prompt).toMatch(/not defer any part of the answer to a file/);
+    expect(prompt).toMatch(/ExitPlanMode/);
+  });
+
   it("stays clean when the prose is within baseline tolerance", () => {
     const prompt = buildAskPrompt(buildRepoMapFromIndex(index), prose, "add mute", checkKnowledgeDrift(freshArtifact(), index));
     expect(prompt).not.toMatch(/has drifted/);
