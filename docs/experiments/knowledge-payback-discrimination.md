@@ -378,6 +378,117 @@ a name the codebase already establishes. Both `model-usage.json` and the raw dif
 preserved under the git-ignored evidence dir + session scratchpad; per-arm runIds
 `280b93bc` (primed) / `ecd5af05` (cold).
 
+## #102 — oracle fix (landed 2026-07-27, zero-spend)
+
+#100's green/red was manufactured by a defect in the held-out oracle, not by the
+coupling: the oracle pinned a route-level field **name** (`hasUnpavedSurface`) that
+nothing else specified — not the task spec, not the target codebase (which knows only
+the ferry flags), not the gold prime. The two arms coined different synonyms; the arm
+whose guess matched the oracle scored green, so the oracle **conflated "learned the
+aggregation coupling" with "guessed the contract key."** A payback-certifying oracle
+must not have that second degree of freedom.
+
+The fix decouples the two, per the two options the #100 record named — and applies
+**both**, as a task-spec + oracle edit with **no agent/judge spend**:
+
+1. **Pin the contract key in the task spec.** The spec now fixes the advisory flag to
+   `hasUnpavedSurface` (the same key on the per-segment directions response and on the
+   aggregated route level), given **identically to both arms**, and explicitly frames the
+   name as fixed *so the graded behaviour is the aggregation, not the key*. Because both
+   arms receive the same pin, it removes the naming as a free variable without advantaging
+   the primed arm — and it does not touch the type-invisibility (the miss is still a
+   dropped hand-written OR over a pre-built object, invisible to `tsc`).
+2. **Split the two failure modes in the oracle.** The oracle now grades a route-level flag
+   that is **absent (`undefined`)** as a distinct *naming / spec-compliance* miss, separate
+   from a flag that is present but **`false`** — the modelled *dropped-OR aggregation* miss.
+   With the key pinned, a good-faith fix always produces the field, so the only oracle RED
+   a real attempt can earn is the `false` aggregation miss. The oracle now isolates the
+   coupling.
+
+Re-validated locally (tsc + jest, target restored pristine at `dbb154c`, no agent spend):
+
+| config | typecheck | existing suite | held-out oracle |
+|---|---|---|---|
+| baseline (clean) | pass | 219/219 | **RED** (`undefined` — naming/absent guard) |
+| naive fix: pinned key, per-segment read, **no merge OR** | pass | 219/219 | **RED** (`false` — the modelled aggregation miss) |
+| correct fix: + one merge-OR line | pass | 219/219 | **GREEN** |
+
+The naive miss is now cleanly `false` (not the `undefined` that confounded #100), and the
+two REDs are distinguishable by message. This lands the fix **for the record**; it does not
+change the coupling's regime. Per
+[`knowledge-payback-regime-map.md`](knowledge-payback-regime-map.md) §5, the fact under
+test is in-repo and cold-derivable (#100 showed cold reconstructs the merge-OR unaided
+against a gold prime), so a re-run of design G sits in **R1** and its most-likely outcome is
+a **fifth tie on the coupling** — the oracle fix removes only the *spurious* red. The re-run
+is therefore **not** scheduled as an outcome-payback test; if spend is authorized it should
+go to the R3 cost-payback design instead. This section closes #102's record-keeping half.
+
+## Next experiment (2026-07-27, e2e #3: R3 cost-payback on a large-context + doc-dark target)
+
+Authored + zero-spend pre-flight only — **no agent/judge spend.** This is the
+regime-map's honest surviving bet ([`…-regime-map.md`](knowledge-payback-regime-map.md)
+§4 R3): the first experiment scoped to detect **cost** payback (cold-costs-more at
+equal outcome) rather than the *outcome* flip the four prior ties all chased and
+structurally disfavour. Target: the private mobile target, measured **large-context +
+doc-dark** — ~15.9k LOC in the app subtree, ~3.3% comment lines, **no project docs**
+in that subtree (the regime the four ties predicted but never tested, because every
+prior coupling sat ≤3 lines from the landing zone).
+
+Why this coupling is different from the four ties. A parallel search over the app's
+principal data flows surfaced three cross-file couplings; the chosen one (task
+`brc-saved-route-metric`) is the only one with **no landing-zone giveaway**. A derived
+route metric renders correctly in the saved-routes **list** (which reads the *stored*
+value) but is silently **recomputed from geometry on reopen** (`SET_ROUTE →
+buildRouteSnapshot → computeTotals`), so the *Review* screen — which reads recomputed
+state — shows a stale value unless the metric is also produced in the recompute path.
+The persistence landing zone gives **no hint** that reopen recomputes; getting it right
+requires reading across the storage module → the reducer/`computeTotals` → two
+different consumer screens — files a dev editing the landing zone would not open by
+default. The two rejected candidates: the widest chain (6 files) **self-teaches**
+because its landing-zone file already shows the needed parallel-array access; the
+deepest-type-invisible one **is the #100 cluster**, already tied.
+
+Two properties make this test the layer, not a gold prime, and clean:
+- **The as-compiled artifact carries the flow.** Its *Principal data flows* /
+  *Feature landing zones* sections already name the persistence + route-build
+  topology, so the primed arm is handed the cross-file map **natively** — no
+  hand-authored prime (contrast #100/design G).
+- **Dual readout.** Outcome is *expected* to tie (the coupling is repo-derivable);
+  the primary signal is **cold `agentUsd`/wall − primed > 0** at equal outcome, read
+  against a **carry-tax baseline** (a no-discovery task measuring the primed arm's
+  fixed overhead T; cost payback iff the discovery cost `D > T`). Bonus: if cold ships
+  the trap (Review stale) while primed does not, the held-out oracle records the
+  program's first genuine *outcome* payback.
+
+Zero-spend pre-flight (typecheck + jest against a naive and a correct patch, target
+restored pristine, no agent/judge spend) proved the coupling is invisible to both
+in-loop gates and distinguished only by the held-out oracle:
+
+| config | `tsc --noEmit` | existing suite | held-out oracle |
+|---|---|---|---|
+| baseline (clean) | clean | pass | **RED** (`undefined` — naming/absent guard) |
+| naive fix: store the metric, **skip the recompute path** | clean | 219/219 | **RED** (`0` — the modelled dropped-recompute miss) |
+| correct fix: + recompute in `computeTotals`/`buildRouteSnapshot` | clean | 220/220 | **GREEN** |
+
+One confound was caught and removed during pre-flight (the #102 discipline): a
+*required* persisted field made `tsc` flag an out-of-scope test fixture, and because the
+in-loop verify runs `tsc`, that spurious red would fire for **both** arms and could
+trigger an unrelated scope-violation. Pinning the field **optional** on the persisted
+type (given identically to both arms; it teaches nothing about the recompute coupling)
+restores clean type-invisibility — the naive patch compiles clean and passes the full
+suite, and only the oracle separates `0` from `2.0`. The oracle also required two
+provider harness idioms (a `fetch` stub and a `RuntimeConfigContext` mock) or it errors
+before asserting; both are folded into the canonical file.
+
+The real run is filed as a spend-gated ticket and does not run until the owner confirms
+and picks a rep count. Estimated spend (subscription/local, **no recompile** — artifact
+used as-is at the target's pinned sha): a 4-file change at ~$0.8–1.5/run, n=5 per arm on
+the task + n=3 per arm on the carry-tax baseline = 16 runs ≈ **$13–24**; report medians
+(cost variance is high — #100 had a ~2× rep outlier), exploratory not powered.
+Target-name-scrubbed task spec, held-out oracle, carry-tax baseline task, and runbook
+live in the git-ignored `tasks/private/`; the source-level coupling analysis + estimate
+in `knowledge/private/` (also git-ignored).
+
 ## Scope boundary
 
 The design session (#91) **designed, authored, and harnessed only** — nothing
@@ -394,4 +505,9 @@ cold, subscription, no compile spend) and recorded the held-out-oracle result ab
 the gold prime was inserted into a scratchpad copy and the artifact restored
 byte-identical, and the target was left pristine at `dbb154c`. Raw evidence lives
 under the git-ignored `fleet/evidence/knowledge-payback/<ts>/` and the session
-scratchpad.
+scratchpad. The e2e #3 session (2026-07-27, R3 cost-payback) **authored and
+pre-flighted only** — task spec, held-out oracle, carry-tax baseline task, and
+runbook, plus a local zero-spend type-invisibility proof (`tsc --noEmit` + jest
+against a naive and a correct patch, target restored **byte-pristine at `dbb154c`**);
+**no agent/judge spend**, and the real run is deferred to a separate spend-gated
+ticket.

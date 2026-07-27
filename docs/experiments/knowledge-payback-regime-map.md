@@ -200,7 +200,7 @@ on the coherent targets we can most easily reason about.
 Neither requires spend to *design*; both are gated on explicit user go-ahead to
 *run* (standing local-runs rule).
 
-**For R3 (cost payback):**
+**For R3 (cost payback): AUTHORED + zero-spend PRE-FLIGHTED 2026-07-27 (design-G-style staging, no agent/judge spend).**
 - A **target selector**: pick/on-board a target whose correct coupling requires
   synthesis across many files (candidate signal: the coupling's supporting facts
   are scattered, not within a screen of the landing zone), and large enough that
@@ -212,14 +212,35 @@ Neither requires spend to *design*; both are gated on explicit user go-ahead to
 - A **carry-tax baseline**: measure the fixed overhead of injecting the artifact
   on a no-discovery task, so R3's cold-discovery cost is read against it.
 
+  *Staged as e2e #3 (`brc-saved-route-metric`) on the private mobile target —
+  chosen because it measured large-context + doc-dark (~15.9k LOC, ~3.3% comments,
+  no in-subtree docs). Coupling = a derived route metric silently recomputed from
+  geometry on reopen (`computeTotals`), so it renders in the saved-routes list but
+  goes stale on the Review screen unless produced in the recompute path — a wide,
+  no-landing-zone-giveaway coupling the as-compiled artifact's* Principal data flows
+  *section carries natively (tests the layer, not a gold prime). Zero-spend pre-flight
+  proved it invisible to both in-loop gates (naive fix: `tsc` clean + suite 219/219)
+  and distinguished only by the held-out oracle (`0` vs recomputed `2.0`); one `tsc`
+  confound (a required persisted field flagging an out-of-scope fixture) was caught and
+  removed by pinning the field optional. Full record in
+  [`knowledge-payback-discrimination.md`](knowledge-payback-discrimination.md)
+  § "Next experiment (… e2e #3 …)"; the run remains spend-gated (~$13–24, n=5+3),
+  private instantiation in `tasks/private/` + `knowledge/private/`.*
+
 **For R4 (judge-mediated):**
 - Blocked on a **judge-trust milestone** (maps #59/#71). The design deliverable
   is the entry condition: a judge demonstrated to discriminate a known
   silent-wrong diff from its correct sibling, before any priming arm is added.
 
-**For #102 (record-keeping):**
-- The oracle fix itself (pin the key / reuse an established name) — a task-spec +
-  oracle edit, no agent spend.
+**For #102 (record-keeping): LANDED 2026-07-27 (zero-spend).**
+- The oracle fix shipped as a task-spec + oracle edit, no agent spend: the contract
+  key is pinned in the spec (given to both arms) **and** the oracle splits an
+  absent-field (`undefined`) naming miss from a present-but-`false` aggregation miss,
+  so it isolates the coupling. Re-validated locally (tsc + jest, target restored
+  pristine): baseline RED(`undefined`) / naive RED(`false`) / correct GREEN. Recorded
+  in `knowledge-payback-discrimination.md` (§ "#102 — oracle fix"). Per §5 the design-G
+  re-run still sits in R1 (cold-derivable fact) → most-likely a fifth tie, so it is
+  **not** scheduled as an outcome-payback test.
 
 ## 8. Scope boundary
 
