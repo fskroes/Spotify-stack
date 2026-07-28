@@ -134,7 +134,8 @@ known*, which is not the same as green and must never render as green.
 A verifier check name a task's `gates:` frontmatter declares must have run for
 its verification to count. A gate is an **assertion, not an instruction**: it
 names a check the fleet could already run and demands evidence that it did. It
-never supplies a new one — that is a capability question, deliberately kept out.
+never supplies a new one — supplying is the [registered verifier](#registered-verifier)'s
+job, kept deliberately separate ([ADR-0009](docs/adr/0009-registered-verifiers-live-in-the-control-repo.md)).
 
 The names are the check names verification emits (`test`, `tsc`,
 `xcodebuild-test`, …), an **open vocabulary** with no registry. Any string is
@@ -162,6 +163,26 @@ A run that declared no gates and a run whose gates were all met both record
 none, and no surface shows an unmet-gate affordance for either. A ledger line
 with no `unmetGates` field at all means *not recorded* — never an assertion that
 nothing was outstanding.
+
+## Registered verifier
+
+A named check declared **per target** in the fleet registry (`fleet/repos.yaml`,
+or the git-ignored `repos.local.yaml`), for a check no detector can infer from
+repo shape — a bespoke build script, a live contract probe, a house linter. It
+carries the same fields as a detected check and is composed with them by the
+runner, so a [mandated gate](#mandated-gate) resolves against it identically and
+no task frontmatter changes.
+
+It is declared in the control repo and never in the target, because the agent can
+edit the target's files and would otherwise be able to author the gate that
+judges it. A missing prerequisite (`requiresEnv`) makes a verifier **ineligible**
+— an [unmet gate](#unmet-gate), not a failure — and a `cost: billed` verifier
+runs only when a task mandates it.
+
+**Decided 2026-07-28, not yet built** ([ADR-0009](docs/adr/0009-registered-verifiers-live-in-the-control-repo.md),
+#64). The term is here because the decision is settled; there is no code behind
+it yet, so read it as language the fleet has committed to, not as behaviour you
+can observe.
 
 ## Run status vs. verification state
 
