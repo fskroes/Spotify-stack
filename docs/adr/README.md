@@ -15,6 +15,7 @@ record shows what was considered instead and why it lost.
 | [0007](0007-per-run-artifact-archive.md) | Evidence is archived per run, not per task | evidence |
 | [0008](0008-one-status-facts-table.md) | One status → facts table, not a switch per surface | contract |
 | [0009](0009-registered-verifiers-live-in-the-control-repo.md) | A bespoke check is registered per target in the control repo, never in the target | verify↔run |
+| [0010](0010-the-scrub-denylist-is-the-leak.md) | The scrub check asserts that a scrub ran; it does not carry the private list | scrub |
 
 **0003–0008 were written retroactively** (2026-07-26), reconstructing the
 reasoning behind decisions already in the code. They are sound arguments, not
