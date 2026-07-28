@@ -202,6 +202,19 @@ its compile-time baseline. The relative comparison preserves a stable
 framework-vocabulary floor that an absolute threshold would incorrectly flag.
 Drift requests recompilation; it does not itself make the structural map stale.
 
+## Ask
+
+The human-facing ideation seam (`fleet ask`): a question answered from a
+target's [knowledge prose](#knowledge-prose) plus a freshly rebuilt
+[structural map](#structural-map), so the reader never opens the target. Three
+question classes are named in the prompt and are the vocabulary to use when
+talking about one — **placement** (where a change would land), **wiring** (how
+something works today, in the order things happen), and **story → brief** (a
+story turned into a dispatch-ready task brief). An ask answers immediately even
+when the prose has drifted; it flags the unverified claims rather than blocking
+on a recompile. Its reply *is* the answer — there is no follow-up turn and no
+file it may defer to.
+
 ## Primed vs. cold
 
 The two arms of every knowledge-payback experiment. A **primed** run starts with

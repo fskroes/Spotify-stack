@@ -82,6 +82,41 @@ describe("README layout block", () => {
   });
 });
 
+describe("docs reading list", () => {
+  /**
+   * Every evidence doc under `docs/` (ADRs excepted — `adr/README.md` indexes
+   * those) is either reachable from the map or explicitly opted out.
+   *
+   * The opt-out is the point. A lock demanding that *every* file appear would
+   * turn a curated reading list into a directory listing and remove the
+   * editorial power a thin nav layer depends on. Leaving a doc unlisted stays a
+   * decision you can make — it just has to be a recorded one, the same shape
+   * `RUN_FACTS` uses: new members are not banned, they are forced to be decided
+   * about.
+   */
+  const NAV_SKIP = "<!-- nav: skip -->";
+
+  const evidenceDocs = (dir: string): string[] =>
+    readdirSync(path.join(repoRoot, dir), { withFileTypes: true }).flatMap((entry) => {
+      const rel = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) return rel.endsWith("/adr") ? [] : evidenceDocs(rel);
+      return entry.name.endsWith(".md") && rel !== "docs/README.md" ? [rel] : [];
+    });
+
+  it("links every doc under docs/ that has not opted out", () => {
+    const map = read("docs/README.md");
+    const unreachable = evidenceDocs("docs").filter(
+      // Links in docs/README.md are relative to docs/ itself.
+      (rel) => !map.includes(rel.slice("docs/".length)) && !read(rel).includes(NAV_SKIP),
+    );
+
+    expect(
+      unreachable,
+      `unreachable from docs/README.md, and not carrying "${NAV_SKIP}": ${unreachable.join(", ")}`,
+    ).toEqual([]);
+  });
+});
+
 describe("task template gate vocabulary", () => {
   /**
    * The check names verification can emit, read out of the detector itself.
