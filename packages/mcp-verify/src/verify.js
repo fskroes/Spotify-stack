@@ -43,6 +43,25 @@ const MAX_BUFFER = 32 * 1024 * 1024;
  */
 
 /**
+ * Every base check name `detect` can emit. A nested workspace suffixes these
+ * (`test:web`), so this is the vocabulary, not the full set of ids.
+ *
+ * It exists so the fleet registry can refuse a registered verifier that would
+ * shadow a detected one (ADR-0009) without the shadowing rule hand-copying a
+ * list that then drifts. `detected-names.test.js` locks it to the detector.
+ */
+export const DETECTED_CHECK_NAMES = [
+  "npm-install",
+  "eslint",
+  "tsc",
+  "test",
+  "swift-build",
+  "swift-test",
+  "xcodebuild-build",
+  "xcodebuild-test",
+];
+
+/**
  * Detect which verifiers apply to a workspace — Spotify part 3: "verifiers
  * activate automatically based on codebase contents".
  *
@@ -209,7 +228,10 @@ async function runCheck(cwd, check) {
   const started = Date.now();
   try {
     await execFileAsync(check.command, check.args, {
-      cwd: check.cwd ?? cwd,
+      // Detected checks carry an absolute cwd; a registered one (ADR-0009) is
+      // written by hand and is naturally relative to the workspace root.
+      // `resolve` takes both — an absolute second argument passes through.
+      cwd: check.cwd ? path.resolve(cwd, check.cwd) : cwd,
       timeout: CHECK_TIMEOUT_MS,
       maxBuffer: MAX_BUFFER,
       env: { ...process.env, CI: "1", NO_COLOR: "1", FORCE_COLOR: "0" },
@@ -229,14 +251,69 @@ async function runCheck(cwd, check) {
 }
 
 /**
- * Run all detected verifiers for a workspace. Stops at the first failing
- * check (later checks usually cascade from the same root cause).
+ * The registered verifiers the runner passed into this process, if any.
+ *
+ * An env var rather than a file, deliberately: the workspace is the one place
+ * the agent may write, so a check list living there is a check list the agent
+ * can edit. This is read once, from an environment only the runner sets.
+ *
+ * A malformed payload throws. Quietly falling back to "no registered checks"
+ * would turn a runner bug into a verification that looks complete and is not —
+ * the one output this system may not produce.
+ *
+ * @param {Record<string, string | undefined>} env
+ * @returns {Check[]}
+ */
+export function readRegisteredFromEnv(env) {
+  const raw = env.VERIFY_REGISTERED;
+  if (!raw) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`VERIFY_REGISTERED is not valid JSON: ${err.message}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`VERIFY_REGISTERED must be a JSON array of checks, got ${typeof parsed}`);
+  }
+  return parsed;
+}
+
+/**
+ * Run all verifiers for a workspace. Stops at the first failing check (later
+ * checks usually cascade from the same root cause).
+ *
+ * `registered` carries the target's registered verifiers (ADR-0009) as ordinary
+ * Checks. This module stays target-blind: it never reads the fleet registry and
+ * does not know one exists — only the runner holds both halves, so only the
+ * runner composes them, the same seam that folds in mandated gates.
+ *
+ * Registered checks run **after** every detected one. They are the checks that
+ * may cost money, so a cheap detected failure must short-circuit them.
  *
  * @param {string} cwd
+ * @param {{ registered?: Check[] }} [opts]
  * @returns {Promise<VerifyResult>}
  */
-export async function runVerify(cwd) {
-  const checks = detect(cwd);
+export async function runVerify(cwd, { registered = [] } = {}) {
+  const detected = detect(cwd);
+
+  // The shadowing rule, enforced where both halves are actually present. The
+  // registry's load-time check catches the common case, but detection is
+  // per-workspace: a nested workspace can produce a name (`test:web`) the
+  // registry could not have known about. A silent override there would be a
+  // false green, so this throws rather than picking a winner.
+  const detectedNames = new Set(detected.map((c) => c.name));
+  for (const check of registered) {
+    if (detectedNames.has(check.name)) {
+      throw new Error(
+        `registered verifier "${check.name}" would shadow a detected check in this workspace. ` +
+          "Rename the registered check; registration may not redefine a check the fleet can infer.",
+      );
+    }
+  }
+
+  const checks = [...detected, ...registered];
   if (checks.length === 0) {
     // A repo with no verifiers is legitimate; a pass for it is not. Nothing ran,
     // so there is nothing to assert about the change — say exactly that.

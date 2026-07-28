@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import YAML from "yaml";
+import { validateVerifiers, type RegisteredVerifier } from "./verifiers.js";
 
 export type FleetRepoVisibility = "public" | "private";
 
@@ -19,6 +20,15 @@ export interface FleetRepo {
    * absolute path (see resolveLocalPath); undefined falls back to demo-repos/.
    */
   local_path?: string;
+  /**
+   * Checks this target needs that no detector infers from repo shape — a live
+   * contract probe, a bespoke build script, a house linter (ADR-0009).
+   *
+   * They are declared here, in the control repo, precisely because the agent
+   * cannot reach this file: a verifier the agent can write is a gate the agent
+   * can pass by redefining it.
+   */
+  verifiers?: RegisteredVerifier[];
 }
 
 export interface FleetLoadOptions {
@@ -83,11 +93,16 @@ export function loadFleet(controlRepo: string, options: FleetLoadOptions = {}): 
   if (existsSync(overlay)) {
     for (const r of readRepos(overlay)) merged.set(r.name, { ...r, visibility: "private" });
   }
-  return [...merged.values()].map((r) => ({
-    ...r,
-    url: r.url.replaceAll("${GH_OWNER}", owner),
-    local_path: r.local_path ? resolveLocalPath(r.local_path, controlRepo) : undefined,
-  }));
+  return [...merged.values()].map((r) => {
+    // At load, not at verify: a registry that could produce a false green must
+    // not be usable at all — including by the commands that never verify.
+    validateVerifiers(r.name, r.verifiers);
+    return {
+      ...r,
+      url: r.url.replaceAll("${GH_OWNER}", owner),
+      local_path: r.local_path ? resolveLocalPath(r.local_path, controlRepo) : undefined,
+    };
+  });
 }
 
 export function findRepo(controlRepo: string, name: string, options?: FleetLoadOptions): FleetRepo {

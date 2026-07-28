@@ -1,11 +1,12 @@
 {
-  "$comment": "MCP config template. The runner replaces __CONTROL_REPO__ and __WORKSPACE__ with absolute paths when injecting this into a workspace.",
+  "$comment": "MCP config template. The runner fills the placeholders below when injecting this into a workspace: the two paths become absolute, and the verifier slot becomes the target's eligible registered verifiers (ADR-0009) as a JSON string. Do not name a placeholder in this comment — it would be substituted here too, and the result would not parse.",
   "mcpServers": {
     "verify": {
       "command": "node",
       "args": ["__CONTROL_REPO__/packages/mcp-verify/src/server.js"],
       "env": {
-        "VERIFY_CWD": "__WORKSPACE__"
+        "VERIFY_CWD": "__WORKSPACE__",
+        "VERIFY_REGISTERED": __REGISTERED_VERIFIERS__
       }
     }
   }

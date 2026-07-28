@@ -11,7 +11,10 @@
  * the agent and the session continues. A bounded attempt counter prevents
  * infinite block loops on unfixable failures.
  *
- * The runner replaces __CONTROL_REPO__ and __WORKSPACE__ with absolute paths.
+ * The runner fills the placeholders below when injecting this: the two paths
+ * become absolute, and the verifier slot becomes this target's eligible
+ * registered verifiers (ADR-0009). Do not name a placeholder in this comment —
+ * it would be substituted here too.
  */
 import { execFile } from "node:child_process";
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -20,6 +23,7 @@ import { promisify } from "node:util";
 
 const CONTROL_REPO = "__CONTROL_REPO__";
 const WORKSPACE = "__WORKSPACE__";
+const REGISTERED = __REGISTERED_VERIFIERS__;
 const MAX_BLOCKS = 3;
 
 // Read the hook payload from stdin (not strictly needed beyond being a good
@@ -46,7 +50,12 @@ try {
   await promisify(execFile)(
     "node",
     [path.join(CONTROL_REPO, "packages", "mcp-verify", "src", "cli.js"), WORKSPACE],
-    { maxBuffer: 32 * 1024 * 1024, timeout: 9 * 60 * 1000 },
+    {
+      maxBuffer: 32 * 1024 * 1024,
+      timeout: 9 * 60 * 1000,
+      // So the in-session gate runs the same check set the runner will.
+      env: { ...process.env, VERIFY_REGISTERED: REGISTERED },
+    },
   );
   // Green: allow the stop and reset the counter.
   try {

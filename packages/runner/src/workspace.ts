@@ -10,6 +10,7 @@ import {
   type KnowledgeDriftReport,
 } from "@fleet/knowledge";
 import { resolveLocalSource, type FleetRepo } from "./fleet.js";
+import { type VerifierCheck } from "./verifiers.js";
 import { knowledgeArtifactPath } from "./knowledge.js";
 
 /**
@@ -95,17 +96,33 @@ export function prepareWorkspace(opts: {
  * .claude/settings.json (allowlist + Stop hook), the Stop hook script, and
  * the MCP config pointing the `verify` server at this workspace.
  */
-export function injectAgentConfig(opts: { controlRepo: string; workspace: string }): {
+export function injectAgentConfig(opts: {
+  controlRepo: string;
+  workspace: string;
+  /**
+   * The target's eligible registered verifiers (ADR-0009), already filtered by
+   * the runner. Carried into the session as a JSON env var rather than a file
+   * the agent could edit: the MCP server reads it once at launch, so nothing
+   * the agent writes afterward can add, drop, or redefine a check.
+   */
+  registered?: VerifierCheck[];
+}): {
   mcpConfigPath: string;
 } {
   const templateDir = path.join(opts.controlRepo, "agent-config");
   const claudeDir = path.join(opts.workspace, ".claude");
   mkdirSync(path.join(claudeDir, "hooks"), { recursive: true });
 
+  // Doubly encoded on purpose: the inner stringify is the payload, the outer one
+  // makes it a correctly-escaped JSON/JS string literal, so one substitution is
+  // valid in both mcp.json (a JSON string value) and stop-verify.mjs (a JS one).
+  const registeredLiteral = JSON.stringify(JSON.stringify(opts.registered ?? []));
+
   const fill = (text: string) =>
     text
       .replaceAll("__CONTROL_REPO__", opts.controlRepo)
-      .replaceAll("__WORKSPACE__", opts.workspace);
+      .replaceAll("__WORKSPACE__", opts.workspace)
+      .replaceAll("__REGISTERED_VERIFIERS__", registeredLiteral);
 
   writeFileSync(
     path.join(claudeDir, "settings.json"),

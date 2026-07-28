@@ -9,9 +9,12 @@
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { runVerify } from "./verify.js";
+import { readRegisteredFromEnv, runVerify } from "./verify.js";
 
 const workspace = process.env.VERIFY_CWD ?? process.cwd();
+// Read once, at launch. The runner sets this when it writes the MCP config, so
+// nothing the agent edits mid-session can add, drop, or redefine a check.
+const registered = readRegisteredFromEnv(process.env);
 
 const server = new McpServer({ name: "verify", version: "0.1.0" });
 
@@ -28,7 +31,7 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    const result = await runVerify(workspace);
+    const result = await runVerify(workspace, { registered });
     return {
       content: [{ type: "text", text: result.summary }],
       isError: result.state === "failed",

@@ -19,11 +19,24 @@ evidence.
 
 ## Status
 
-**Accepted, not implemented** (2026-07-28). This record settles the shape so the
-build is a mechanical exercise rather than a re-litigation. It is deliberately
-unbuilt: per #64, the trigger is when *"why can't this gate run?"* becomes a
-question someone wants to fix rather than record — i.e. when an unmet gate stops
-being informative and becomes routine. Today it is still informative.
+**Accepted** (2026-07-28). **Implemented** (2026-07-28, #64).
+
+This record was written *"Accepted, not implemented"*, deliberately unbuilt until
+the trigger fired: *"why can't this gate run?"* becoming a question someone wants
+to fix rather than record.
+
+It fired the same day, on contact with the first real targets onboarded. One
+carries a shell script that validates the app's AI contract against a live model
+through a CLI — a check no detector could infer, requiring a credential from the
+environment, and billed to a subscription per run. That single script
+instantiates all three of the features this record had only hypothesised: the
+live probe, `requiresEnv`, and `cost: billed`. Another is a workspace in a
+language the fleet has no detector for at all, where the gap is a *detector* gap
+rather than a bespoke-check one, and whose registration is therefore still an
+open question (see Consequences).
+
+The decision itself is unchanged; only this status is. The design below was
+written before the build and has not been revised to agree with it.
 
 ## Why the registry lives in the control repo and not in the target
 

@@ -21,6 +21,10 @@ scope: [test/**]
 # than erroring — the run still ships, with verification state `inconclusive`
 # and the gate named on every surface. Omit when whatever verification detects
 # is good enough.
+# A target may also register extra checks in the fleet registry (ADR-0009) — a
+# contract probe, a house linter. You mandate one by name exactly as above and
+# do not need to know which kind it is; the registry supplies the capability,
+# `gates:` still only demands the evidence.
 gates: [test]
 # Blast radius shown in the PR header: drudgery | low | medium. Default: low.
 risk: low

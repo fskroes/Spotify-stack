@@ -8,6 +8,26 @@
 # ~ and any ${ENV_VAR} (e.g. ~/dev/my-repo or ${DEV_ROOT}/my-repo); relative
 # paths resolve against this control repo. Ignored in cloud mode (always clones).
 #
+# `verifiers` (optional): checks this target needs that no detector infers from
+# repo shape — a live contract probe, a bespoke build script, a house linter.
+# They are declared HERE, in the control repo, and never in the target: the agent
+# edits files in the target, so a verifier declared there is a gate the agent
+# could redefine and pass (ADR-0009). Each entry is the same shape as a detected
+# check, and a task's `gates:` resolves against it identically:
+#
+#   verifiers:
+#     - name: contract-probe      # may not shadow a detected check name
+#       label: scripts/probe.sh   # optional; defaults to name
+#       command: scripts/probe.sh
+#       args: [--strict]          # optional
+#       cwd: sub/dir              # optional, relative to the repo root
+#       requiresEnv: [SOME_TOKEN] # optional; if any is unset the check is not
+#                                 # registered for that run — a task mandating it
+#                                 # records an unmet gate, never a failure
+#       cost: billed              # optional; `billed` runs ONLY when a task's
+#                                 # gates name it, so fan-out can't spend money
+#                                 # nobody authored. Default `free` runs always.
+#
 # Private targets: keep them out of this shared file — add them to a git-ignored
 # `fleet/repos.local.yaml` instead (same schema; entries there override by name).
 # It's merged on load, the parallel of tasks/private/ for task prompts.

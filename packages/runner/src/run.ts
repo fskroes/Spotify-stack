@@ -16,6 +16,7 @@ import { defaultLedgerHtmlPath, writeLedgerHtml } from "./ledger-html.js";
 import { buildPrBody, type VerifyCheck } from "./pr.js";
 import { buildRunPreamble } from "@fleet/knowledge";
 import { loadTask, type Task } from "./task.js";
+import { eligibleVerifiers } from "./verifiers.js";
 import { git, injectAgentConfig, injectKnowledge, prepareWorkspace, RUN_KNOWLEDGE_FILE, stagedDiff, stagedFiles } from "./workspace.js";
 
 interface VerifyResult {
@@ -395,7 +396,18 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       taskId: task.id,
       local: opts.local ?? false,
     });
-    const { mcpConfigPath } = injectAgentConfig({ controlRepo: opts.controlRepo, workspace });
+    // Which of this target's registered verifiers actually run here (ADR-0009).
+    // Composed by the runner because only the runner holds both halves: the
+    // registry supplies the capability, the task's `gates:` says what must be
+    // proven, and the environment decides what is even possible. `detect()`
+    // stays target-blind. Computed per run, never cached — a verifier needing
+    // an env var the Actions runner lacks is ineligible there and eligible here.
+    const registered = eligibleVerifiers(repo.verifiers, { env: process.env, gates: task.gates });
+    const { mcpConfigPath } = injectAgentConfig({
+      controlRepo: opts.controlRepo,
+      workspace,
+      registered,
+    });
     // Prime the run with the target's compiled knowledge, if any exists. Never
     // spends (renders the stored prose, flags drift); a missing artifact runs
     // cold. Archived to the run's evidence directly — not via REVIEW_ARTIFACTS,
@@ -571,7 +583,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     // inside the session for the real engine, but nothing green goes unproven).
     log("· verifying…");
     inflight.enter("verify");
-    let gated = applyGates((await timed("verifyMs", () => runVerify(workspace))) as VerifyResult);
+    let gated = applyGates((await timed("verifyMs", () => runVerify(workspace, { registered }))) as VerifyResult);
     let verify = gated.verify;
     let unmetGates = gated.unmetGates;
     artifact("verify.log", verify.summary);
@@ -636,7 +648,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         return finish({ ...base, diff, status: "scope-violation" }, offenders);
       }
       inflight.enter("verify");
-      gated = applyGates((await timed("verifyMs", () => runVerify(workspace))) as VerifyResult);
+      gated = applyGates((await timed("verifyMs", () => runVerify(workspace, { registered }))) as VerifyResult);
       verify = gated.verify;
       unmetGates = gated.unmetGates;
       artifact("verify.log", verify.summary);
