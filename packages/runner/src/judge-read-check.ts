@@ -130,7 +130,10 @@ export async function preflightJudgeRead(opts: { workspace: string; log?: (line:
  *
  * Order is not part of the surface, so the comparison sorts. This is *not* the
  * §8 invariant that holds the two transports' surfaces against each other —
- * that test needs both adapters and is #107, still unwritten.
+ * that one needs both adapters and lives outside this package, in
+ * `test/judge-tool-surface.test.ts`. This check runs against a live server on
+ * every run; that one runs in CI and proves neither adapter restates the
+ * declaration. Neither substitutes for the other.
  */
 export function assertJudgeReadSurface(advertised: unknown[]): void {
   /** Only the three fields the declaration owns: MCP fills in others. */

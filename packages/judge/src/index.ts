@@ -181,8 +181,10 @@ const MAX_JUDGE_TURNS = JUDGE_READ_MAX_CALLS + 4;
  * The read surface in the API's dialect. Derived, never restated: the names,
  * descriptions and schemas are the ones the MCP server puts on its own wire,
  * so a tool added to the declaration reaches both transports in one commit
- * (spec §3.1). The test that holds the two surfaces against each other is
- * spec §8, and is not written yet (#107).
+ * (spec §3.1). What holds this array against the surface the MCP server
+ * advertises — descriptions included, and by adding a tool neither adapter has
+ * heard of rather than by comparing two outputs — is the spec §8 invariant in
+ * `test/judge-tool-surface.test.ts`.
  */
 const JUDGE_READ_TOOL_PARAMS = JUDGE_READ_TOOLS.map((tool) => ({
   name: tool.name,
