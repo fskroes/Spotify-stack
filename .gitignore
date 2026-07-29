@@ -10,6 +10,7 @@ demo-repos/*/.build/
 # secrets
 .env
 .env.*
+.secret
 *.swp
 
 # private fleet overlay (targets kept local, not committed)

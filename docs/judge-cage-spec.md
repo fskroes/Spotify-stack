@@ -92,6 +92,37 @@ on them:
 
 This is a real API call and therefore real spend. It needs a go-ahead.
 
+### Answer (2026-07-29, issue #104): the first branch. Both accepted, structured output on the final turn.
+
+Probed live against `claude-opus-4-8` at `max_tokens: 2048` and
+`thinking: {type: "adaptive"}` — the judge's own configuration, read out of
+`packages/judge/src/index.ts` by the probe rather than restated — on
+`@anthropic-ai/sdk@0.110.0`. Two requests, ~$0.01. The throwaway probe and its
+recorded result are in the git-ignored `artifacts/judge-probe/`.
+
+| Request | Carried | `stop_reason` | `parsed_output` |
+|---|---|---|---|
+| 1 | `output_config.format` + `tools` | `tool_use` | `null` |
+| 2 | tool result, both fields still on | `end_turn` | the schema-shaped object |
+
+**So the SDK loop ends in the same request**, and §6.2 stands as written: no
+final tool-free call, no extra round trip per verdict. The third branch is
+closed — ADR-0011 needs no supersession on this point.
+
+The result is only as good as the tool having actually been called, so the probe
+made that a precondition rather than an assumption: the schema demanded a code
+generated per run, available from nowhere but the tool, and the probe reports
+`VOID` instead of a branch if no `tool_use` block appears. Request 2's parsed
+output carried that code back. `tool_choice` was left at its default throughout,
+because the judge never forces it and a forced call is a different request shape
+than the one this answer has to transfer to.
+
+**The build hazard above is now measured, not predicted.** Request 1 is exactly
+the `parsed_output: null` that `judgeWithEvidence`'s `VerdictSchema.safeParse`
+throws on. Bolting the read tool onto that call unchanged turns every verdict
+where the judge actually reads something into `engine-failed`. The loop has to
+consume the tool-use turn before anything parses a verdict out of it.
+
 ## 3. The read module: `packages/judge-read`
 
 ### 3.1 Why the boundary is here
