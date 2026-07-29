@@ -101,6 +101,7 @@ packages/cli           fleet run / dispatch / status / report / cosign / knowled
 packages/runner        per-repo loop (workspace, engines, judge loop, git, PR, ledger, operator API)
 packages/mcp-verify    verifier detection + summarizers + MCP server + CLI (plain JS)
 packages/judge         LLM-as-judge (@anthropic-ai/sdk, zod structured output)
+packages/judge-read    the judge's cage: one read tool surface + a workspace-rooted reader (plain JS)
 packages/contract      @fleet/contract — the runner↔operator wire schemas + tolerant parsers
 packages/knowledge     structural maps, compiled prose, grounding/drift, the ask seam
 apps/operator-desktop  optional Tauri workbench over the same CLI and ledger server

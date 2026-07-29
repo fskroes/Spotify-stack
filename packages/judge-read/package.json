@@ -1,0 +1,10 @@
+{
+  "name": "@fleet/judge-read",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The judge's read capability: one tool surface, one reader rooted at the run's workspace",
+  "type": "module",
+  "exports": {
+    ".": "./src/read.js"
+  }
+}
