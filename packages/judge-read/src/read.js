@@ -13,7 +13,7 @@
  * Plain JS with no build step, like `@fleet/mcp-verify`: this is imported by
  * TypeScript (`@fleet/judge`) and executed by node (the MCP server).
  */
-import { createReadStream, realpathSync } from "node:fs";
+import { createReadStream, readFileSync, realpathSync } from "node:fs";
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -165,6 +165,81 @@ export const JUDGE_READ_WORKSPACE_ENV = "JUDGE_READ_WORKSPACE";
 export const JUDGE_READ_MARKER_ENV = "JUDGE_READ_MARKER";
 
 /**
+ * The environment variable naming the file the MCP server records served reads
+ * in — each served path written as {@link JUDGE_READ_JOURNAL_SEPARATOR}-
+ * terminated text, appended as the read is served.
+ *
+ * A file, because this transport's reader lives in a subprocess the runner
+ * cannot see into. The SDK transport needs none of this: it calls the reader
+ * in-process and collects the same paths off the same {@link ReadResult}s. What
+ * both produce is identical, and it has to be — a verdict's account of what was
+ * read must not depend on which transport billed it (ADR-0011).
+ *
+ * Carried in the same env block as the root and the marker, and read once at
+ * launch, for the reason they are.
+ */
+export const JUDGE_READ_JOURNAL_ENV = "JUDGE_READ_JOURNAL";
+
+/**
+ * What separates one recorded path from the next: a null byte.
+ *
+ * **Not a newline, and this is load-bearing.** A POSIX filename may contain any
+ * byte but `/` and NUL — a newline included — so a newline-delimited journal
+ * turns a directory named `"a\n"` into two records, `a` and `/b`, the second of
+ * which is an *absolute* path that was never read. That would make
+ * workspace-relativity a property of the file format on this transport, when
+ * the whole point is that it is a property of the containment check (cage spec
+ * §7.1, rule 3). NUL is the one byte a path cannot carry, so the round trip
+ * cannot invent a record or split a real one.
+ */
+export const JUDGE_READ_JOURNAL_SEPARATOR = "\0";
+
+/**
+ * The paths a read server recorded, in the order it first served each — or
+ * `undefined` when the journal could not be read at all.
+ *
+ * The distinction is the one the whole field turns on. An empty journal is a
+ * *claim*: this judge held the read tools and opened nothing, which is safe to
+ * say only because the server truncates the journal at startup and the runner
+ * separately proves the server started (the marker, cage spec §6). A journal
+ * that has gone missing or unreadable establishes nothing — and answering `[]`
+ * for it would put that claim on a verdict that never earned it, which is the
+ * absent-rendered-as-empty trap this field is written to avoid.
+ *
+ * @param {string} journalPath
+ * @returns {string[] | undefined}
+ */
+export function judgeReadJournalPaths(journalPath) {
+  let raw;
+  try {
+    raw = readFileSync(journalPath, "utf8");
+  } catch {
+    return undefined;
+  }
+  // Terminated, not separated: the trailing empty segment after the final
+  // record is dropped along with any other empty one, and a path is never
+  // trimmed — leading and trailing whitespace is as much a part of a filename
+  // as any other character.
+  return distinctReadPaths(raw.split(JUDGE_READ_JOURNAL_SEPARATOR).filter((entry) => entry !== ""));
+}
+
+/**
+ * One entry per file, in first-read order.
+ *
+ * Both transports collect through here, because both hit the same repeat: the
+ * reader's own truncation notice tells a judge to read on at the next offset,
+ * so paging one large file is several calls on one path. What a reviewer weighs
+ * at co-sign is which files the verdict rests on, not how many requests it took
+ * to see them.
+ *
+ * @param {string[]} paths
+ * @returns {string[]}
+ */
+export function distinctReadPaths(paths) {
+  return [...new Set(paths)];
+}
+
+/**
  * How the read server is started — command, arguments, environment — declared
  * once, here.
  *
@@ -181,19 +256,25 @@ export const JUDGE_READ_MARKER_ENV = "JUDGE_READ_MARKER";
  * and whatever `node` resolves to on their PATH is not necessarily the runtime
  * running the fleet.
  *
- * Both arguments are required. A launch missing its root is a judge reading
- * somewhere nobody chose; a launch missing its marker is a judge whose reads
- * cannot be proven to have been possible — and an optional field a caller
- * forgets is how both of those arrive quietly.
+ * All three arguments are required. A launch missing its root is a judge
+ * reading somewhere nobody chose; a launch missing its marker is a judge whose
+ * reads cannot be proven to have been possible; a launch missing its journal is
+ * a judge whose reads are served and then not accounted for, which puts a
+ * verdict on the record with no way to tell what it rests on. An optional field
+ * a caller forgets is how all three arrive quietly.
  *
- * @param {{ workspace: string, markerPath: string }} where
+ * @param {{ workspace: string, markerPath: string, journalPath: string }} where
  * @returns {{ command: string, args: string[], env: Record<string, string> }}
  */
-export function judgeReadServerLaunch({ workspace, markerPath }) {
+export function judgeReadServerLaunch({ workspace, markerPath, journalPath }) {
   return {
     command: process.execPath,
     args: [fileURLToPath(new URL("./server.js", import.meta.url))],
-    env: { [JUDGE_READ_WORKSPACE_ENV]: workspace, [JUDGE_READ_MARKER_ENV]: markerPath },
+    env: {
+      [JUDGE_READ_WORKSPACE_ENV]: workspace,
+      [JUDGE_READ_MARKER_ENV]: markerPath,
+      [JUDGE_READ_JOURNAL_ENV]: journalPath,
+    },
   };
 }
 
@@ -201,9 +282,20 @@ export function judgeReadServerLaunch({ workspace, markerPath }) {
  * A tool's answer, in the shape both transports carry: MCP returns it as a
  * text content block with `isError`, and the SDK loop as a `tool_result`.
  *
+ * `path` is the exception — it never reaches the judge. It is what the runner
+ * records about the read it just served (cage spec §7.1), and it is produced
+ * here because here is the only place that knows what was actually opened: the
+ * resolved target, relative to the root it was proven to be inside. A path
+ * taken from the judge's own input instead could be absolute, could point
+ * through a symlink at something else, and could be a claim about a read that
+ * never happened.
+ *
  * @typedef {object} ReadResult
  * @property {string} text
  * @property {boolean} isError
+ * @property {string} [path]  Workspace-relative path of the file this call
+ *   served. Absent on a refusal (nothing was served) and on a search (nothing
+ *   was opened).
  */
 
 /**
@@ -268,8 +360,12 @@ export function createRootedReader(workspace, limits = {}) {
  * @returns {Promise<ReadResult>}
  */
 async function readFileTool(ctx, input) {
-  const target = await resolveInsideRoot(ctx.root, input.path);
-  if (typeof target !== "string") return target;
+  const resolved = await resolveInsideRoot(ctx.root, input.path);
+  if (!("target" in resolved)) return resolved;
+  const { target, served } = resolved;
+  // What the judge asked for, echoed in its own words: a message about
+  // `src/../src/index.ts` that answers about `src/index.ts` reads as an answer
+  // to a different question. The *recorded* path is `served`, which is the file.
   const rel = String(input.path);
 
   const offset = positiveInteger(input.offset, 1);
@@ -287,7 +383,11 @@ async function readFileTool(ctx, input) {
   }
 
   try {
-    return renderWindow(await readWindow(target, { offset, limit, maxBytes: ctx.maxBytes }), rel, offset);
+    const result = renderWindow(await readWindow(target, { offset, limit, maxBytes: ctx.maxBytes }), rel, offset);
+    // Only what was served. A window that came back as a refusal — a binary
+    // file, an offset past the end — disclosed nothing, and recording it would
+    // put a file on the verdict that the judge never saw a line of.
+    return result.isError ? result : { ...result, path: served };
   } catch {
     // Unreadable for a reason `stat` could not see: a permission the runner
     // does not hold, or a file that changed under the read.
@@ -522,9 +622,18 @@ function globToRegExp(glob) {
  * into a rationale, and a rationale is archived and shown to a human at
  * co-sign — a private target's directory layout does not belong there.
  *
+ * The containment test also produces the recorded path, and that is not a
+ * coincidence worth undoing: `inside` is `path.relative(root, resolved)` for a
+ * target this function has just proven is under the root, so it cannot be
+ * absolute and cannot begin with `..` — the two ways a recorded path could say
+ * something about a private target's directory layout. Deriving it anywhere
+ * else would make that a convention instead of a consequence.
+ *
  * @param {string} root
  * @param {unknown} rel
- * @returns {Promise<string | ReadResult>}
+ * @returns {Promise<{ target: string, served: string } | ReadResult>}
+ *   The absolute path to open and the workspace-relative path to record, or the
+ *   refusal to hand back to the judge.
  */
 async function resolveInsideRoot(root, rel) {
   const unusable = refuseUnusableInput("path", rel);
@@ -547,7 +656,9 @@ async function resolveInsideRoot(root, rel) {
         "Every path this tool reads is relative to the workspace under review.",
     );
   }
-  return resolved;
+  // `/`-separated, like the paths `find` lists: one spelling on the record,
+  // whichever platform produced it.
+  return { target: resolved, served: inside.split(path.sep).join("/") };
 }
 
 /**

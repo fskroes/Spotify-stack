@@ -121,9 +121,16 @@ codebase keeping two hand-maintained copies in lockstep, which is the state
 that decays. The second invariant, the root check, was asserted with the reader
 itself (#103).
 
-**The fork is closed by construction, and still not by evidence on a given
-run.** Both transports reach the workspace only through the rooted tool and
-hold nothing else, and that is now held to a test rather than to the reading of
-two files — but no verdict records what was read or which capability produced
-it (#109), so a verdict's *name* still cannot distinguish the two reviewers
-after the fact.
+**The fork is closed by construction, and now also on the record of a given
+run** (#109). Both transports reach the workspace only through the rooted tool
+and hold nothing else, which is held to a test rather than to the reading of two
+files — and a verdict now carries the paths the runner served it and the
+`{model, capability}` pair that produced it, so a reviewer at co-sign can tell
+a grounded veto from a confident invention, and can tell two reviewers on one
+model apart. The paths are the runner's observation and are absent from the
+schema the model fills in; `text-only` stays in the vocabulary for the verdicts
+that were genuinely produced that way.
+
+**What remains irreproducible is what this decision said would be.** The paths
+are recorded, the bytes are not, and for a `--local` run no commit reconstructs
+what was read.

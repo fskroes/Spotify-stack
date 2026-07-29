@@ -69,11 +69,14 @@ const HANDSHAKE_TIMEOUT_MS = 20_000;
  * against a server assembled locally would prove something about a process the
  * judge never runs.
  *
- * The one thing it deliberately does *not* share is the marker path. This
- * handshake writes to a throwaway of its own, because a handshake that wrote
- * the judge's marker would pre-satisfy the check that exists to catch a judge
- * whose server never started — the two checks would collapse into one, and the
- * gap the marker exists to close would reopen silently.
+ * The one thing it deliberately does *not* share is where the server writes.
+ * This handshake gets a throwaway marker and a throwaway journal of its own,
+ * because a handshake that wrote the judge's marker would pre-satisfy the check
+ * that exists to catch a judge whose server never started — the two checks
+ * would collapse into one, and the gap the marker exists to close would reopen
+ * silently. The journal follows for the same reason and one worse: the judge's
+ * would then be emptied by a process that is not the judge's, at a moment
+ * nothing coordinates with the run.
  *
  * @param opts.log  Where the server's own stderr goes when the handshake fails.
  *   The console, never the record: a crashing server reports paths, and the
@@ -82,7 +85,11 @@ const HANDSHAKE_TIMEOUT_MS = 20_000;
 export async function preflightJudgeRead(opts: { workspace: string; log?: (line: string) => void }): Promise<void> {
   const scratch = mkdtempSync(path.join(os.tmpdir(), "judge-read-preflight-"));
   try {
-    const launch = judgeReadServerLaunch({ workspace: opts.workspace, markerPath: path.join(scratch, "startup.json") });
+    const launch = judgeReadServerLaunch({
+      workspace: opts.workspace,
+      markerPath: path.join(scratch, "startup.json"),
+      journalPath: path.join(scratch, "reads.txt"),
+    });
     const transport = new StdioClientTransport({ ...launch, stderr: "pipe" });
     // Attached before connect: the transport hands back a stream immediately so
     // that a server which dies during startup — the case worth diagnosing — does

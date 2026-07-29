@@ -2,7 +2,13 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { JUDGE_READ_MARKER_ENV, JUDGE_READ_TOOLS, JUDGE_READ_WORKSPACE_ENV, judgeReadServerLaunch } from "@fleet/judge-read";
+import {
+  JUDGE_READ_JOURNAL_ENV,
+  JUDGE_READ_MARKER_ENV,
+  JUDGE_READ_TOOLS,
+  JUDGE_READ_WORKSPACE_ENV,
+  judgeReadServerLaunch,
+} from "@fleet/judge-read";
 import { assertJudgeReadStartupMarker, assertJudgeReadSurface, preflightJudgeRead } from "../src/judge-read-check.js";
 
 /**
@@ -21,11 +27,13 @@ import { assertJudgeReadStartupMarker, assertJudgeReadSurface, preflightJudgeRea
 let tmp: string;
 let workspace: string;
 let markerPath: string;
+let journalPath: string;
 
 beforeEach(() => {
   tmp = mkdtempSync(path.join(os.tmpdir(), "judge-read-check-"));
   workspace = path.join(tmp, "ws");
   markerPath = path.join(tmp, "judge-read-startup.0.json");
+  journalPath = path.join(tmp, "judge-read-paths.0.txt");
   mkdirSync(workspace);
   writeFileSync(path.join(workspace, "app.js"), "export const answer = 42;\n");
 });
@@ -162,12 +170,13 @@ describe("what the judge and the handshake are launched with", () => {
   it("is one declaration, so the handshake clears the server the judge will get", () => {
     // A handshake against a differently-configured server would prove something
     // about a process the judge never runs. Both callers take this object whole.
-    const launch = judgeReadServerLaunch({ workspace, markerPath });
+    const launch = judgeReadServerLaunch({ workspace, markerPath, journalPath });
 
     expect(launch.command).toBe(process.execPath);
     expect(launch.args).toHaveLength(1);
     expect(launch.args[0].endsWith(path.join("judge-read", "src", "server.js"))).toBe(true);
     expect(launch.env[JUDGE_READ_WORKSPACE_ENV]).toBe(workspace);
     expect(launch.env[JUDGE_READ_MARKER_ENV]).toBe(markerPath);
+    expect(launch.env[JUDGE_READ_JOURNAL_ENV]).toBe(journalPath);
   });
 });

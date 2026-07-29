@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { sanitizeCliEnvelopeUsage } from "@fleet/contract";
-import { buildUserPrompt, extractCliResult, judge, type JudgeClient } from "../src/index.js";
+import { buildUserPrompt, extractCliResult, judge, judgeWithEvidence, VerdictSchema, type JudgeClient } from "../src/index.js";
 
 /**
  * Every judgement is rooted at a workspace (ADR-0011) — a real directory even
@@ -98,6 +98,32 @@ describe("judge", () => {
     await expect(
       judge({ taskMarkdown: TASK, diff: "d", verifySummary: "v", workspace: WORKSPACE, client }),
     ).rejects.toThrow(/unparseable verdict/);
+  });
+
+  it("asks the model for its answer and for nothing the runner observes", async () => {
+    // The schema is what the *model* fills in, and what a model fills in it can
+    // invent. Recording reads exists to let a reviewer tell a grounded veto
+    // from a confident invention, so a judge that reported its own reads would
+    // defeat the field by supplying it (cage spec §7.1, rule 1) — and adding
+    // `readPaths` here is how that arrives, one well-meant edit at a time.
+    expect(Object.keys(VerdictSchema.shape).sort()).toEqual(["guidance", "rationale", "verdict", "violations"]);
+  });
+
+  it("drops read paths a model volunteers, rather than recording them as observed", async () => {
+    const { client } = mockClient({
+      verdict: "approve",
+      violations: [],
+      guidance: "",
+      rationale: "checked everything",
+      readPaths: ["src/never-opened.ts"],
+    });
+
+    const result = await judgeWithEvidence({ taskMarkdown: TASK, diff: "d", verifySummary: "v", workspace: WORKSPACE, client });
+
+    expect((result.verdict as Record<string, unknown>).readPaths).toBeUndefined();
+    // And the judgement's own account stays what the client observed, which for
+    // this reader-less mock is nothing at all.
+    expect(result.readPaths).toBeUndefined();
   });
 });
 

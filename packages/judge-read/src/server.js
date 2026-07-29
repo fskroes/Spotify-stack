@@ -18,17 +18,20 @@
  * One process is one judge invocation, so the reader's call budget is spent
  * over the whole review rather than per tool call.
  *
- * It leaves one trace of itself on purpose: a marker file, written the moment
- * the root resolves. Nothing about serving reads needs it. The runner does —
- * it is the only evidence that this process ran, and without it a judge whose
- * server never launched is indistinguishable from one whose diff needed no
- * reads (ADR-0011).
+ * It leaves two traces of itself on purpose, and neither is for the judge. A
+ * marker file, written the moment the root resolves: the only evidence that
+ * this process ran, without which a judge whose server never launched is
+ * indistinguishable from one whose diff needed no reads (ADR-0011). And a
+ * journal of the paths it served, because this transport's reader lives out
+ * here in a subprocess where the runner cannot see the calls — that record is
+ * what lets a human at co-sign tell a grounded veto from a confident invention
+ * (cage spec §7.1).
  */
-import { writeFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { JUDGE_READ_MARKER_ENV, JUDGE_READ_SERVER_NAME, JUDGE_READ_TOOLS, JUDGE_READ_WORKSPACE_ENV, createRootedReader } from "./read.js";
+import { JUDGE_READ_JOURNAL_ENV, JUDGE_READ_JOURNAL_SEPARATOR, JUDGE_READ_MARKER_ENV, JUDGE_READ_SERVER_NAME, JUDGE_READ_TOOLS, JUDGE_READ_WORKSPACE_ENV, createRootedReader } from "./read.js";
 
 const SERVER_VERSION = "0.1.0";
 
@@ -59,6 +62,19 @@ if (!markerPath) {
   process.exit(1);
 }
 
+const journalPath = process.env[JUDGE_READ_JOURNAL_ENV];
+if (!journalPath) {
+  // Required, exactly as the marker is, and for the next step of the same
+  // argument. A verdict whose reads went unrecorded is one nobody can weigh at
+  // co-sign: it reads as a judge that opened nothing, which is a claim this
+  // server would be making on behalf of a session it never accounted for.
+  process.stderr.write(
+    `${JUDGE_READ_JOURNAL_ENV} is not set: the judge's read server records every path it serves so the ` +
+      "verdict can say what it rests on, and will not serve reads it cannot account for.\n",
+  );
+  process.exit(1);
+}
+
 // Throws — and so exits non-zero, before any client connects — when the
 // workspace does not exist. The runner's pre-flight handshake is what turns
 // that into a failed run rather than a silently text-only review.
@@ -83,6 +99,18 @@ try {
   process.exit(1);
 }
 
+// Emptied here rather than appended to as found. An empty journal is read as
+// "this judge opened nothing" (cage spec §7.1), and inheriting whatever was at
+// this path would attribute another session's reads to this verdict — the same
+// class of untruth as recording reads that never happened, arriving by way of a
+// file nobody cleaned up.
+try {
+  writeFileSync(journalPath, "");
+} catch (error) {
+  process.stderr.write(`the judge's read server could not open its read journal: ${(error instanceof Error ? error.message : String(error))}\n`);
+  process.exit(1);
+}
+
 /**
  * The low-level server, deliberately, rather than the high-level one: the
  * high-level `registerTool` takes its input schema as a Zod shape, which would
@@ -101,8 +129,42 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // Dispatch by name into the reader, which owns the "no such tool" answer
   // too — a name check here would be a second opinion about what the surface
   // contains, and two opinions are how the surface stops being one.
-  const result = await read(request.params.name, request.params.arguments ?? {});
-  return { content: [{ type: "text", text: result.text }], isError: result.isError };
+  const served = await record(await read(request.params.name, request.params.arguments ?? {}));
+  return { content: [{ type: "text", text: served.text }], isError: served.isError };
 });
+
+/**
+ * Write a served read into the journal, and withhold it if that fails.
+ *
+ * Recorded before it is served, and a read that cannot be recorded is not
+ * served at all. The alternative is handing the judge a file and telling the
+ * runner nothing about it, which is the one direction this record must not be
+ * wrong in: a verdict resting on a file no reviewer can see it opened. The path
+ * written is the reader's own, never the caller's — see ReadResult.
+ *
+ * The refusal names no path and carries no `errno` message, though this is the
+ * one branch where the failure detail would be useful. It is prose the judge
+ * may quote into a rationale, and a rationale is archived and shown to a human
+ * at co-sign — the same rule every refusal in `read.js` is written to. The
+ * detail goes to stderr, which the runner logs and the record never sees.
+ *
+ * @param {import("./read.js").ReadResult} result
+ * @returns {Promise<import("./read.js").ReadResult>}
+ */
+async function record(result) {
+  if (result.path === undefined) return result;
+  try {
+    appendFileSync(journalPath, `${result.path}${JUDGE_READ_JOURNAL_SEPARATOR}`);
+    return result;
+  } catch (error) {
+    process.stderr.write(`the judge's read server could not record a served read: ${error instanceof Error ? error.message : String(error)}\n`);
+    return {
+      text:
+        "this read was refused because it could not be recorded, and a read the verdict cannot account " +
+        "for is not served. Decide on what you have already read.",
+      isError: true,
+    };
+  }
+}
 
 await server.connect(new StdioServerTransport());

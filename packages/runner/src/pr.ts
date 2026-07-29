@@ -37,7 +37,15 @@ export interface PrBodyInput {
   verdict: Verdict;
   /** Veto verdicts absorbed before the final approval, in order. */
   vetoes: Verdict[];
+  /** Composed prose — model *and* capability, e.g. `claude-opus-4-8 +
+   *  rooted-read`. A model name alone cannot tell two reviewers with different
+   *  powers apart, which is what ADR-0011 exists to end. */
   judgeName: string;
+  /** Workspace-relative paths the runner served the judge while it reviewed —
+   *  observed by the runner, never reported by the model. Absent and empty are
+   *  different claims and render differently below; `VerdictEvidence` in
+   *  `@fleet/contract` is where that distinction is stated. */
+  readPaths?: string[];
   record: FleetRecord;
   /** Commit sha for the revert instruction; dry-run preview omits it. */
   sha?: string;
@@ -128,6 +136,24 @@ export function buildPrBody(input: PrBodyInput): string {
         ]
       : [];
 
+  // What the judge actually opened, so a reviewer can tell a veto grounded in
+  // the source from a confident invention — and, on an approve, how much of the
+  // repository the reviewer that cleared this change had actually seen.
+  //
+  // The three cases are three different states of knowledge, and only one of
+  // them is silence: a record that carries no paths says nothing about what was
+  // read, and this body must not fill that in.
+  const readSection =
+    input.readPaths === undefined
+      ? []
+      : input.readPaths.length === 0
+        ? [``, `Read no files in the workspace — this verdict rests on the task, the diff and the verification output alone.`]
+        : [
+            ``,
+            `Read ${input.readPaths.length} file${input.readPaths.length === 1 ? "" : "s"} in the workspace under review:`,
+            ...input.readPaths.map((p) => `- \`${p}\``),
+          ];
+
   // The banner's claim has to survive the verify state. "A verified change" is
   // only true when something verified it.
   const banner = !unverified
@@ -169,8 +195,12 @@ export function buildPrBody(input: PrBodyInput): string {
     `## Judgment`,
     ``,
     `${input.judgeName}: ${verdict.verdict === "approve" ? "approved" : "vetoed"} — ${verdict.rationale}`,
+    ...readSection,
     ...vetoTrail,
     ``,
+    // What the model returned, and only that. The paths above are the runner's
+    // observation and deliberately not folded in here, where a reader would
+    // take them for part of the judge's own answer.
     `<details><summary>Raw verdict JSON</summary>`,
     ``,
     "```json",

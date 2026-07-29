@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import picomatch from "picomatch";
-import { type RunStatus, type VerifyState } from "@fleet/contract";
+import { knownJudgeCapability, type JudgeIdentity, type RunStatus, type VerdictEvidence, type VerifyState } from "@fleet/contract";
 import { runVerify } from "@fleet/mcp-verify";
 import { createCliJudgeClient, createJudgeClient, judgeWithEvidence, type JudgeClient, type JudgeInput, type JudgeResult, type Verdict } from "@fleet/judge";
 import { prepareRunArtifactsDir, REVIEW_ARTIFACTS } from "./artifacts.js";
@@ -141,6 +141,10 @@ function makeJudge(
   const stub = (verdict: Verdict): JudgeResult => ({
     verdict,
     usage: unavailableProducerUsage("stub judge does not produce model usage evidence"),
+    // Named on the record, because a run judged by nothing must not be readable
+    // as a run judged by something. `readPaths` stays absent rather than empty:
+    // a stub had no reader, and empty would claim one that chose not to read.
+    judge: { model: `stub judge (${mode})`, capability: "stub" },
   });
   let calls = 0;
   return async (input) => {
@@ -182,7 +186,14 @@ function makeJudge(
         // already settled by the time control reaches this case.
         if (opts.judgeClient) return judgeWithEvidence({ ...input, client: opts.judgeClient });
         const markerPath = path.join(artifactsDir, `judge-read-startup.${calls}.json`);
-        const result = await judgeWithEvidence({ ...input, client: createCliJudgeClient({ workspace: input.workspace, markerPath }) });
+        // Per invocation, like the marker and for the same reason: a retry's
+        // verdict must say what *its* judge read, not what the attempt before
+        // it did.
+        const journalPath = path.join(artifactsDir, `judge-read-paths.${calls}.txt`);
+        const result = await judgeWithEvidence({
+          ...input,
+          client: createCliJudgeClient({ workspace: input.workspace, markerPath, journalPath }),
+        });
         // After the verdict, and fatal to it. A verdict reached without the
         // ability to read is not a cheaper verdict — it is the one this whole
         // cage exists to stop being recorded as a review (ADR-0011).
@@ -278,6 +289,41 @@ export function composedVerifyState(
   if (!result.verify) return undefined;
   if (result.verify.state === "failed") return "failed";
   return (result.unmetGates?.length ?? 0) > 0 ? "inconclusive" : result.verify.state;
+}
+
+/**
+ * The verdict as it is *recorded*: what the model returned, plus what the runner
+ * observed about the judge that returned it (cage spec §7.1).
+ *
+ * Two authors, one file, and the split matters. The verdict fields are the
+ * model's answer; `readPaths` and `judge` are the runner's account of the
+ * reviewer — which is why neither appears on the schema the model fills in. A
+ * judge asked to list its own reads can list files it never opened, and telling
+ * that apart from a grounded veto is the entire purpose of recording them.
+ *
+ * Absent stays absent: `JSON.stringify` drops an undefined field, so a judgement
+ * that observed nothing writes a record with no such key rather than one
+ * claiming a judge that read nothing.
+ */
+export function verdictRecord(verdict: Verdict, result: Pick<JudgeResult, "readPaths" | "judge">): string {
+  const evidence: VerdictEvidence = { readPaths: result.readPaths, judge: result.judge };
+  return JSON.stringify({ ...verdict, ...evidence }, null, 2);
+}
+
+/**
+ * The one line of prose the PR body names the reviewer with.
+ *
+ * Composed from the structured pair rather than replacing it: a human at
+ * co-sign reads a sentence, and a model name alone cannot tell two reviewers
+ * with different powers apart, which is the condition ADR-0011 ends. The pair
+ * is recorded beside this in `verdict.json`, for readers that are not people.
+ *
+ * A stub names no capability. "stub judge (approve) + stub" says the same thing
+ * twice, and the model half already says the only thing that matters about it.
+ */
+export function judgeLine(judge: JudgeIdentity | undefined): string {
+  if (!judge) return "an unrecorded judge";
+  return knownJudgeCapability(judge.capability) === "stub" ? judge.model : `${judge.model} + ${judge.capability}`;
 }
 
 /**
@@ -684,7 +730,10 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       retries += 1;
       vetoes.push(verdict);
       log(`· judge vetoed (attempt ${retries}/${maxRetries}) — resuming agent with guidance`);
-      artifact(`verdict.veto-${retries}.json`, JSON.stringify(verdict, null, 2));
+      // This veto's own evidence, not the run's: each attempt was a separate
+      // judgement with its own reads, and folding them together would credit
+      // one attempt's grounding to another's.
+      artifact(`verdict.veto-${retries}.json`, verdictRecord(verdict, judgeResult));
       // Back to the agent, on a later pass: stage alone cannot tell a second trip
       // through Agent from a run that never left it.
       inflight.enter("agent", retries + 1);
@@ -745,7 +794,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     }
 
     artifact("diff.patch", diff);
-    artifact("verdict.json", JSON.stringify(verdict, null, 2));
+    artifact("verdict.json", verdictRecord(verdict, judgeResult));
 
     if (verdict.verdict === "veto") {
       vetoes.push(verdict);
@@ -768,9 +817,12 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       verifySummary: verify.summary,
       verdict,
       vetoes,
-      judgeName: ["claude", "cli"].includes(opts.judgeMode ?? defaultJudgeMode())
-        ? "claude-opus-4-8"
-        : `stub judge (${opts.judgeMode})`,
+      // Both taken from the judgement that actually produced this verdict,
+      // rather than from the mode the run asked for. The mode says which
+      // transport was requested; these say what answered and what it opened —
+      // and an injected client is exactly the case where those differ.
+      judgeName: judgeLine(judgeResult.judge),
+      readPaths: judgeResult.readPaths,
       record: fleetRecord(readLedger(ledgerPath)),
       taskFileUrl:
         webUrl && !taskRelPath.startsWith("..") ? `${webUrl}/blob/main/${taskRelPath}` : undefined,

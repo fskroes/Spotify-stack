@@ -2,8 +2,15 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { JUDGE_READ_MARKER_ENV, JUDGE_READ_SERVER_NAME, JUDGE_READ_TOOLS, JUDGE_READ_WORKSPACE_ENV } from "@fleet/judge-read";
-import { createCliJudgeClient, judge } from "../src/index.js";
+import {
+  JUDGE_READ_JOURNAL_ENV,
+  JUDGE_READ_JOURNAL_SEPARATOR,
+  JUDGE_READ_MARKER_ENV,
+  JUDGE_READ_SERVER_NAME,
+  JUDGE_READ_TOOLS,
+  JUDGE_READ_WORKSPACE_ENV,
+} from "@fleet/judge-read";
+import { createCliJudgeClient, judge, judgeWithEvidence } from "../src/index.js";
 
 /**
  * What the CLI judge is actually launched with.
@@ -20,6 +27,7 @@ let argvFile: string;
 let cwdFile: string;
 let configCopy: string;
 let markerPath: string;
+let journalPath: string;
 let originalPath: string | undefined;
 
 const VERDICT = {
@@ -37,6 +45,7 @@ beforeEach(() => {
   cwdFile = path.join(tmp, "cwd");
   configCopy = path.join(tmp, "mcp-config.copy.json");
   markerPath = path.join(tmp, "judge-read-startup.json");
+  journalPath = path.join(tmp, "judge-read-paths.txt");
   mkdirSync(workspace);
   mkdirSync(bin);
 
@@ -76,7 +85,7 @@ async function invoke(): Promise<{ argv: string[]; cwd: string; config: Record<s
     diff: "diff",
     verifySummary: "VERIFY PASSED",
     workspace,
-    client: createCliJudgeClient({ workspace, markerPath }),
+    client: createCliJudgeClient({ workspace, markerPath, journalPath }),
   });
   expect(verdict.verdict).toBe("approve");
   const argv = readFileSync(argvFile, "utf8").split("\0").slice(0, -1);
@@ -125,6 +134,15 @@ describe("the CLI judge's cage", () => {
     expect(config.mcpServers[JUDGE_READ_SERVER_NAME].env[JUDGE_READ_MARKER_ENV]).toBe(markerPath);
   });
 
+  it("tells the read server where to record the paths it serves", async () => {
+    // The subprocess is the reason this is a file: the runner cannot see the
+    // calls the judge makes inside it, and a verdict nobody can weigh is what
+    // recording paths exists to prevent (cage spec §7.1).
+    const { config } = await invoke();
+
+    expect(config.mcpServers[JUDGE_READ_SERVER_NAME].env[JUDGE_READ_JOURNAL_ENV]).toBe(journalPath);
+  });
+
   it("keeps strict MCP config, which is what now holds the cage shut", async () => {
     // Decoration while no config was passed; the moment one is, it is what
     // keeps every other MCP server on the operator's machine out.
@@ -168,6 +186,61 @@ describe("the CLI judge's cage", () => {
     expect(existsSync(valuesOf(argv, "--mcp-config")[0])).toBe(false);
   });
 
+  it("reports the paths its read server recorded, not the ones the model claims", async () => {
+    // The fake `claude` never speaks MCP, so the journal here is written the
+    // way a real server writes it and read the way the client reads it — which
+    // is the seam under test. What the verdict text says it read is irrelevant
+    // by construction: nothing in this path consults it.
+    const served = ["src/app.js", "package.json", "src/app.js"];
+    writeFileSync(journalPath, served.map((p) => `${p}${JUDGE_READ_JOURNAL_SEPARATOR}`).join(""));
+
+    const result = await judgeWithEvidence({
+      taskMarkdown: "task",
+      diff: "diff",
+      verifySummary: "VERIFY PASSED",
+      workspace,
+      client: createCliJudgeClient({ workspace, markerPath, journalPath }),
+    });
+
+    // One entry per file: paging a large file is several calls on one path, and
+    // a reviewer at co-sign weighs files.
+    expect(result.readPaths).toEqual(["src/app.js", "package.json"]);
+    expect(result.judge).toEqual({ model: "claude-opus-4-8", capability: "rooted-read" });
+  });
+
+  it("says the judge read nothing when its server recorded nothing", async () => {
+    // What a started server leaves behind when the judge never calls a tool: it
+    // empties the journal at startup and appends nothing. Empty is a claim —
+    // this judge held the read tools and opened no file — and it is only safe
+    // to make because the runner separately proves the server started.
+    writeFileSync(journalPath, "");
+
+    const result = await judgeWithEvidence({
+      taskMarkdown: "task",
+      diff: "diff",
+      verifySummary: "VERIFY PASSED",
+      workspace,
+      client: createCliJudgeClient({ workspace, markerPath, journalPath }),
+    });
+
+    expect(result.readPaths).toEqual([]);
+  });
+
+  it("claims nothing about reads when the journal is not there to be read", async () => {
+    // The other half of that distinction, and the one a `[]` fallback would
+    // quietly destroy: no journal establishes neither that the judge read
+    // something nor that it read nothing, so the record says neither.
+    const result = await judgeWithEvidence({
+      taskMarkdown: "task",
+      diff: "diff",
+      verifySummary: "VERIFY PASSED",
+      workspace,
+      client: createCliJudgeClient({ workspace, markerPath, journalPath }),
+    });
+
+    expect(result.readPaths).toBeUndefined();
+  });
+
   it("refuses to review one workspace through a client rooted at another", async () => {
     // The required field on JudgeInput proves a caller supplied a string. This
     // is what makes it mean the directory the judge actually reads: otherwise a
@@ -178,7 +251,7 @@ describe("the CLI judge's cage", () => {
         diff: "diff",
         verifySummary: "VERIFY PASSED",
         workspace: path.join(tmp, "some-other-workspace"),
-        client: createCliJudgeClient({ workspace, markerPath }),
+        client: createCliJudgeClient({ workspace, markerPath, journalPath }),
       }),
     ).rejects.toThrow(/rooted at a different directory/);
   });

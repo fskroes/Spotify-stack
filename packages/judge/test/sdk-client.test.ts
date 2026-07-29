@@ -159,6 +159,80 @@ describe("the SDK judge's tool loop", () => {
     expect(verdict.verdict).toBe("veto");
   });
 
+  it("reports the paths its reader served, not the ones the verdict claims", async () => {
+    // The verdict below names a file the judge never opened. It is recorded as
+    // having read the two it did — the point of the whole field: a reviewer at
+    // co-sign has to be able to tell a veto grounded in the source from a
+    // confident invention, and a judge's own account of its reads is exactly
+    // the account it can invent (cage spec §7.1).
+    mkdirSync(path.join(workspace, "build"), { recursive: true });
+    writeFileSync(path.join(workspace, "build", "manifest.json"), '{"entries":["alpha"]}\n');
+    const anthropic = scripted([
+      {
+        ...toolUseTurn("tu_1", "find", { glob: "build/*.json" }),
+        content: [
+          { type: "tool_use", id: "tu_1", name: "find", input: { glob: "build/*.json" } },
+          { type: "tool_use", id: "tu_2", name: "read_file", input: { path: "build/manifest.json" } },
+        ],
+      },
+      // Reading on where the first window stopped: one more call, still one file.
+      toolUseTurn("tu_3", "read_file", { path: "./src/../src/index.js" }),
+      toolUseTurn("tu_4", "read_file", { path: "src/index.js", offset: 2 }),
+      verdictTurn({ ...VERDICT, rationale: "read every file in the repository, including src/gone.js" }),
+    ]);
+
+    const result = await judgeWithEvidence({
+      taskMarkdown: "task",
+      diff: "diff",
+      verifySummary: "VERIFY PASSED",
+      workspace,
+      client: createJudgeClient({ workspace, ...anthropic }),
+    });
+
+    expect(result.readPaths).toEqual(["build/manifest.json", "src/index.js"]);
+    // A search opens nothing, so it appears nowhere: `find` told the judge a
+    // file exists, and the paths say which files it then looked inside.
+    expect(result.readPaths).not.toContain("build");
+    expect(result.judge).toEqual({ model: "claude-opus-4-8", capability: "rooted-read" });
+  });
+
+  it("says the judge read nothing when it read nothing", async () => {
+    const anthropic = scripted([verdictTurn()]);
+
+    const result = await judgeWithEvidence({
+      taskMarkdown: "task",
+      diff: "diff",
+      verifySummary: "VERIFY PASSED",
+      workspace,
+      client: createJudgeClient({ workspace, ...anthropic }),
+    });
+
+    // Empty, not absent. This judge held the read tools and chose not to use
+    // them, which is a different fact from a verdict that recorded nothing —
+    // and the run's record has to keep them apart (ADR-0011).
+    expect(result.readPaths).toEqual([]);
+  });
+
+  it("records a refused read as nothing read, because nothing was served", async () => {
+    writeFileSync(path.join(tmp, "secret.txt"), "a private target's business\n");
+    const anthropic = scripted([
+      toolUseTurn("tu_1", "read_file", { path: "../secret.txt" }),
+      verdictTurn(),
+    ]);
+
+    const result = await judgeWithEvidence({
+      taskMarkdown: "task",
+      diff: "diff",
+      verifySummary: "VERIFY PASSED",
+      workspace,
+      client: createJudgeClient({ workspace, ...anthropic }),
+    });
+
+    // Nothing left the workspace, so nothing about a path outside it reaches a
+    // record that ends up in a pull-request body.
+    expect(result.readPaths).toEqual([]);
+  });
+
   it("hands the read tools' answer back in one user message, and carries the assistant turn with it", async () => {
     const anthropic = scripted([
       {

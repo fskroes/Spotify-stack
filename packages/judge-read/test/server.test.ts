@@ -6,7 +6,14 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { JUDGE_READ_MARKER_ENV, JUDGE_READ_SERVER_NAME, JUDGE_READ_TOOLS, JUDGE_READ_WORKSPACE_ENV } from "../src/read.js";
+import {
+  JUDGE_READ_JOURNAL_ENV,
+  JUDGE_READ_MARKER_ENV,
+  JUDGE_READ_SERVER_NAME,
+  JUDGE_READ_TOOLS,
+  JUDGE_READ_WORKSPACE_ENV,
+  judgeReadJournalPaths,
+} from "../src/read.js";
 
 /**
  * The MCP transport, exercised over an actual stdio connection rather than by
@@ -21,6 +28,7 @@ let workspace: string;
 let elsewhere: string;
 let outside: string;
 let markerPath: string;
+let journalPath: string;
 
 beforeEach(() => {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "judge-read-server-"));
@@ -28,6 +36,7 @@ beforeEach(() => {
   elsewhere = path.join(tmp, "elsewhere");
   outside = path.join(tmp, "secret.txt");
   markerPath = path.join(tmp, "startup.json");
+  journalPath = path.join(tmp, "reads.txt");
   mkdirSync(path.join(workspace, "src"), { recursive: true });
   mkdirSync(elsewhere, { recursive: true });
   writeFileSync(path.join(workspace, "src", "app.js"), "export const answer = 42;\n");
@@ -52,7 +61,12 @@ async function withServer<T>(
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
-    env: { [JUDGE_READ_WORKSPACE_ENV]: workspace, [JUDGE_READ_MARKER_ENV]: markerPath, ...opts.env },
+    env: {
+      [JUDGE_READ_WORKSPACE_ENV]: workspace,
+      [JUDGE_READ_MARKER_ENV]: markerPath,
+      [JUDGE_READ_JOURNAL_ENV]: journalPath,
+      ...opts.env,
+    },
     cwd: opts.cwd ?? elsewhere,
   });
   const client = new Client({ name: "judge-read-test", version: "0.1.0" });
@@ -174,6 +188,55 @@ describe("the read server's startup marker", () => {
   });
 });
 
+describe("the read server's record of what it served", () => {
+  /** The journal as the runner reads it back. */
+  const journalled = () => judgeReadJournalPaths(journalPath);
+
+  it("records the workspace-relative path of every file it opened", async () => {
+    await withServer(async (client) => {
+      await client.callTool({ name: JUDGE_READ_TOOLS[0].name, arguments: { path: "src/app.js" } });
+      await client.callTool({ name: JUDGE_READ_TOOLS[0].name, arguments: { path: "package.json" } });
+    });
+
+    // The runner's account of what it handed over, written by the runner's own
+    // server — not the judge's account of what it opened, which is the account
+    // a judge can invent (cage spec §7.1).
+    expect(journalled()).toEqual(["src/app.js", "package.json"]);
+  });
+
+  it("records nothing for a search or for a read it refused", async () => {
+    await withServer(async (client) => {
+      await client.callTool({ name: JUDGE_READ_TOOLS[1].name, arguments: { glob: "**/*.js" } });
+      await client.callTool({ name: JUDGE_READ_TOOLS[0].name, arguments: { path: "../secret.txt" } });
+      await client.callTool({ name: JUDGE_READ_TOOLS[0].name, arguments: { path: "nope.js" } });
+    });
+
+    expect(journalled()).toEqual([]);
+    // And nothing outside the workspace reached the record by way of a refusal.
+    expect(readFileSync(journalPath, "utf8")).not.toContain("secret");
+  });
+
+  it("leaves an empty record for a session that read nothing", async () => {
+    await withServer(async (client) => client.listTools());
+
+    // Read nothing, and said so. That this is distinguishable from a judge
+    // whose server never launched is the marker's job, not this file's — but it
+    // is why the empty file can be read as a claim at all.
+    expect(existsSync(journalPath)).toBe(true);
+    expect(journalled()).toEqual([]);
+  });
+
+  it("starts from nothing, so a previous run's reads are never a later verdict's", async () => {
+    writeFileSync(journalPath, "src/leftover.js\n");
+
+    await withServer(async (client) => {
+      await client.callTool({ name: JUDGE_READ_TOOLS[0].name, arguments: { path: "src/app.js" } });
+    });
+
+    expect(journalled()).toEqual(["src/app.js"]);
+  });
+});
+
 describe("the read server without its environment", () => {
   /** Start the server with exactly `env` and return what it wrote to stderr. */
   const startWith = (env: Record<string, string>): string => {
@@ -195,19 +258,38 @@ describe("the read server without its environment", () => {
     // A default — cwd, or the control repo — is the ADR-0011 failure in
     // miniature: a reviewer reading somewhere the runner never chose, under a
     // name that says it read the workspace under review.
-    expect(startWith({ [JUDGE_READ_MARKER_ENV]: markerPath })).toMatch(JUDGE_READ_WORKSPACE_ENV);
+    expect(startWith({ [JUDGE_READ_MARKER_ENV]: markerPath, [JUDGE_READ_JOURNAL_ENV]: journalPath })).toMatch(
+      JUDGE_READ_WORKSPACE_ENV,
+    );
   });
 
   it("exits rather than serving reads it cannot be proven to have served", () => {
     // Unattested is not a lesser state of the same thing: a server that runs
     // without leaving the marker produces a verdict the runner cannot tell from
     // one whose server never launched, which is the record ADR-0011 refuses.
-    expect(startWith({ [JUDGE_READ_WORKSPACE_ENV]: workspace })).toMatch(JUDGE_READ_MARKER_ENV);
+    expect(startWith({ [JUDGE_READ_WORKSPACE_ENV]: workspace, [JUDGE_READ_JOURNAL_ENV]: journalPath })).toMatch(
+      JUDGE_READ_MARKER_ENV,
+    );
+    expect(existsSync(markerPath)).toBe(false);
+  });
+
+  it("exits rather than serving reads it cannot account for", () => {
+    // The same argument as the marker's, one step along: a server that served
+    // reads without recording them would put a verdict on the record with no
+    // way to tell a grounded veto from an invented one — and it would look
+    // exactly like a judge that read nothing.
+    expect(startWith({ [JUDGE_READ_WORKSPACE_ENV]: workspace, [JUDGE_READ_MARKER_ENV]: markerPath })).toMatch(
+      JUDGE_READ_JOURNAL_ENV,
+    );
     expect(existsSync(markerPath)).toBe(false);
   });
 
   it("exits when the workspace it was given does not exist", () => {
-    startWith({ [JUDGE_READ_WORKSPACE_ENV]: path.join(workspace, "gone"), [JUDGE_READ_MARKER_ENV]: markerPath });
+    startWith({
+      [JUDGE_READ_WORKSPACE_ENV]: path.join(workspace, "gone"),
+      [JUDGE_READ_MARKER_ENV]: markerPath,
+      [JUDGE_READ_JOURNAL_ENV]: journalPath,
+    });
 
     // And leaves no marker: the file attests that reads are servable, so a
     // server that resolved no root must not have written one on the way down.
