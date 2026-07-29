@@ -19,6 +19,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { readLedger } from "../src/ledger.js";
 import { run } from "../src/run.js";
 
 const CONTROL_REPO = path.resolve(__dirname, "..", "..", "..");
@@ -175,6 +176,54 @@ describe("a run whose judge could read and had no reason to", () => {
     const marker = path.join(result.artifactsDir, "judge-read-startup.1.json");
     expect(existsSync(marker)).toBe(true);
     expect(readFileSync(marker, "utf8")).toContain("judge");
+  });
+
+  it("records what the judge could reach and what it opened, on the verdict itself", async () => {
+    fakeClaude(true);
+
+    const result = await judgedRun();
+
+    const record = JSON.parse(readFileSync(path.join(result.artifactsDir, "verdict.json"), "utf8"));
+    // The pair, beside the verdict the model returned: a model name alone
+    // cannot tell two reviewers with different powers apart (ADR-0011).
+    expect(record.judge).toEqual({ model: "claude-opus-4-8", capability: "rooted-read" });
+    // Empty, because this judge's server came up and it opened nothing — the
+    // claim the whole marker mechanism exists to make safe. The run above,
+    // whose server never started, records no verdict at all.
+    expect(record.readPaths).toEqual([]);
+    expect(record.verdict).toBe("approve");
+  });
+
+  it("tells the reviewer, in the body they co-sign, what the judge could do", async () => {
+    fakeClaude(true);
+
+    const result = await judgedRun();
+
+    const body = readFileSync(path.join(result.artifactsDir, "pr-preview.md"), "utf8");
+    expect(body).toContain("claude-opus-4-8 + rooted-read: approved");
+    expect(body).toContain("Read no files in the workspace");
+    // Workspace-relative or nothing: this body is what a human reads, and an
+    // absolute path in it would name a private target's directory layout.
+    expect(body).not.toContain(result.workspace);
+  });
+
+  it("keeps the read paths off the ledger, which is the one tracked surface", async () => {
+    // The scrub review behind this field (cage spec §7.1): a recorded path is
+    // workspace-relative and so names no directory layout, but a *filename*
+    // inside a private target is still that target's business. Every surface
+    // the field reaches — `verdict.json`, the run archive, the PR body — is
+    // either git-ignored here or lands in the target's own repository. The
+    // ledger is the exception that would make it public-repo content, so the
+    // ledger deliberately does not carry it, and this is that decision held to
+    // a check rather than to a memory.
+    fakeClaude(true);
+
+    const result = await judgedRun();
+
+    const line = readLedger(path.join(tmp, "ledger.jsonl")).find((entry) => entry.runId === result.runId);
+    expect(line?.status).toBe("approved");
+    expect((line as Record<string, unknown> | undefined)?.readPaths).toBeUndefined();
+    expect((line as Record<string, unknown> | undefined)?.judge).toBeUndefined();
   });
 
   it("cannot lend its marker to the next run of the same task", async () => {

@@ -445,6 +445,73 @@ vocabulary** even after nothing emits it: past verdicts were produced that way
 and must keep saying so. Never re-label a historical record to match the current
 build.
 
+### Answer (2026-07-29, issue #109): where the paths come from, and the scrub review
+
+**§7.1's "the runner records what it actually served" hid a fork the section did
+not name.** The two transports do not observe the same thing. The SDK path calls
+the reader in-process and can collect a path off each result; the CLI path's
+reader is inside an MCP subprocess the runner cannot see into, and the only
+process that knows a read happened is the server itself. Recording that path
+from anywhere else would mean deriving it from the judge's own tool arguments —
+which is the model's account again, one layer down, and it is the account §7.1
+exists to refuse.
+
+So the path is produced once, by the reader, and each transport carries it the
+only way it can. What that cost, decided here rather than left to the build:
+
+- **The CLI transport's journal is required, not best-effort**, on §6's argument
+  one step along: a server that cannot record what it serves does not start, and
+  a read that cannot be recorded is not served. Written-when-possible would put
+  a verdict on the record with nothing to weigh it by, looking exactly like a
+  judge that opened nothing.
+- **It is emptied at startup**, so a file left behind cannot attribute one
+  session's reads to another's verdict.
+- **Records are NUL-separated, not newline-separated.** A POSIX filename may
+  hold any byte but `/` and NUL, so a newline-delimited journal splits a
+  directory named `"a\n"` into two records — the second an *absolute* path that
+  was never read. That would put rule 3 back in the hands of a file format on
+  this transport alone, which is the fork this section opened by.
+
+**Rule 3 is otherwise structural rather than observed.** The recorded path is
+`path.relative(root, resolved)` for a target the root check has just proven is
+inside the root — the same expression the containment test evaluates. An
+absolute path, or one reaching above the workspace, is not merely refused: it is
+not expressible, because the value only exists for reads that passed the check.
+A symlink inside the workspace records the file it resolves to, not the name the
+judge typed.
+
+**The scrub review, and its outcome: `scripts/check-scrub.sh` needs no change.**
+The check reads git content — staged blobs on the pre-commit path, `HEAD` blobs
+on the CI path — so what matters is whether a recorded path can reach a tracked
+file in *this* repo. Every surface the field reaches, and what each is:
+
+| Surface | Why the check is unaffected |
+|---|---|
+| `verdict.json`, the read journal | under `artifacts/`, git-ignored |
+| the per-run archive | `artifacts/runs/`, the same directory |
+| the PR body | lands in the target's own repository |
+| the Actions artifact `agent-task.yml` uploads | **not git content, but hosted by this public repo** — see below |
+| `fleet/ledger.jsonl` | the one tracked surface, and the field is deliberately not on `LedgerEntry` |
+
+The ledger row is the decision that keeps this answer true, so it is held by a
+test (`e2e-judge-read.test.ts`) rather than by this paragraph.
+
+The Actions row is the one this review nearly missed. A cloud run uploads its
+review set — `verdict.json` included — as a workflow artifact of this public
+repo, so `readPaths` is readable by anyone who can read the repo's runs. That is
+**a pre-existing and accepted exposure, not a new one**: `diff.patch` travels in
+the same bundle and names every file the change touched, which is strictly more
+than the judge read. It is recorded here because the enumeration above would
+otherwise read as complete.
+
+Two things the review is careful *not* to claim. Workspace-relativity is not a
+scrub: a filename inside a private target is that target's business, and all
+relativity removes is the directory layout above the root. And the answer above
+is conditional on where the field is recorded — putting `readPaths` on a ledger
+line later would make it public-repo *git* content, at which point the existing
+check would scan it and the ban list would decide, having never been written
+with filenames in mind.
+
 ## 8. The two invariant tests
 
 ADR-0011 names both. They are the reason the fork survived as long as it did —

@@ -118,7 +118,7 @@ function surfaceOf(tools: unknown[], schemaKey: "inputSchema" | "input_schema"):
  *   this to install a module hook; claim 1 passes nothing.
  */
 async function advertisedOverMcp(prefixArgs: string[] = []): Promise<unknown[]> {
-  const launch = judgeReadServerLaunch({ workspace, markerPath });
+  const launch = judgeReadServerLaunch({ workspace, markerPath, journalPath: path.join(workspace, "..", "reads.txt") });
   const transport = new StdioClientTransport({ ...launch, args: [...prefixArgs, ...launch.args] });
   const client = new Client({ name: "judge-surface-invariant", version: "0.1.0" });
   await client.connect(transport);

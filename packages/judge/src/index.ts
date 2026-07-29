@@ -13,8 +13,16 @@ import path from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
-import { extractCliEnvelope, sanitizeCliEnvelopeUsage, type ProducerUsageEvidence } from "@fleet/contract";
-import { JUDGE_READ_MAX_CALLS, JUDGE_READ_SERVER_NAME, JUDGE_READ_TOOLS, createRootedReader, judgeReadServerLaunch } from "@fleet/judge-read";
+import { extractCliEnvelope, sanitizeCliEnvelopeUsage, type JudgeIdentity, type ProducerUsageEvidence } from "@fleet/contract";
+import {
+  JUDGE_READ_MAX_CALLS,
+  JUDGE_READ_SERVER_NAME,
+  JUDGE_READ_TOOLS,
+  createRootedReader,
+  distinctReadPaths,
+  judgeReadJournalPaths,
+  judgeReadServerLaunch,
+} from "@fleet/judge-read";
 export { extractCliEnvelope, extractCliResult } from "@fleet/contract";
 
 export const VerdictSchema = z.object({
@@ -32,7 +40,25 @@ export type JudgeUsage = ProducerUsageEvidence;
 export interface JudgeResult {
   verdict: Verdict;
   usage: JudgeUsage;
+  /** The workspace-relative paths this judgement's reads were served from —
+   *  observed by the reader, never reported by the model. Absent when the
+   *  client had no reader to account for; see `VerdictEvidence` in
+   *  `@fleet/contract` for why that is not the same as empty. */
+  readPaths?: string[];
+  /** Which reviewer produced the verdict — model *and* what it could reach.
+   *  Absent when the client declared no capability, for the same reason. */
+  judge?: JudgeIdentity;
 }
+
+/**
+ * The model this judge asks for when a caller names none.
+ *
+ * Named rather than inline because the runner used to keep a second copy of the
+ * literal for the reviewer-facing line, which stayed right only until this one
+ * changed. It composes that line from what actually answered now, so this is
+ * the only place the default lives.
+ */
+const JUDGE_MODEL = "claude-opus-4-8";
 
 /** Unavailable usage for the Anthropic SDK judge path; the CLI path routes
  *  through the shared {@link sanitizeCliEnvelopeUsage} sanitizer instead. */
@@ -107,6 +133,19 @@ export interface JudgeClient {
    * ADR-0011 failure with its two halves swapped.
    */
   workspace?: string;
+  /**
+   * What this client can reach, in the contract's vocabulary — `rooted-read`
+   * for both transports below, absent for a client that makes no claim.
+   *
+   * Declared by the client rather than derived from the run's judge mode,
+   * because the mode says which transport the runner *asked* for and this says
+   * what the thing that answered actually held. An injected client (a test's,
+   * or a future transport's) is the case where those differ, and recording the
+   * mode's answer for it would put a capability on the record that nothing
+   * exercised — a name claiming more than the reviewer had, which is ADR-0011's
+   * failure written into the record instead of into the wiring.
+   */
+  capability?: string;
   messages: {
     /**
      * One judgement, start to finish: the caller hands over a request and gets
@@ -126,7 +165,14 @@ export interface JudgeClient {
      * So: single-shot for the caller, whatever it takes underneath, on both
      * sides. `judgeWithEvidence` parses what comes back and never sees a turn.
      */
-    parse(params: Record<string, unknown>): Promise<{ parsed_output: unknown; model?: unknown; usage?: unknown; usageEvidence?: JudgeUsage }>;
+    parse(params: Record<string, unknown>): Promise<{
+      parsed_output: unknown;
+      model?: unknown;
+      usage?: unknown;
+      usageEvidence?: JudgeUsage;
+      /** Workspace-relative paths the client's reader served, if it had one. */
+      readPaths?: string[];
+    }>;
   };
 }
 
@@ -279,10 +325,16 @@ export function createJudgeClient(opts: { workspace: string; messages?: Anthropi
 
   return {
     workspace: opts.workspace,
+    capability: "rooted-read",
     messages: {
       async parse(params: Record<string, unknown>) {
         const conversation = [...(params.messages as unknown[])];
         const turns: SdkTurn[] = [];
+        // What this judgement was served, taken off the reader's own results as
+        // the loop dispatches them. The CLI transport reads the same list back
+        // out of a file because its reader is a subprocess; here there is no
+        // subprocess, so there is nothing to read back.
+        const served: string[] = [];
 
         for (let turn = 0; turn < MAX_JUDGE_TURNS; turn += 1) {
           const response = await messages.create({ ...params, messages: conversation, tools: JUDGE_READ_TOOL_PARAMS });
@@ -296,7 +348,12 @@ export function createJudgeClient(opts: { workspace: string; messages?: Anthropi
           // verdict fails the run one frame up, in judgeWithEvidence, which is
           // the same answer as failing here.
           if (response.stop_reason !== "tool_use" || calls.length === 0) {
-            return { ...response, parsed_output: verdictJson(response.content), usageEvidence: sdkUsage(...turns) };
+            return {
+              ...response,
+              parsed_output: verdictJson(response.content),
+              usageEvidence: sdkUsage(...turns),
+              readPaths: distinctReadPaths(served),
+            };
           }
 
           // The assistant turn goes back whole. Thinking blocks ride along with
@@ -306,6 +363,7 @@ export function createJudgeClient(opts: { workspace: string; messages?: Anthropi
           const results: Record<string, unknown>[] = [];
           for (const call of calls) {
             const result = await read(call.name, call.input);
+            if (result.path !== undefined) served.push(result.path);
             results.push({ type: "tool_result", tool_use_id: call.id, content: result.text, is_error: result.isError });
           }
           // Every result in one message: the API pairs a tool-use turn with a
@@ -417,12 +475,22 @@ function judgeReadMcpConfig(launch: ReturnType<typeof judgeReadServerLaunch>): s
  *   caller that forgets it is the one that would never notice. Asserting the
  *   marker afterwards is the runner's job, not this client's — the client would
  *   be attesting to itself.
+ * @param opts.journalPath  Where that server records the paths it served. The
+ *   subprocess is why this is a file at all: the SDK transport collects the
+ *   same paths off the same reader in memory, and both end up handing the
+ *   runner one list of workspace-relative paths. Reading it back is this
+ *   client's job and not the runner's, because the launch this client wrote is
+ *   what decided where the file went.
  */
-export function createCliJudgeClient(opts: { workspace: string; markerPath: string }): JudgeClient {
+export function createCliJudgeClient(opts: { workspace: string; markerPath: string; journalPath: string }): JudgeClient {
   return {
     workspace: opts.workspace,
+    capability: "rooted-read",
     messages: {
-      async parse(params: Record<string, unknown>): Promise<{ parsed_output: unknown; model?: unknown; usage?: unknown; usageEvidence?: JudgeUsage }> {
+      // The interface's own return type, rather than a copy of it: the two
+      // transports answer the same caller, and a second spelling here is where
+      // they would start answering it differently.
+      async parse(params: Record<string, unknown>): ReturnType<JudgeClient["messages"]["parse"]> {
         const messages = params.messages as Array<{ content: string }>;
         const prompt = [
           messages[0].content,
@@ -432,7 +500,12 @@ export function createCliJudgeClient(opts: { workspace: string; markerPath: stri
         ].join("\n");
         const configDir = mkdtempSync(path.join(os.tmpdir(), "judge-read-"));
         const configPath = path.join(configDir, "mcp-config.json");
-        writeFileSync(configPath, judgeReadMcpConfig(judgeReadServerLaunch({ workspace: opts.workspace, markerPath: opts.markerPath })));
+        writeFileSync(
+          configPath,
+          judgeReadMcpConfig(
+            judgeReadServerLaunch({ workspace: opts.workspace, markerPath: opts.markerPath, journalPath: opts.journalPath }),
+          ),
+        );
         let stdout: string;
         try {
           stdout = execFileSync(
@@ -471,7 +544,18 @@ export function createCliJudgeClient(opts: { workspace: string; markerPath: stri
         if (start === -1 || end <= start) {
           throw new Error(`cli judge returned no JSON object: ${result.slice(0, 500)}`);
         }
-        return { parsed_output: JSON.parse(result.slice(start, end + 1)), ...envelope, usageEvidence: sanitizeCliEnvelopeUsage(envelope) };
+        return {
+          parsed_output: JSON.parse(result.slice(start, end + 1)),
+          ...envelope,
+          usageEvidence: sanitizeCliEnvelopeUsage(envelope),
+          // Read after the subprocess is gone, so the file is complete. Empty
+          // says the judge opened nothing — safe to say only because the runner
+          // separately proves the server started (the marker, cage spec §6) —
+          // and `undefined`, for a journal that could not be read, stays
+          // `undefined` all the way to the record rather than becoming that
+          // claim.
+          readPaths: judgeReadJournalPaths(opts.journalPath),
+        };
       },
     },
   };
@@ -505,8 +589,9 @@ export async function judgeWithEvidence(input: JudgeInput): Promise<JudgeResult>
         "the verdict would be recorded against a workspace the judge never read",
     );
   }
+  const requestedModel = input.model ?? JUDGE_MODEL;
   const response = await client.messages.parse({
-    model: input.model ?? "claude-opus-4-8",
+    model: requestedModel,
     max_tokens: 2048,
     thinking: { type: "adaptive" },
     system: SYSTEM_PROMPT,
@@ -521,6 +606,20 @@ export async function judgeWithEvidence(input: JudgeInput): Promise<JudgeResult>
   return {
     verdict: parsed.data,
     usage: usageEvidence && typeof usageEvidence === "object" ? usageEvidence as JudgeUsage : sdkUsage(response),
+    // Both stay absent unless the client produced them. A default here would be
+    // this layer asserting something about a reviewer it did not build: `[]`
+    // would claim a judge with no reader chose to read nothing, and a
+    // capability would claim reach nothing exercised.
+    readPaths: response.readPaths,
+    judge: client.capability === undefined
+      ? undefined
+      : {
+          // What actually answered, when the producer said — the same
+          // preference the usage evidence takes, and for the same reason: a
+          // configured default is what was asked for, not what reviewed.
+          model: typeof response.model === "string" && response.model !== "" ? response.model : requestedModel,
+          capability: client.capability,
+        },
   };
 }
 

@@ -5,7 +5,9 @@ import {
   extractCliEnvelope,
   InflightRecordSchema,
   isKillStatus,
+  JUDGE_CAPABILITIES,
   KILL_STATUSES,
+  knownJudgeCapability,
   LedgerEntrySchema,
   LedgerResponseSchema,
   ModelUsageEvidenceSchema,
@@ -22,6 +24,7 @@ import {
   RunDetailResponseSchema,
   safeParseWire,
   VERIFY_STATES,
+  VerdictEvidenceSchema,
   knownVerifyState,
   WireParseError,
   type InflightRecord,
@@ -162,6 +165,51 @@ describe("verification state", () => {
     // A reader must render that as unknown, never as "nothing was outstanding".
     expect(LedgerEntrySchema.parse(entry()).unmetGates).toBeUndefined();
     expect(LedgerEntrySchema.safeParse({ ...entry(), unmetGates: "test" }).success).toBe(false);
+  });
+});
+
+describe("verdict evidence", () => {
+  it("names the capability a verdict was produced with, beside the model", () => {
+    const evidence = VerdictEvidenceSchema.parse({
+      readPaths: ["src/index.ts"],
+      judge: { model: "claude-opus-4-8", capability: "rooted-read" },
+    });
+
+    // The pair, not a composed string: two reviewers on the same model with
+    // different powers are what ADR-0011 exists to tell apart, and a reader
+    // that has to parse prose to do it cannot.
+    expect(evidence.judge).toEqual({ model: "claude-opus-4-8", capability: "rooted-read" });
+    expect(knownJudgeCapability(evidence.judge?.capability)).toBe("rooted-read");
+  });
+
+  it("keeps `text-only` in the vocabulary though nothing emits it any more", () => {
+    // Verdicts were produced that way before the cage was built, and relabelling
+    // one to match the current build would make the record lie about the
+    // reviewer that wrote it.
+    expect([...JUDGE_CAPABILITIES]).toContain("text-only");
+    const historical = VerdictEvidenceSchema.parse({ judge: { model: "claude-opus-4-8", capability: "text-only" } });
+    expect(knownJudgeCapability(historical.judge?.capability)).toBe("text-only");
+    // And no read paths at all — a judge with no reader records none, which is
+    // not the same as one that read nothing.
+    expect(historical.readPaths).toBeUndefined();
+  });
+
+  it("degrades on a capability a newer runner speaks and this build does not", () => {
+    expect(VerdictEvidenceSchema.parse({ judge: { model: "m", capability: "rooted-grep" } }).judge?.capability).toBe("rooted-grep");
+    expect(knownJudgeCapability("rooted-grep")).toBeUndefined();
+  });
+
+  it("distinguishes a judge that read nothing from a verdict that recorded nothing", () => {
+    // The distinction the whole field turns on. Empty is a claim — the judge
+    // held the capability and opened no file. Absent is the absence of a claim.
+    expect(VerdictEvidenceSchema.parse({ readPaths: [] }).readPaths).toEqual([]);
+    expect(VerdictEvidenceSchema.parse({}).readPaths).toBeUndefined();
+  });
+
+  it("reads a verdict record that carries neither field, and rejects a mistyped one", () => {
+    expect(VerdictEvidenceSchema.parse({ verdict: "approve", violations: [], guidance: "", rationale: "fine" })).toEqual({});
+    expect(VerdictEvidenceSchema.safeParse({ readPaths: "src/index.ts" }).success).toBe(false);
+    expect(VerdictEvidenceSchema.safeParse({ judge: { model: "m" } }).success).toBe(false);
   });
 });
 

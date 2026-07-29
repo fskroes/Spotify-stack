@@ -183,6 +183,47 @@ describe("buildPrBody", () => {
     expect(body).toContain("– `npm run test` did not run (earlier check failed)");
   });
 
+  it("names the files the judge opened, so a veto can be weighed against them", () => {
+    const body = buildPrBody(
+      input({
+        judgeName: "claude-opus-4-8 + rooted-read",
+        readPaths: ["src/index.ts", "build/manifest.json"],
+      }),
+    );
+
+    // The capability beside the model: two reviewers on the same model with
+    // different powers is the condition ADR-0011 ends, and this line is where a
+    // human meets it.
+    expect(body).toContain("claude-opus-4-8 + rooted-read: approved");
+    expect(body).toContain("Read 2 files in the workspace under review:");
+    expect(body).toContain("- `src/index.ts`");
+    expect(body).toContain("- `build/manifest.json`");
+  });
+
+  it("says a judge read nothing only when a judge read nothing", () => {
+    // Empty is a claim about a reviewer that held the capability and used none
+    // of it. It belongs in the body: an approve from a judge that opened no
+    // file is a weaker signal than one from a judge that opened six.
+    expect(buildPrBody(input({ readPaths: [] }))).toContain("Read no files in the workspace");
+  });
+
+  it("claims nothing about the reads of a verdict that recorded none", () => {
+    // The trap this field shares with unmet gates. Every verdict produced
+    // before reads were recorded carries no paths, and rendering those as "read
+    // no files" would tell a reviewer something no record ever established.
+    const body = buildPrBody(input({ judgeName: "claude-opus-4-8 + text-only" }));
+
+    expect(body).not.toContain("Read no files");
+    expect(body).not.toContain("in the workspace under review");
+    // The capability nothing emits any more still renders, because verdicts
+    // were produced that way and must keep saying so.
+    expect(body).toContain("claude-opus-4-8 + text-only: approved");
+  });
+
+  it("counts one file as one file", () => {
+    expect(buildPrBody(input({ readPaths: ["src/index.ts"] }))).toContain("Read 1 file in the workspace");
+  });
+
   it("falls back cleanly without scope, sha, or links", () => {
     const body = buildPrBody(
       input({

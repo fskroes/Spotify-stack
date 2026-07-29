@@ -130,6 +130,78 @@ export type RunMode = (typeof RUN_MODES)[number];
 export const STAGES = ["agent", "scope", "verify", "judge", "shipping"] as const;
 export type Stage = (typeof STAGES)[number];
 
+// --- Verdict evidence (what the runner observed about the judge, ADR-0011) ---
+
+/**
+ * What a judge could reach, as a value a record can carry.
+ *
+ * A model name cannot distinguish two reviewers running the same model with
+ * different powers, which is the condition ADR-0011 exists to end — so this
+ * travels beside the model rather than folded into it.
+ *
+ *  - `rooted-read`: the judge held the runner's read tools, rooted at the run's
+ *    workspace, and could open the source under review.
+ *  - `text-only`: the judge saw the task, the diff and the verification output
+ *    and nothing else. **Nothing in this build emits it, and it stays anyway.**
+ *    Verdicts were produced that way before ADR-0011 was built, and a record
+ *    relabelled to match the current build is a record that lies about the
+ *    reviewer that wrote it.
+ *  - `stub`: no model reviewed anything (the runner's stub judge modes).
+ *
+ * Open on the wire, like every other vocabulary here: a newer runner may hand
+ * an older reader a capability it has never heard of, and that must degrade.
+ */
+export const JUDGE_CAPABILITIES = ["rooted-read", "text-only", "stub"] as const;
+export type JudgeCapability = (typeof JUDGE_CAPABILITIES)[number];
+
+/** The capability this build knows, else `undefined` — the tolerant lookup for
+ *  a reader that must render an unfamiliar value as unknown rather than as one
+ *  of the values it does know. */
+export function knownJudgeCapability(value: string | undefined): JudgeCapability | undefined {
+  return (JUDGE_CAPABILITIES as readonly string[]).includes(value as string) ? (value as JudgeCapability) : undefined;
+}
+
+/** Who reviewed, as the pair a reviewer needs: which model, holding what.
+ *  `capability` is a plain string on the wire — see JUDGE_CAPABILITIES. */
+export const JudgeIdentitySchema = z.object({
+  model: z.string(),
+  capability: z.string(),
+});
+export type JudgeIdentity = z.infer<typeof JudgeIdentitySchema>;
+
+/**
+ * What the *runner* observed about a judgement, recorded alongside the verdict
+ * the model returned (`verdict.json`, and the PR body a human co-signs).
+ *
+ * Deliberately not the model's own account. A judge asked to report its reads
+ * can invent them, and telling a grounded veto from a confident invention is
+ * the entire reason these paths exist — so they are the reads the runner
+ * actually served, and no field here appears on the schema the model fills in.
+ *
+ * Two rules a reader has to get right:
+ *
+ * 1. **Absent is not empty.** Absent means *not recorded*: every verdict
+ *    written before this field existed has no `readPaths`, and rendering those
+ *    as a judge that chose to read nothing asserts something no record
+ *    established. Empty means the judge held the capability and opened nothing.
+ *    This is the same trap `unmetGates` documents above, and it is the same
+ *    answer: unknown and none are different, and only one of them is a claim.
+ * 2. **Paths are workspace-relative, always.** An absolute path names a private
+ *    target's directory layout, and this record reaches a pull-request body a
+ *    human reads. The producing side makes that structural rather than
+ *    conventional — the path is derived from the resolved read, relative to the
+ *    root it was proven to be inside — but a reader taking these from the wire
+ *    should not assume a producer that got it right.
+ */
+export const VerdictEvidenceSchema = z.object({
+  /** Workspace-relative paths the runner served to the judge, in the order it
+   *  first opened each. Absent on any verdict recorded before this existed. */
+  readPaths: z.array(z.string()).optional(),
+  /** Which reviewer produced the verdict — model *and* capability. */
+  judge: JudgeIdentitySchema.optional(),
+});
+export type VerdictEvidence = z.infer<typeof VerdictEvidenceSchema>;
+
 // --- Model usage evidence (sanitized per-run artifact + ledger projection) ---
 
 /** Open wire vocabularies with known values for reader-side presentation. */
