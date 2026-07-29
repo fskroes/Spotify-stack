@@ -5,7 +5,7 @@ import path from "node:path";
 import picomatch from "picomatch";
 import { type RunStatus, type VerifyState } from "@fleet/contract";
 import { runVerify } from "@fleet/mcp-verify";
-import { createCliJudgeClient, judgeWithEvidence, type JudgeClient, type JudgeInput, type JudgeResult, type Verdict } from "@fleet/judge";
+import { createCliJudgeClient, createJudgeClient, judgeWithEvidence, type JudgeClient, type JudgeInput, type JudgeResult, type Verdict } from "@fleet/judge";
 import { prepareRunArtifactsDir, REVIEW_ARTIFACTS } from "./artifacts.js";
 import { claudeEngine, mockEngine, type Engine, type EngineResult } from "./engine.js";
 import { createUsageCollector, unavailableProducerUsage, writeModelUsageEvidence, type ProducerUsage } from "./model-usage.js";
@@ -141,13 +141,24 @@ function makeJudge(opts: RunOptions): (input: Omit<JudgeInput, "client" | "model
               rationale: "stub judge: auto-vetoed first attempt",
             }
           : { verdict: "approve", violations: [], guidance: "", rationale: "stub judge: auto-approved after retry" });
+      // One client per invocation, rooted at this run's workspace: the read
+      // capability the judge is handed is scoped to the thing under review, and
+      // cannot outlive it (ADR-0011). The two lines are deliberately the same
+      // shape — which transport carries a verdict is a billing question, not a
+      // capability one, and these are the two call sites where that would
+      // silently stop being true.
+      //
+      // Their read paths are not symmetric, though, and the launch check this
+      // runner owes the judge (#108) belongs on `cli` alone: that transport
+      // starts the read server as a subprocess, which can fail to come up and
+      // leave a judge reviewing blind. `claude` calls the reader in-process —
+      // an unavailable one throws, and a throwing judge is already a failed
+      // run. A handshake on that path could not fail, and a check that cannot
+      // fail reads like a guarantee.
       case "cli":
-        // One client per invocation, rooted at this run's workspace: the read
-        // capability the judge is handed is scoped to the thing under review,
-        // and cannot outlive it (ADR-0011).
         return judgeWithEvidence({ ...input, client: opts.judgeClient ?? createCliJudgeClient({ workspace: input.workspace }) });
       case "claude":
-        return judgeWithEvidence({ ...input, client: opts.judgeClient });
+        return judgeWithEvidence({ ...input, client: opts.judgeClient ?? createJudgeClient({ workspace: input.workspace }) });
     }
   };
 }

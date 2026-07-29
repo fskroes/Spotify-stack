@@ -98,12 +98,18 @@ large, and not part of the review contract.
 
 ## Status
 
-**Decided 2026-07-29.** **Built in stages**, and half built as of 2026-07-29:
-the rooted reader and the shared tool surface (#103), then its MCP transport and
-the CLI judge's cage (#105).
+**Decided 2026-07-29.** **Built in stages**, and as of 2026-07-29: the rooted
+reader and the shared tool surface (#103), its MCP transport and the CLI judge's
+cage (#105), and the SDK judge's tool loop (#106) — the last of which rests on
+one live measurement, that a single request may carry both the verdict's schema
+and the tools (#104, recorded in [the cage spec](../judge-cage-spec.md) §2).
 
-What that leaves standing of the fork: the judge that runs locally now reaches
-the workspace only through the rooted tool and holds nothing else, while the SDK
-judge that runs in CI is still text-only (#106). A judge whose read tool never
-launched still reviews rather than failing the run (#108), and no verdict yet
-records what was read or which capability produced it (#109).
+**The fork is closed by construction, and not yet by evidence.** Both
+transports now reach the workspace only through the rooted tool and hold
+nothing else, so which one carries a verdict is a billing question — but
+nothing yet proves that on a given run. No test holds the two surfaces against
+each other (#107); a judge whose read server never launched still reviews
+rather than failing the run (#108), which is this ADR's own failure arriving
+by accident rather than by design; and no verdict records what was read or
+which capability produced it (#109), so a verdict's *name* still cannot
+distinguish the two reviewers.

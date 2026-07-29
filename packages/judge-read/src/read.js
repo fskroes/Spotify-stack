@@ -27,15 +27,25 @@ import { createInterface } from "node:readline";
  *
  * Knobs, not decisions: tune them on evidence from real runs.
  *
- * The first two are the values the spec fixed so the build would not have to
- * invent them. The third is an invention, and says so: a search can match every
- * file in a large workspace, and an unbounded list of paths is the same
- * oversized prompt the read cap exists to prevent. It is not the spec's number
- * and should not be read as one.
+ * The per-read size cap and the call budget below are the values the spec
+ * fixed so the build would not have to invent them. The match cap is an
+ * invention, and says so: a search can match every file in a large workspace,
+ * and an unbounded list of paths is the same oversized prompt the read cap
+ * exists to prevent. It is not the spec's number and should not be read as one.
  */
 const MAX_BYTES_PER_READ = 256 * 1024;
-const MAX_READS_PER_INVOCATION = 40;
 const MAX_MATCHES_PER_FIND = 200;
+
+/**
+ * How many tool calls one judge invocation may make.
+ *
+ * Exported, alone among the three, because a transport that runs its own
+ * conversation has to bound that conversation and the only honest bound is
+ * this number: a loop capped below it would cut off a judge spending its
+ * budget one call per turn, and a loop capped at nothing would spin forever on
+ * a judge that keeps calling after the budget refuses it.
+ */
+export const JUDGE_READ_MAX_CALLS = 40;
 
 /**
  * @typedef {object} JudgeReadTool
@@ -168,7 +178,7 @@ export const JUDGE_READ_WORKSPACE_ENV = "JUDGE_READ_WORKSPACE";
 export function createRootedReader(workspace, limits = {}) {
   const root = realpathSync(workspace);
   const maxBytes = limits.maxBytes ?? MAX_BYTES_PER_READ;
-  const maxReads = limits.maxReads ?? MAX_READS_PER_INVOCATION;
+  const maxReads = limits.maxReads ?? JUDGE_READ_MAX_CALLS;
   const maxMatches = limits.maxMatches ?? MAX_MATCHES_PER_FIND;
   let spent = 0;
 
