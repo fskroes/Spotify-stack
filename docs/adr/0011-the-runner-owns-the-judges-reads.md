@@ -100,9 +100,11 @@ large, and not part of the review contract.
 
 **Decided 2026-07-29.** **Built in stages**, and as of 2026-07-29: the rooted
 reader and the shared tool surface (#103), its MCP transport and the CLI judge's
-cage (#105), and the SDK judge's tool loop (#106) — the last of which rests on
-one live measurement, that a single request may carry both the verdict's schema
-and the tools (#104, recorded in [the cage spec](../judge-cage-spec.md) §2).
+cage (#105), and the SDK judge's tool loop (#106) — which rests on two live
+measurements, that a single request may carry both the verdict's schema and the
+tools (#104, recorded in [the cage spec](../judge-cage-spec.md) §2), and that
+the loop itself survives the real API end to end (#106, §5.2). Both transports
+have now read a workspace and vetoed on what they found there.
 
 **The fork is closed by construction, and not yet by evidence.** Both
 transports now reach the workspace only through the rooted tool and hold
