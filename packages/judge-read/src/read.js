@@ -113,6 +113,31 @@ export const JUDGE_READ_TOOLS = deepFreeze(
 );
 
 /**
+ * The name the read capability answers to when it travels as an MCP server:
+ * the key under `mcpServers` in the config the runner writes, and therefore the
+ * prefix Claude Code puts on the tool names it exposes to the judge
+ * (`mcp__judge__…`). One constant because those two must agree — a config key
+ * and an allowlist entry that drift apart produce a judge holding tools it is
+ * not permitted to call, which looks exactly like a judge that chose not to
+ * read.
+ */
+export const JUDGE_READ_SERVER_NAME = "judge";
+
+/**
+ * The environment variable the MCP server takes its root from.
+ *
+ * Declared here rather than in the server so the writer of the config and its
+ * reader name the same key, and so a caller can wire the server without
+ * importing a module that drags in an MCP transport.
+ *
+ * Env rather than the server's working directory, for the reason
+ * `VERIFY_CWD` exists: it is read once at launch, before the judge's session
+ * begins, so nothing that happens during the review can redirect where the
+ * reads land.
+ */
+export const JUDGE_READ_WORKSPACE_ENV = "JUDGE_READ_WORKSPACE";
+
+/**
  * A tool's answer, in the shape both transports carry: MCP returns it as a
  * text content block with `isError`, and the SDK loop as a `tool_result`.
  *

@@ -1,6 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 import { sanitizeCliEnvelopeUsage } from "@fleet/contract";
 import { buildUserPrompt, extractCliResult, judge, type JudgeClient } from "../src/index.js";
+
+/**
+ * Every judgement is rooted at a workspace (ADR-0011) — a real directory even
+ * here, where the mock client never opens it: the field being required is what
+ * stops a caller producing a judge with no root, and a fixture that faked it
+ * would be the first place that guarantee stopped meaning anything.
+ */
+const WORKSPACE = mkdtempSync(path.join(os.tmpdir(), "judge-test-"));
+afterAll(() => rmSync(WORKSPACE, { recursive: true, force: true }));
 
 function mockClient(parsedOutput: unknown): { client: JudgeClient; calls: Record<string, unknown>[] } {
   const calls: Record<string, unknown>[] = [];
@@ -38,6 +50,7 @@ describe("judge", () => {
       taskMarkdown: TASK,
       diff: BAD_DIFF,
       verifySummary: "VERIFY PASSED",
+      workspace: WORKSPACE,
       client,
     });
 
@@ -66,6 +79,7 @@ describe("judge", () => {
       taskMarkdown: TASK,
       diff: "clean diff",
       verifySummary: "VERIFY PASSED",
+      workspace: WORKSPACE,
       client,
     });
     expect(verdict.verdict).toBe("approve");
@@ -75,14 +89,14 @@ describe("judge", () => {
   it("throws when the model returns an invalid shape", async () => {
     const { client } = mockClient({ verdict: "maybe" });
     await expect(
-      judge({ taskMarkdown: TASK, diff: "d", verifySummary: "v", client }),
+      judge({ taskMarkdown: TASK, diff: "d", verifySummary: "v", workspace: WORKSPACE, client }),
     ).rejects.toThrow(/unparseable verdict/);
   });
 
   it("rejects a verdict without a rationale", async () => {
     const { client } = mockClient({ verdict: "approve", violations: [], guidance: "" });
     await expect(
-      judge({ taskMarkdown: TASK, diff: "d", verifySummary: "v", client }),
+      judge({ taskMarkdown: TASK, diff: "d", verifySummary: "v", workspace: WORKSPACE, client }),
     ).rejects.toThrow(/unparseable verdict/);
   });
 });
