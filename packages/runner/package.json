@@ -20,8 +20,10 @@
   "dependencies": {
     "@fleet/contract": "workspace:*",
     "@fleet/judge": "workspace:*",
+    "@fleet/judge-read": "workspace:*",
     "@fleet/knowledge": "workspace:*",
     "@fleet/mcp-verify": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.13.0",
     "picomatch": "^4.0.2",
     "yaml": "^2.8.0"
   },

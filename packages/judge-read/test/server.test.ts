@@ -1,12 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { JUDGE_READ_SERVER_NAME, JUDGE_READ_TOOLS, JUDGE_READ_WORKSPACE_ENV } from "../src/read.js";
+import { JUDGE_READ_MARKER_ENV, JUDGE_READ_SERVER_NAME, JUDGE_READ_TOOLS, JUDGE_READ_WORKSPACE_ENV } from "../src/read.js";
 
 /**
  * The MCP transport, exercised over an actual stdio connection rather than by
@@ -20,12 +20,14 @@ const serverPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".
 let workspace: string;
 let elsewhere: string;
 let outside: string;
+let markerPath: string;
 
 beforeEach(() => {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "judge-read-server-"));
   workspace = path.join(tmp, "ws");
   elsewhere = path.join(tmp, "elsewhere");
   outside = path.join(tmp, "secret.txt");
+  markerPath = path.join(tmp, "startup.json");
   mkdirSync(path.join(workspace, "src"), { recursive: true });
   mkdirSync(elsewhere, { recursive: true });
   writeFileSync(path.join(workspace, "src", "app.js"), "export const answer = 42;\n");
@@ -50,7 +52,7 @@ async function withServer<T>(
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
-    env: { [JUDGE_READ_WORKSPACE_ENV]: workspace, ...opts.env },
+    env: { [JUDGE_READ_WORKSPACE_ENV]: workspace, [JUDGE_READ_MARKER_ENV]: markerPath, ...opts.env },
     cwd: opts.cwd ?? elsewhere,
   });
   const client = new Client({ name: "judge-read-test", version: "0.1.0" });
@@ -138,31 +140,77 @@ describe("the read server's root", () => {
   });
 });
 
-describe("the read server without a workspace", () => {
+describe("the read server's startup marker", () => {
+  it("is written before the server will answer anything", async () => {
+    // The marker is the runner's only positive evidence that this process ran
+    // (ADR-0011): a broken read tool and a diff that needed no reads both
+    // record zero reads, so "did it read anything" cannot be the check. By the
+    // time a client has an answer out of the server, the file is on disk.
+    await withServer(async (client) => client.listTools());
+
+    expect(existsSync(markerPath)).toBe(true);
+    const marker = JSON.parse(readFileSync(markerPath, "utf8"));
+    expect(marker.server).toBe(JUDGE_READ_SERVER_NAME);
+    expect(marker.tools).toEqual(JUDGE_READ_TOOLS.map((tool) => tool.name));
+  });
+
+  it("is left behind by a session that read nothing at all", async () => {
+    // The case the whole mechanism turns on. This server served no reads, which
+    // is exactly what a broken one also serves — and the two must not look the
+    // same to the runner afterwards.
+    await withServer(async () => undefined);
+
+    expect(existsSync(markerPath)).toBe(true);
+  });
+
+  it("names no path, so a private target's layout cannot reach the run's artifacts", () => {
+    // The marker lands in the run's artifact directory. The runner already
+    // knows the root it passed, so recording it back proves nothing and would
+    // put a directory layout somewhere a human reads at co-sign.
+    return withServer(async (client) => {
+      await client.listTools();
+      expect(readFileSync(markerPath, "utf8")).not.toContain(workspace);
+    });
+  });
+});
+
+describe("the read server without its environment", () => {
+  /** Start the server with exactly `env` and return what it wrote to stderr. */
+  const startWith = (env: Record<string, string>): string => {
+    try {
+      execFileSync(process.execPath, [serverPath], {
+        cwd: workspace,
+        env: { PATH: process.env.PATH ?? "", ...env },
+        encoding: "utf8",
+        stdio: "pipe",
+        timeout: 15_000,
+      });
+    } catch (error) {
+      return String((error as { stderr?: string }).stderr ?? "") + String((error as Error).message ?? "");
+    }
+    throw new Error("the server was expected to exit rather than serve");
+  };
+
   it("exits rather than rooting itself anywhere", () => {
     // A default — cwd, or the control repo — is the ADR-0011 failure in
     // miniature: a reviewer reading somewhere the runner never chose, under a
     // name that says it read the workspace under review.
-    expect(() =>
-      execFileSync(process.execPath, [serverPath], {
-        cwd: workspace,
-        env: { PATH: process.env.PATH ?? "" },
-        encoding: "utf8",
-        stdio: "pipe",
-        timeout: 15_000,
-      }),
-    ).toThrow(new RegExp(JUDGE_READ_WORKSPACE_ENV));
+    expect(startWith({ [JUDGE_READ_MARKER_ENV]: markerPath })).toMatch(JUDGE_READ_WORKSPACE_ENV);
+  });
+
+  it("exits rather than serving reads it cannot be proven to have served", () => {
+    // Unattested is not a lesser state of the same thing: a server that runs
+    // without leaving the marker produces a verdict the runner cannot tell from
+    // one whose server never launched, which is the record ADR-0011 refuses.
+    expect(startWith({ [JUDGE_READ_WORKSPACE_ENV]: workspace })).toMatch(JUDGE_READ_MARKER_ENV);
+    expect(existsSync(markerPath)).toBe(false);
   });
 
   it("exits when the workspace it was given does not exist", () => {
-    expect(() =>
-      execFileSync(process.execPath, [serverPath], {
-        cwd: workspace,
-        env: { PATH: process.env.PATH ?? "", [JUDGE_READ_WORKSPACE_ENV]: path.join(workspace, "gone") },
-        encoding: "utf8",
-        stdio: "pipe",
-        timeout: 15_000,
-      }),
-    ).toThrow();
+    startWith({ [JUDGE_READ_WORKSPACE_ENV]: path.join(workspace, "gone"), [JUDGE_READ_MARKER_ENV]: markerPath });
+
+    // And leaves no marker: the file attests that reads are servable, so a
+    // server that resolved no root must not have written one on the way down.
+    expect(existsSync(markerPath)).toBe(false);
   });
 });

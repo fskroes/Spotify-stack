@@ -106,12 +106,16 @@ tools (#104, recorded in [the cage spec](../judge-cage-spec.md) §2), and that
 the loop itself survives the real API end to end (#106, §5.2). Both transports
 have now read a workspace and vetoed on what they found there.
 
+**A judge that cannot read now fails the run** (#108) — the consequence below
+arriving by design rather than by accident. Detection is positive and happens
+at launch, as this decision requires; how the runner notices is still
+deliberately not decided here, and is recorded in [the cage
+spec](../judge-cage-spec.md) §6.
+
 **The fork is closed by construction, and not yet by evidence.** Both
 transports now reach the workspace only through the rooted tool and hold
 nothing else, so which one carries a verdict is a billing question — but
 nothing yet proves that on a given run. No test holds the two surfaces against
-each other (#107); a judge whose read server never launched still reviews
-rather than failing the run (#108), which is this ADR's own failure arriving
-by accident rather than by design; and no verdict records what was read or
-which capability produced it (#109), so a verdict's *name* still cannot
-distinguish the two reviewers.
+each other (#107), and no verdict records what was read or which capability
+produced it (#109), so a verdict's *name* still cannot distinguish the two
+reviewers.

@@ -7,6 +7,7 @@ import { type RunStatus, type VerifyState } from "@fleet/contract";
 import { runVerify } from "@fleet/mcp-verify";
 import { createCliJudgeClient, createJudgeClient, judgeWithEvidence, type JudgeClient, type JudgeInput, type JudgeResult, type Verdict } from "@fleet/judge";
 import { prepareRunArtifactsDir, REVIEW_ARTIFACTS } from "./artifacts.js";
+import { assertJudgeReadStartupMarker, preflightJudgeRead } from "./judge-read-check.js";
 import { claudeEngine, mockEngine, type Engine, type EngineResult } from "./engine.js";
 import { createUsageCollector, unavailableProducerUsage, writeModelUsageEvidence, type ProducerUsage } from "./model-usage.js";
 import { findRepo, type FleetRepo } from "./fleet.js";
@@ -113,7 +114,29 @@ export function defaultJudgeMode(): NonNullable<RunOptions["judgeMode"]> {
   return process.env.GITHUB_ACTIONS ? "claude" : "cli";
 }
 
-function makeJudge(opts: RunOptions): (input: Omit<JudgeInput, "client" | "model">) => Promise<JudgeResult> {
+/**
+ * Whether this run's judge will start a read server of its own — the only case
+ * with a subprocess to prove anything about.
+ *
+ * The SDK transport calls the reader in-process, and an injected client
+ * replaces the transport wholesale, subprocess and all: handshaking a server
+ * neither will ever start proves nothing, and asserting a marker neither can
+ * write would fail every run that used one.
+ */
+function judgeStartsAReadServer(opts: RunOptions): boolean {
+  return (opts.judgeMode ?? defaultJudgeMode()) === "cli" && !opts.judgeClient;
+}
+
+/**
+ * @param artifactsDir  Where the CLI judge's read server writes the startup
+ *   marker this runner asserts afterwards — one file per invocation, so a
+ *   retry's judge is proven to have had a reader of its own rather than
+ *   inheriting the first attempt's proof.
+ */
+function makeJudge(
+  opts: RunOptions,
+  { artifactsDir }: { artifactsDir: string },
+): (input: Omit<JudgeInput, "client" | "model">) => Promise<JudgeResult> {
   const mode = opts.judgeMode ?? defaultJudgeMode();
   const stub = (verdict: Verdict): JudgeResult => ({
     verdict,
@@ -143,20 +166,29 @@ function makeJudge(opts: RunOptions): (input: Omit<JudgeInput, "client" | "model
           : { verdict: "approve", violations: [], guidance: "", rationale: "stub judge: auto-approved after retry" });
       // One client per invocation, rooted at this run's workspace: the read
       // capability the judge is handed is scoped to the thing under review, and
-      // cannot outlive it (ADR-0011). The two lines are deliberately the same
-      // shape — which transport carries a verdict is a billing question, not a
-      // capability one, and these are the two call sites where that would
-      // silently stop being true.
+      // cannot outlive it (ADR-0011). Which transport carries a verdict is a
+      // billing question and not a capability one, and these are the two call
+      // sites where that would silently stop being true.
       //
-      // Their read paths are not symmetric, though, and the launch check this
-      // runner owes the judge (#108) belongs on `cli` alone: that transport
-      // starts the read server as a subprocess, which can fail to come up and
-      // leave a judge reviewing blind. `claude` calls the reader in-process —
-      // an unavailable one throws, and a throwing judge is already a failed
-      // run. A handshake on that path could not fail, and a check that cannot
-      // fail reads like a guarantee.
-      case "cli":
-        return judgeWithEvidence({ ...input, client: opts.judgeClient ?? createCliJudgeClient({ workspace: input.workspace }) });
+      // Their *launch* paths are not symmetric, though, and the marker below
+      // belongs on `cli` alone: that transport starts the read server as a
+      // subprocess, which can fail to come up and leave a judge reviewing
+      // blind. `claude` calls the reader in-process — an unavailable one
+      // throws, and a throwing judge is already a failed run. A check on that
+      // path could not fail, and a check that cannot fail reads like a
+      // guarantee.
+      case "cli": {
+        // The other half of `judgeStartsAReadServer`, which the mode has
+        // already settled by the time control reaches this case.
+        if (opts.judgeClient) return judgeWithEvidence({ ...input, client: opts.judgeClient });
+        const markerPath = path.join(artifactsDir, `judge-read-startup.${calls}.json`);
+        const result = await judgeWithEvidence({ ...input, client: createCliJudgeClient({ workspace: input.workspace, markerPath }) });
+        // After the verdict, and fatal to it. A verdict reached without the
+        // ability to read is not a cheaper verdict — it is the one this whole
+        // cage exists to stop being recorded as a review (ADR-0011).
+        assertJudgeReadStartupMarker(markerPath);
+        return result;
+      }
       case "claude":
         return judgeWithEvidence({ ...input, client: opts.judgeClient ?? createJudgeClient({ workspace: input.workspace }) });
     }
@@ -435,7 +467,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       log("· no compiled knowledge for this target — running cold");
     }
     const engine = makeEngine(opts, workspace, mcpConfigPath);
-    const judgeOnce = makeJudge(opts);
+    const judgeOnce = makeJudge(opts, { artifactsDir });
 
     const finish = (result: Omit<RunResult, "vetoes" | "runId">, scopeOffenders?: string[]): RunResult => {
       const full: RunResult = { ...result, vetoes, runId };
@@ -502,6 +534,28 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       log(`■ ${full.status}${full.prUrl ? ` → ${full.prUrl}` : ""}`);
       return full;
     };
+
+    // Before the agent, not merely before the judge. The handshake costs no
+    // tokens and the agent's are model spend too, so a run whose judge could
+    // never have read this workspace dies before anything is billed to it
+    // (ADR-0011: a judge that cannot read fails the run). Once per run — the
+    // workspace does not change between veto-retries, so neither can the
+    // answer, and only the per-invocation marker is worth re-proving.
+    if (judgeStartsAReadServer(opts)) {
+      try {
+        await preflightJudgeRead({ workspace, log });
+      } catch (error) {
+        return finish({
+          task,
+          repo,
+          workspace,
+          artifactsDir,
+          diff: "",
+          resultText: error instanceof Error ? error.message : String(error),
+          status: "engine-failed",
+        });
+      }
+    }
 
     // The scope contract is enforced mechanically, not just promised: any diff
     // outside task.scope dies here — before verify, judge, or a human.

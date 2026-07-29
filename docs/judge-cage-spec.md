@@ -377,6 +377,33 @@ reader is a module that fails to load or a call that throws, and `run.ts` alread
 turns a throwing judge into `engine-failed`. Say this in a comment where the
 asymmetry lives, or the next reader will add a handshake that cannot fail.
 
+### Correction (2026-07-29, issue #108): two traps in the above
+
+Building it found two places where this section's own wording leads somewhere
+wrong.
+
+**"With the same env the MCP config carries" must not include the marker
+path.** Read literally, the handshake would write the run's marker — which
+would make the pre-flight satisfy the post-check, collapse the two mechanisms
+into one, and reopen the gap the marker exists to close, with no test failing.
+The handshake needs a throwaway marker of its own. Everything else in the env
+is shared, and has to be.
+
+**"The server writes a marker file at startup" understates it: a server without
+one must not start.** Written-when-asked leaves a configuration that forgot the
+marker looking exactly like a healthy server, and the run then dies *after*
+spending on the judge instead of before. This is the same argument §4 makes for
+a required `workspace`, and it lands the same way.
+
+One thing the section over-promises, recorded because the next reader will
+otherwise believe it. **The surface half of the handshake is nearly
+unfalsifiable.** The spawned server loads the same module the runner compares
+against, so the two disagree only when they are not the same module — a stale
+install, a half-applied edit, a second copy resolved from elsewhere. That is
+real and rare, and it is all this comparison catches; the launch is where the
+handshake's value is. It is not the §8 invariant, which needs both adapters and
+is still #107.
+
 ## 7. What gets recorded
 
 ### 7.1 The verdict record

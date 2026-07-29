@@ -17,6 +17,7 @@ import { createReadStream, realpathSync } from "node:fs";
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 
 /**
  * ADR-0007 kept transcripts out of the per-run archive for being large and
@@ -146,6 +147,55 @@ export const JUDGE_READ_SERVER_NAME = "judge";
  * reads land.
  */
 export const JUDGE_READ_WORKSPACE_ENV = "JUDGE_READ_WORKSPACE";
+
+/**
+ * The environment variable naming the file the MCP server writes the moment it
+ * is able to serve reads.
+ *
+ * The marker exists because a handshake proves the server *can* launch, not
+ * that the judge's process actually wired it — and a broken read tool and a
+ * diff that genuinely needed no reads both record zero reads (ADR-0011). So
+ * detection has to be positive, and this is the half of it that only a real
+ * launch can satisfy: a verdict that read nothing cannot write this file, and
+ * a server that never started cannot either.
+ *
+ * Carried in the same env block as the root, for the same reason: read once at
+ * launch, before the session it attests to begins.
+ */
+export const JUDGE_READ_MARKER_ENV = "JUDGE_READ_MARKER";
+
+/**
+ * How the read server is started — command, arguments, environment — declared
+ * once, here.
+ *
+ * Two callers spawn this server and they must not describe two different
+ * processes: the judge's MCP config hands the launch to the `claude` CLI, and
+ * the runner's pre-flight handshake performs it itself before spending a token
+ * on a judge whose reader may not come up (cage spec §6). A handshake against a
+ * server configured differently from the judge's proves nothing about the
+ * judge's, so neither caller builds this object.
+ *
+ * The command is this process's own executable rather than the string `node`.
+ * The agent's config can afford the bare name because it is written for a
+ * workspace the runner controls; the judge inherits the operator's environment,
+ * and whatever `node` resolves to on their PATH is not necessarily the runtime
+ * running the fleet.
+ *
+ * Both arguments are required. A launch missing its root is a judge reading
+ * somewhere nobody chose; a launch missing its marker is a judge whose reads
+ * cannot be proven to have been possible — and an optional field a caller
+ * forgets is how both of those arrive quietly.
+ *
+ * @param {{ workspace: string, markerPath: string }} where
+ * @returns {{ command: string, args: string[], env: Record<string, string> }}
+ */
+export function judgeReadServerLaunch({ workspace, markerPath }) {
+  return {
+    command: process.execPath,
+    args: [fileURLToPath(new URL("./server.js", import.meta.url))],
+    env: { [JUDGE_READ_WORKSPACE_ENV]: workspace, [JUDGE_READ_MARKER_ENV]: markerPath },
+  };
+}
 
 /**
  * A tool's answer, in the shape both transports carry: MCP returns it as a

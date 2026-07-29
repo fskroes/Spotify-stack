@@ -8,14 +8,13 @@
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { extractCliEnvelope, sanitizeCliEnvelopeUsage, type ProducerUsageEvidence } from "@fleet/contract";
-import { JUDGE_READ_MAX_CALLS, JUDGE_READ_SERVER_NAME, JUDGE_READ_TOOLS, JUDGE_READ_WORKSPACE_ENV, createRootedReader } from "@fleet/judge-read";
+import { JUDGE_READ_MAX_CALLS, JUDGE_READ_SERVER_NAME, JUDGE_READ_TOOLS, createRootedReader, judgeReadServerLaunch } from "@fleet/judge-read";
 export { extractCliEnvelope, extractCliResult } from "@fleet/contract";
 
 export const VerdictSchema = z.object({
@@ -371,22 +370,13 @@ function toolUseBlocks(content: unknown): { id: string; name: string; input: Rec
  * thing under review, and a config living inside it would be one more file the
  * next actor there could edit.
  *
- * The command is this process's own executable rather than the string `node`,
- * which the agent's config can afford because it is written for a workspace the
- * runner controls. Here the judge inherits the operator's environment, and
- * whatever `node` resolves to on their PATH is not necessarily the runtime that
- * is running the fleet.
+ * The launch itself is not described here. It comes from `@fleet/judge-read`,
+ * which is also what the runner's pre-flight handshake spawns: a handshake
+ * against a server configured differently from the judge's would prove
+ * something about a process the judge never runs.
  */
-function judgeReadMcpConfig(workspace: string): string {
-  return JSON.stringify({
-    mcpServers: {
-      [JUDGE_READ_SERVER_NAME]: {
-        command: process.execPath,
-        args: [createRequire(import.meta.url).resolve("@fleet/judge-read/server")],
-        env: { [JUDGE_READ_WORKSPACE_ENV]: workspace },
-      },
-    },
-  });
+function judgeReadMcpConfig(launch: ReturnType<typeof judgeReadServerLaunch>): string {
+  return JSON.stringify({ mcpServers: { [JUDGE_READ_SERVER_NAME]: launch } });
 }
 
 /**
@@ -417,8 +407,16 @@ function judgeReadMcpConfig(workspace: string): string {
  * cannot mean something in the control repo. That is a floor, not a fence —
  * ADR-0011 rejected configuration-as-confinement — and the reader's own root
  * check is what actually contains a read.
+ *
+ * @param opts.markerPath  Where the read server writes its startup marker. This
+ *   transport is the one that starts the server as a subprocess, and a
+ *   subprocess that never came up leaves a judge reviewing blind under a name
+ *   that claims otherwise. Required for the same reason `workspace` is: the
+ *   caller that forgets it is the one that would never notice. Asserting the
+ *   marker afterwards is the runner's job, not this client's — the client would
+ *   be attesting to itself.
  */
-export function createCliJudgeClient(opts: { workspace: string }): JudgeClient {
+export function createCliJudgeClient(opts: { workspace: string; markerPath: string }): JudgeClient {
   return {
     workspace: opts.workspace,
     messages: {
@@ -432,7 +430,7 @@ export function createCliJudgeClient(opts: { workspace: string }): JudgeClient {
         ].join("\n");
         const configDir = mkdtempSync(path.join(os.tmpdir(), "judge-read-"));
         const configPath = path.join(configDir, "mcp-config.json");
-        writeFileSync(configPath, judgeReadMcpConfig(opts.workspace));
+        writeFileSync(configPath, judgeReadMcpConfig(judgeReadServerLaunch({ workspace: opts.workspace, markerPath: opts.markerPath })));
         let stdout: string;
         try {
           stdout = execFileSync(
