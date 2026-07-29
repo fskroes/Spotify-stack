@@ -1,7 +1,11 @@
 # The judge's cage: build specification
 
 Status: **spec** — the build handoff for [ADR-0011](./adr/0011-the-runner-owns-the-judges-reads.md).
-Nothing described here is built. Written 2026-07-29.
+Written 2026-07-29, before any of it existed, and not revised into agreement with
+what was later built — [ADR-0011](./adr/0011-the-runner-owns-the-judges-reads.md)'s
+Status section is where build state is recorded. What this document does gain is
+answers: where a stage settled a question the spec left open, the answer is
+recorded beneath the section that asked it, dated.
 
 ADR-0011 is the source of truth for *what was decided and why*. This document
 does not restate the decision or re-argue the rejected options; read the ADR
@@ -233,6 +237,30 @@ and the judge's `cwd`, which should be the workspace so a relative path in a
 tool argument cannot mean something in the control repo. Neither is a fence on
 its own — ADR-0011 rejected configuration-as-confinement for exactly that reason
 — but neither should be left pointing at the control repo either.
+
+#### Probe result, 2026-07-29 (#105)
+
+Both questions above are answered by a run, not by reading: one `-p` invocation
+carrying the exact flag set, against a two-file throwaway workspace, on
+`--model sonnet` — 7.3s, one turn.
+
+- **MCP tools are callable in `-p` mode with no permission prompt.**
+  `--allowedTools mcp__judge__read_file mcp__judge__find` is sufficient on its
+  own. **No permission mode was needed** — not the blanket skip, and not a
+  narrower one either. The probe called both tools and returned the value of a
+  constant it could only have obtained by opening the file.
+- **`--tools ""` does not suppress MCP tools.** It removes the built-in set and
+  leaves the MCP surface intact, which is the combination §5.1 depends on.
+
+`--setting-sources ""` shipped, and is stronger than "hardening" reads: the
+judge's working directory is the *agent's* workspace, whose
+`.claude/settings.json` carries a Stop hook that runs the whole verify suite.
+Inherited, the judge would re-run verification at the end of every verdict.
+
+The demonstration run behind #105's acceptance: a diff that adds one file, and a
+task whose end state also requires a re-export in `src/index.ts` — a file the
+diff never names. The judge vetoed, quoting that file's actual export list.
+Neither the task nor the diff contains it.
 
 ### 5.2 SDK (`createJudgeClient`)
 

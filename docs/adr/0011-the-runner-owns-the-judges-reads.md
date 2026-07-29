@@ -98,5 +98,12 @@ large, and not part of the review contract.
 
 ## Status
 
-**Decided 2026-07-29, not yet built.** The capability fork described above is
-still live: locally the judge is unconstrained, and in CI it is text-only.
+**Decided 2026-07-29.** **Built in stages**, and half built as of 2026-07-29:
+the rooted reader and the shared tool surface (#103), then its MCP transport and
+the CLI judge's cage (#105).
+
+What that leaves standing of the fork: the judge that runs locally now reaches
+the workspace only through the rooted tool and holds nothing else, while the SDK
+judge that runs in CI is still text-only (#106). A judge whose read tool never
+launched still reviews rather than failing the run (#108), and no verdict yet
+records what was read or which capability produced it (#109).

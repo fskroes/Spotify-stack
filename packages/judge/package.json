@@ -10,6 +10,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
     "@fleet/contract": "workspace:*",
+    "@fleet/judge-read": "workspace:*",
     "zod": "^4.0.0"
   }
 }

@@ -5,7 +5,7 @@ import path from "node:path";
 import picomatch from "picomatch";
 import { type RunStatus, type VerifyState } from "@fleet/contract";
 import { runVerify } from "@fleet/mcp-verify";
-import { createCliJudgeClient, judgeWithEvidence, type JudgeClient, type JudgeResult, type Verdict } from "@fleet/judge";
+import { createCliJudgeClient, judgeWithEvidence, type JudgeClient, type JudgeInput, type JudgeResult, type Verdict } from "@fleet/judge";
 import { prepareRunArtifactsDir, REVIEW_ARTIFACTS } from "./artifacts.js";
 import { claudeEngine, mockEngine, type Engine, type EngineResult } from "./engine.js";
 import { createUsageCollector, unavailableProducerUsage, writeModelUsageEvidence, type ProducerUsage } from "./model-usage.js";
@@ -113,7 +113,7 @@ export function defaultJudgeMode(): NonNullable<RunOptions["judgeMode"]> {
   return process.env.GITHUB_ACTIONS ? "claude" : "cli";
 }
 
-function makeJudge(opts: RunOptions): (input: { taskMarkdown: string; diff: string; verifySummary: string }) => Promise<JudgeResult> {
+function makeJudge(opts: RunOptions): (input: Omit<JudgeInput, "client" | "model">) => Promise<JudgeResult> {
   const mode = opts.judgeMode ?? defaultJudgeMode();
   const stub = (verdict: Verdict): JudgeResult => ({
     verdict,
@@ -142,7 +142,10 @@ function makeJudge(opts: RunOptions): (input: { taskMarkdown: string; diff: stri
             }
           : { verdict: "approve", violations: [], guidance: "", rationale: "stub judge: auto-approved after retry" });
       case "cli":
-        return judgeWithEvidence({ ...input, client: opts.judgeClient ?? createCliJudgeClient() });
+        // One client per invocation, rooted at this run's workspace: the read
+        // capability the judge is handed is scoped to the thing under review,
+        // and cannot outlive it (ADR-0011).
+        return judgeWithEvidence({ ...input, client: opts.judgeClient ?? createCliJudgeClient({ workspace: input.workspace }) });
       case "claude":
         return judgeWithEvidence({ ...input, client: opts.judgeClient });
     }
@@ -596,7 +599,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     inflight.enter("judge");
     let judgeResult: JudgeResult;
     try {
-      judgeResult = await timed("judgeMs", () => judgeOnce({ taskMarkdown: task.raw, diff, verifySummary: verify.summary }));
+      judgeResult = await timed("judgeMs", () => judgeOnce({ taskMarkdown: task.raw, diff, verifySummary: verify.summary, workspace }));
       usage.recordJudge(judgeResult.usage);
     } catch (error) {
       usage.recordJudge(unavailableProducerUsage("judge invocation failed before a usable producer response"));
@@ -658,7 +661,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       }
       inflight.enter("judge");
       try {
-        judgeResult = await timed("judgeMs", () => judgeOnce({ taskMarkdown: task.raw, diff, verifySummary: verify.summary }));
+        judgeResult = await timed("judgeMs", () => judgeOnce({ taskMarkdown: task.raw, diff, verifySummary: verify.summary, workspace }));
         usage.recordJudge(judgeResult.usage);
       } catch (error) {
         usage.recordJudge(unavailableProducerUsage("judge invocation failed before a usable producer response"));
