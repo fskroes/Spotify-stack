@@ -15,7 +15,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { extractCliEnvelope, sanitizeCliEnvelopeUsage, type ProducerUsageEvidence } from "@fleet/contract";
-import { JUDGE_READ_SERVER_NAME, JUDGE_READ_TOOLS, JUDGE_READ_WORKSPACE_ENV } from "@fleet/judge-read";
+import { JUDGE_READ_MAX_CALLS, JUDGE_READ_SERVER_NAME, JUDGE_READ_TOOLS, JUDGE_READ_WORKSPACE_ENV, createRootedReader } from "@fleet/judge-read";
 export { extractCliEnvelope, extractCliResult } from "@fleet/contract";
 
 export const VerdictSchema = z.object({
@@ -47,24 +47,48 @@ function unavailableJudgeUsage(reason: string): JudgeUsage {
   };
 }
 
-function sdkUsage(response: Record<string, unknown>): JudgeUsage {
-  const raw = response.usage;
-  const model = response.model;
-  if (!raw || typeof raw !== "object" || typeof model !== "string") return unavailableJudgeUsage("SDK response did not expose valid model usage");
-  const counters = raw as Record<string, unknown>;
-  const names = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"] as const;
-  if (!names.every((name) => typeof counters[name] === "number" && Number.isInteger(counters[name]) && (counters[name] as number) >= 0)) {
-    return unavailableJudgeUsage("SDK response did not expose valid model usage");
+/** The counters the evidence contract carries, named as the API names them. */
+const SDK_COUNTERS = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"] as const;
+
+/**
+ * Usage for one SDK judgement, summed over every turn it took.
+ *
+ * A verdict that reads the workspace is several requests, and the tokens its
+ * tool turns spent are as billed as the last turn's. Reporting only the final
+ * response would make the judge that opened the source look cheaper than the
+ * one that guessed — exactly backwards. Totals are kept per model, which is how
+ * the evidence contract keys them: a turn answering under a different model
+ * name lands in its own entry rather than being folded into another model's
+ * bill.
+ *
+ * A turn whose counters are unreadable makes the whole judgement unavailable
+ * rather than an undercount: evidence quietly missing a turn is worse than
+ * evidence that says it is absent (ADR-0002).
+ */
+function sdkUsage(...turns: SdkTurn[]): JudgeUsage {
+  const totals = new Map<string, Record<(typeof SDK_COUNTERS)[number], number>>();
+  for (const turn of turns) {
+    const raw = turn.usage;
+    const model = turn.model;
+    if (!raw || typeof raw !== "object" || typeof model !== "string") return unavailableJudgeUsage("SDK response did not expose valid model usage");
+    const counters = raw as Record<string, unknown>;
+    if (!SDK_COUNTERS.every((name) => typeof counters[name] === "number" && Number.isInteger(counters[name]) && (counters[name] as number) >= 0)) {
+      return unavailableJudgeUsage("SDK response did not expose valid model usage");
+    }
+    const total = totals.get(model) ?? { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };
+    for (const name of SDK_COUNTERS) total[name] += counters[name] as number;
+    totals.set(model, total);
   }
+  if (totals.size === 0) return unavailableJudgeUsage("SDK response did not expose valid model usage");
   return {
     producer: { source: "anthropic-messages-response" },
     billing: { source: "unknown", evidence: "SDK response does not expose credential provenance" },
-    modelUsage: { availability: "observed", value: [{ model, tokens: {
-      inputTokens: counters.input_tokens as number,
-      cacheCreationInputTokens: counters.cache_creation_input_tokens as number,
-      cacheReadInputTokens: counters.cache_read_input_tokens as number,
-      outputTokens: counters.output_tokens as number,
-    } }] },
+    modelUsage: { availability: "observed", value: [...totals].map(([model, total]) => ({ model, tokens: {
+      inputTokens: total.input_tokens,
+      cacheCreationInputTokens: total.cache_creation_input_tokens,
+      cacheReadInputTokens: total.cache_read_input_tokens,
+      outputTokens: total.output_tokens,
+    } })) },
     reportedCost: { availability: "unavailable", reason: "SDK response does not expose a reported estimate" },
     providerRetries: { availability: "unavailable", reason: "SDK response does not expose provider retries" },
   };
@@ -85,9 +109,87 @@ export interface JudgeClient {
    */
   workspace?: string;
   messages: {
+    /**
+     * One judgement, start to finish: the caller hands over a request and gets
+     * back a verdict, and whatever conversation it took to reach one happened
+     * in here.
+     *
+     * That sentence is the seam decision the spec left open (§2, "a second
+     * consequence for the seam"). A judge with a read tool needs a loop, and
+     * the loop had two places to live: a second method here, or inside the one
+     * method there already is. Inside — because the CLI transport *already*
+     * loops, in its subprocess, and hands back a verdict. A second method would
+     * therefore be a no-op on one transport and the entire conversation on the
+     * other: one name meaning two different things by transport, which is the
+     * capability fork ADR-0011 ends, rebuilt inside the interface that both
+     * transports share.
+     *
+     * So: single-shot for the caller, whatever it takes underneath, on both
+     * sides. `judgeWithEvidence` parses what comes back and never sees a turn.
+     */
     parse(params: Record<string, unknown>): Promise<{ parsed_output: unknown; model?: unknown; usage?: unknown; usageEvidence?: JudgeUsage }>;
   };
 }
+
+/**
+ * One request, one turn — the raw Anthropic surface the SDK transport drives.
+ * It returns whatever the model stopped on, a tool call included, where
+ * {@link JudgeClient}'s `parse` returns a verdict. The loop between the two is
+ * what {@link createJudgeClient} adds.
+ *
+ * **`create`, deliberately, and not the SDK's `parse` helper.** `parse` runs
+ * the verdict schema over *every* text block in the turn and throws on one that
+ * is not a verdict (`zodOutputFormat`'s own parse function, via the SDK's
+ * `parseMessage`). A model that says a sentence before calling a read tool
+ * produces exactly that block — so a loop driven through `parse` would fail the
+ * run precisely when the judge used its tool, which is the hazard this ticket
+ * exists to avoid, reached by a second door. Structured output is unaffected:
+ * `output_config` still rides every request, the server still constrains the
+ * verdict's shape, and {@link judgeWithEvidence} still parses it with
+ * `VerdictSchema`. What is given up is a client-side convenience that throws
+ * mid-conversation.
+ */
+export interface AnthropicMessages {
+  create(params: Record<string, unknown>): Promise<SdkTurn>;
+}
+
+/** A turn as the API returns it: content blocks, and nothing pre-parsed. */
+interface SdkTurn {
+  stop_reason?: unknown;
+  content?: unknown;
+  model?: unknown;
+  usage?: unknown;
+}
+
+/**
+ * How many model turns one judgement may take before the run fails.
+ *
+ * Expressed against the reader's own call budget rather than picked: a judge
+ * that spends its budget one call per turn must not be cut off mid-review, so
+ * the bound cannot be lower. The margin is what that judge gets *after* the
+ * reader starts refusing — four turns to read the refusal and conclude on what
+ * it has. A judge that batches its calls hits the budget earlier and so has
+ * more turns left over; those turns are refusals it pays for, which is why the
+ * bound exists, and it still terminates.
+ *
+ * The arithmetic holds because this transport builds its reader with the
+ * default budget. A caller that tuned `maxReads` would have to tune this too,
+ * which is why nothing here takes that knob.
+ */
+const MAX_JUDGE_TURNS = JUDGE_READ_MAX_CALLS + 4;
+
+/**
+ * The read surface in the API's dialect. Derived, never restated: the names,
+ * descriptions and schemas are the ones the MCP server puts on its own wire,
+ * so a tool added to the declaration reaches both transports in one commit
+ * (spec §3.1). The test that holds the two surfaces against each other is
+ * spec §8, and is not written yet (#107).
+ */
+const JUDGE_READ_TOOL_PARAMS = JUDGE_READ_TOOLS.map((tool) => ({
+  name: tool.name,
+  description: tool.description,
+  input_schema: tool.inputSchema,
+}));
 
 const SYSTEM_PROMPT = `You are a strict reviewer for an automated background coding agent.
 You are given a task prompt, the diff the agent produced, and the output of
@@ -140,9 +242,126 @@ export interface JudgeInput {
   model?: string;
 }
 
-/** Construct the real Anthropic client (requires credentials in the env). */
-export function createJudgeClient(): JudgeClient {
-  return new Anthropic() as unknown as JudgeClient;
+/**
+ * The Anthropic SDK judge — the transport CI bills to an API key — rooted at
+ * the run's workspace and holding the same read tools the local judge holds.
+ *
+ * The SDK has no tool loop of its own, so this is where the judge's
+ * conversation lives: pass the shared surface, serve every tool call the model
+ * stops on through the rooted reader, and hand the results back. One request
+ * carries both the tools and the verdict's schema, and the verdict arrives on
+ * the turn after the tool results — measured, not assumed (#104), which is why
+ * there is no final tool-free request here.
+ *
+ * **The reader is called in-process.** There is no subprocess, unlike the CLI
+ * transport below, and that asymmetry is deliberate: the launch handshake and
+ * marker file the runner uses to prove the *CLI* judge's read server came up
+ * (spec §6) have nothing to check here. An unavailable reader on this path is
+ * `createRootedReader` throwing at construction or a dispatch throwing during
+ * the loop, and `run.ts` already turns a throwing judge into `engine-failed`.
+ * A handshake added here could not fail, and a check that cannot fail reads to
+ * the next person like a guarantee.
+ *
+ * @param opts.messages  The single-turn Anthropic surface. Defaults to the real
+ *   client, which needs credentials in the env; tests pass a scripted one, so
+ *   the loop is exercised without a network or a key.
+ */
+export function createJudgeClient(opts: { workspace: string; messages?: AnthropicMessages }): JudgeClient {
+  // Constructed per client, and one client is one judgement: the reader's call
+  // budget is spent over a whole review (ADR-0011), and a reader shared between
+  // verdicts would hand the second one a budget the first had already spent.
+  const read = createRootedReader(opts.workspace);
+  // The double cast is the SDK's overloads, not a shape mismatch: `create` is
+  // declared three times over narrower parameter types than the one this
+  // interface takes.
+  const messages = opts.messages ?? (new Anthropic().messages as unknown as AnthropicMessages);
+
+  return {
+    workspace: opts.workspace,
+    messages: {
+      async parse(params: Record<string, unknown>) {
+        const conversation = [...(params.messages as unknown[])];
+        const turns: SdkTurn[] = [];
+
+        for (let turn = 0; turn < MAX_JUDGE_TURNS; turn += 1) {
+          const response = await messages.create({ ...params, messages: conversation, tools: JUDGE_READ_TOOL_PARAMS });
+          turns.push(response);
+
+          const calls = toolUseBlocks(response.content);
+          // Anything else ends the conversation — including a tool-use stop
+          // that carried no call, which would otherwise re-send an unchanged
+          // conversation until the bound below caught it. What the model
+          // stopped *with* is the caller's problem: a turn carrying no parsed
+          // verdict fails the run one frame up, in judgeWithEvidence, which is
+          // the same answer as failing here.
+          if (response.stop_reason !== "tool_use" || calls.length === 0) {
+            return { ...response, parsed_output: verdictJson(response.content), usageEvidence: sdkUsage(...turns) };
+          }
+
+          // The assistant turn goes back whole. Thinking blocks ride along with
+          // tool use, and the API rejects a tool result whose assistant turn
+          // dropped them.
+          conversation.push({ role: "assistant", content: response.content });
+          const results: Record<string, unknown>[] = [];
+          for (const call of calls) {
+            const result = await read(call.name, call.input);
+            results.push({ type: "tool_result", tool_use_id: call.id, content: result.text, is_error: result.isError });
+          }
+          // Every result in one message: the API pairs a tool-use turn with a
+          // single user turn answering all of it.
+          conversation.push({ role: "user", content: results });
+        }
+
+        // A failure, never a fallthrough to one more tool-free request. That
+        // fallthrough would answer with a text-only verdict recorded under a
+        // name claiming reads — the ADR-0011 condition, reached by exhaustion
+        // instead of by configuration. No path is named: this message is
+        // archived and shown at co-sign.
+        throw new Error(
+          `judge did not reach a verdict within ${MAX_JUDGE_TURNS} turns of workspace reads; ` +
+            "the run fails rather than accepting a verdict made without them",
+        );
+      },
+    },
+  };
+}
+
+/**
+ * The verdict the final turn carried, as JSON — the one job the SDK's `parse`
+ * helper did that this loop still needs, minus the throw that made it unusable
+ * mid-conversation.
+ *
+ * Strict, and only the first text block: `output_config` constrains what the
+ * model may emit, so a final turn that is not the verdict is a broken run, not
+ * something to go fishing in. Handing back `null` says exactly that, and
+ * {@link judgeWithEvidence} turns it into the same "unparseable verdict" it
+ * has always raised.
+ */
+function verdictJson(content: unknown): unknown {
+  if (!Array.isArray(content)) return null;
+  const text = content.find((block) => !!block && typeof block === "object" && block.type === "text");
+  try {
+    return JSON.parse(String(text?.text ?? ""));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The tool calls in an assistant turn's content, in the order the model made
+ * them. Tolerant of the blocks it does not care about — thinking, text, and
+ * whatever the API adds next — because a judgement must not fail on a block
+ * type that has nothing to do with reading.
+ */
+function toolUseBlocks(content: unknown): { id: string; name: string; input: Record<string, unknown> }[] {
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((block): block is Record<string, unknown> => !!block && typeof block === "object" && (block as Record<string, unknown>).type === "tool_use")
+    .map((block) => ({
+      id: String(block.id),
+      name: String(block.name),
+      input: (block.input ?? {}) as Record<string, unknown>,
+    }));
 }
 
 /**
@@ -176,7 +395,7 @@ function judgeReadMcpConfig(workspace: string): string {
  * prompts, no ANTHROPIC_API_KEY needed. The CLI has no structured-output
  * flag, so the schema is enforced by instruction + VerdictSchema parse.
  *
- * The judge's cage is made of the flags below (ADR-0011 §5.1), and each is
+ * The judge's cage is made of the flags below (cage spec §5.1), and each is
  * load-bearing:
  *
  * - `--tools ""` removes every built-in tool. On its own this is the stopgap
@@ -277,7 +496,7 @@ export function buildUserPrompt(input: Pick<JudgeInput, "taskMarkdown" | "diff" 
 }
 
 export async function judgeWithEvidence(input: JudgeInput): Promise<JudgeResult> {
-  const client = input.client ?? createJudgeClient();
+  const client = input.client ?? createJudgeClient({ workspace: input.workspace });
   if (client.workspace !== undefined && client.workspace !== input.workspace) {
     // Paths stay out of the message: it is archived, and a mismatch is a
     // deterministic wiring bug that needs no directory layout to reproduce.
@@ -301,7 +520,7 @@ export async function judgeWithEvidence(input: JudgeInput): Promise<JudgeResult>
   const usageEvidence = (response as Record<string, unknown>).usageEvidence;
   return {
     verdict: parsed.data,
-    usage: usageEvidence && typeof usageEvidence === "object" ? usageEvidence as JudgeUsage : sdkUsage(response as Record<string, unknown>),
+    usage: usageEvidence && typeof usageEvidence === "object" ? usageEvidence as JudgeUsage : sdkUsage(response),
   };
 }
 
