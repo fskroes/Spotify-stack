@@ -308,6 +308,45 @@ failure rather than a fallthrough to a text-only answer.
 The read module is called **in-process** here. There is no subprocess, which is
 why §6 treats the two transports asymmetrically.
 
+#### Probe result, 2026-07-29 (#106)
+
+#106 shipped on fakes alone, and the review on it found a production-fatal bug
+they could not see — so the loop was measured the way every stage before it was:
+one live run of the shipped `judgeWithEvidence`, against the workspace shape
+§5.1 used, with only an instrumented transport added. Two runs, same result.
+Four turns, six tool calls (`find` twice, then `read_file` four times), and a
+veto quoting a nonce the entry point exported and nothing else could supply.
+
+Three server-side assumptions the loop rests on, each of which a fake asserts
+rather than tests:
+
+- **Thinking blocks round-trip.** The assistant turn goes back whole, real
+  signatures included, and the server accepts it. Signature verification is
+  server-side, so the unit fake's literal `"sig"` had established nothing.
+- **`is_error: true` is accepted** on a request still carrying `tools` and
+  `output_config`. Forced, not waited for: the run refused no reads of its own,
+  so a real assistant turn was replayed with the first result turned into an
+  error. A control carrying ordinary results ran on failure, and the first
+  attempt needed it — that attempt answered one of the turn's two tool calls and
+  was rejected for the other, which is a malformed replay and not a finding
+  about `is_error`.
+- **A text block on a tool-use turn was not observed** — in either run. That is
+  the case that made the SDK's `parse` helper throw and drove the switch to
+  `create`. Not observed is not absent: the switch stays, now as defence rather
+  than as a measured necessity, and this line is the honest state of it.
+
+Two things the run settled that nobody had asked:
+
+- **A tool-use turn can carry more than one call.** Both runs opened with two
+  `find`s in one turn. Answering all of them in a single user message is what
+  the API requires, not merely what the loop happens to do.
+- **`output_config` does not constrain the verdict's enum.** `zodOutputFormat`
+  flattens `z.enum(["approve", "veto"])` into a *description* string, so the
+  server enforces the object's shape and not that field's values. Nothing is
+  false-green: `VerdictSchema.safeParse` rejects a stray value and the run
+  fails as an unparseable verdict. But the enforcement lives client-side, which
+  is not what "structured output" implies to the next reader.
+
 ## 6. Detecting an unavailable read tool
 
 ADR-0011 mandates `engine-failed` and deliberately does not say how the runner
