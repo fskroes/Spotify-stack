@@ -108,12 +108,18 @@ importers:
       '@fleet/judge':
         specifier: workspace:*
         version: link:../judge
+      '@fleet/judge-read':
+        specifier: workspace:*
+        version: link:../judge-read
       '@fleet/knowledge':
         specifier: workspace:*
         version: link:../knowledge
       '@fleet/mcp-verify':
         specifier: workspace:*
         version: link:../mcp-verify
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.13.0
+        version: 1.29.0(zod@4.4.3)
       picomatch:
         specifier: ^4.0.2
         version: 4.0.5

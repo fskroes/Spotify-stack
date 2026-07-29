@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { JUDGE_READ_SERVER_NAME, JUDGE_READ_TOOLS, JUDGE_READ_WORKSPACE_ENV } from "@fleet/judge-read";
+import { JUDGE_READ_MARKER_ENV, JUDGE_READ_SERVER_NAME, JUDGE_READ_TOOLS, JUDGE_READ_WORKSPACE_ENV } from "@fleet/judge-read";
 import { createCliJudgeClient, judge } from "../src/index.js";
 
 /**
@@ -19,6 +19,7 @@ let bin: string;
 let argvFile: string;
 let cwdFile: string;
 let configCopy: string;
+let markerPath: string;
 let originalPath: string | undefined;
 
 const VERDICT = {
@@ -35,6 +36,7 @@ beforeEach(() => {
   argvFile = path.join(tmp, "argv");
   cwdFile = path.join(tmp, "cwd");
   configCopy = path.join(tmp, "mcp-config.copy.json");
+  markerPath = path.join(tmp, "judge-read-startup.json");
   mkdirSync(workspace);
   mkdirSync(bin);
 
@@ -74,7 +76,7 @@ async function invoke(): Promise<{ argv: string[]; cwd: string; config: Record<s
     diff: "diff",
     verifySummary: "VERIFY PASSED",
     workspace,
-    client: createCliJudgeClient({ workspace }),
+    client: createCliJudgeClient({ workspace, markerPath }),
   });
   expect(verdict.verdict).toBe("approve");
   const argv = readFileSync(argvFile, "utf8").split("\0").slice(0, -1);
@@ -111,6 +113,16 @@ describe("the CLI judge's cage", () => {
     const entry = config.mcpServers[JUDGE_READ_SERVER_NAME];
     expect(entry.env[JUDGE_READ_WORKSPACE_ENV]).toBe(workspace);
     expect(entry.args.some((arg: string) => arg.endsWith(path.join("judge-read", "src", "server.js")))).toBe(true);
+  });
+
+  it("tells the read server where to leave the startup marker the runner asserts", async () => {
+    // This transport is the one that starts the server as a subprocess, and a
+    // subprocess that never came up leaves a judge reviewing blind. The marker
+    // is the only evidence that it did — a verdict cannot fake it, and a judge
+    // whose diff needed no reads still leaves one behind (ADR-0011).
+    const { config } = await invoke();
+
+    expect(config.mcpServers[JUDGE_READ_SERVER_NAME].env[JUDGE_READ_MARKER_ENV]).toBe(markerPath);
   });
 
   it("keeps strict MCP config, which is what now holds the cage shut", async () => {
@@ -166,7 +178,7 @@ describe("the CLI judge's cage", () => {
         diff: "diff",
         verifySummary: "VERIFY PASSED",
         workspace: path.join(tmp, "some-other-workspace"),
-        client: createCliJudgeClient({ workspace }),
+        client: createCliJudgeClient({ workspace, markerPath }),
       }),
     ).rejects.toThrow(/rooted at a different directory/);
   });
