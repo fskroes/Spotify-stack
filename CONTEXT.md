@@ -51,6 +51,33 @@ The thing that produces the diff — `claude` (headless Claude Code, the default
 or `mock` (applies a fixture patch, for hermetic tests). Swapping the engine
 changes nothing about the gates: scope, verify, and judge run identically.
 
+## Judge
+
+The model review standing between a green diff and a human. It reads the task,
+the diff, and the verification summary, and returns approve or veto with reasons.
+It may also read the run's workspace — read-only, through a tool the runner roots
+there ([ADR-0011](docs/adr/0011-the-runner-owns-the-judges-reads.md)), because a
+reviewer that can only check what the task asserted is examining the wrong
+document.
+
+Two transports carry the call, an SDK client and the local `claude` CLI, and
+which one runs is a **billing** question. It is never a capability question: the
+judge's [cage](#cage) is the same either way, and evidence records which
+capability produced a verdict rather than only which model did.
+
+## Cage
+
+The capabilities a fleet-invoked model process has — enforced by the runner, not
+requested of the model. The agent's is an allowlist plus a hook injected into its
+workspace; the judge's is a rooted read tool and nothing else. Every such process
+has one, and a process nobody chose a cage for has the widest one available,
+which is how the judge came to be less constrained than the agent it reviews.
+
+Widening a cage is therefore a decision, not a feature — it belongs in an ADR
+with the failure mode it accepts, alongside
+[ADR-0003](docs/adr/0003-the-runner-owns-git.md) and
+[ADR-0011](docs/adr/0011-the-runner-owns-the-judges-reads.md).
+
 ## Dispatch
 
 Fanning a task out over targets on GitHub Actions (`fleet dispatch`), as opposed
