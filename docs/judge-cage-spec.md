@@ -512,6 +512,40 @@ line later would make it public-repo *git* content, at which point the existing
 check would scan it and the ban list would decide, having never been written
 with filenames in mind.
 
+#### The populated case, measured (2026-07-29, #109)
+
+Every automated test of this field asserts the *empty* case: the hermetic e2e's
+fake `claude` starts the read server and never calls a tool, so nothing in the
+suite had seen a real MCP session append to a journal. §5.2 records what shipping
+on fakes alone cost the stage before this one, so one local run bought the other
+half — mock engine, so the only model spend is the judge, CLI transport, dry
+run. 15.8s, $0.06.
+
+The task's end state turned on the package's public surface; the diff deleted a
+module and migrated its one call site, and never named the entry point. The
+judge opened `src/index.ts`, `package.json`, `src/http.ts` — recorded in that
+order — and approved with a rationale quoting the entry point's actual
+re-export list, which appears in neither the task nor the diff. That is the
+distinction the field exists for, visible on one screen: the claim, and the
+evidence that the judge went and looked.
+
+- The journal on the wire is three NUL-terminated records, appended by a real
+  session rather than by a test's `writeFileSync`.
+- `verdict.json` carried both fields; the PR body rendered
+  `claude-opus-4-8 + rooted-read` and the three paths; the raw-verdict block
+  carried only the model's answer, with the observation kept out of it.
+- The ledger line carried neither field — the scrub decision above, on real
+  data rather than on a fixture.
+
+**One thing the run settled that nobody had asked.** The judge rail's usage
+evidence named *two* models for this single judgement (`claude-opus-4-8` and a
+Haiku), because the CLI spends turns on more than the reviewing model. The
+identity pair records `claude-opus-4-8` — the model the run asked for, since the
+CLI envelope exposes no single answering model. So `judge.model` on this
+transport is what was engaged, not a claim about which model served each turn;
+the usage artifact remains the only place that answers that, and it is the place
+whose contract says "never a configured default".
+
 ## 8. The two invariant tests
 
 ADR-0011 names both. They are the reason the fork survived as long as it did —
