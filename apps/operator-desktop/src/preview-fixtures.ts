@@ -82,7 +82,7 @@ export function previewInflight(now: number): InflightRecord {
     repo: "demo-ts-service",
     title: "Cover upstream failure modes",
     stage: "verify",
-    attempt: 1,
+    pass: 1,
     stageSince: new Date(now - 70_000).toISOString(),
   } satisfies InflightRecord;
 }

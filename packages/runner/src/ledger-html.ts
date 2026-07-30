@@ -196,7 +196,7 @@ function renderFunnel(stages: FunnelStage[], entered: number, note: string): str
  * passed no gate, so a marker for it can only hang in the bar's gutter — at
  * which point it is already a separate surface, drawn in the Funnel's
  * whitespace. The lane also has room for the two things the Funnel has nowhere
- * to put: elapsed time, and the attempt counter that tells a run on its second
+ * to put: elapsed time, and the pass counter that tells a run on its second
  * pass through Agent apart from one that has never left it (`run.ts`'s
  * agent→verify→judge loop is not monotonic, so stage position alone lies).
  *
@@ -244,9 +244,9 @@ function stageTrack(stage: string): string {
 function renderLiveLane(live: InflightRecord[], now: Date): string {
   const rows = live
     .map((r) => {
-      const attempt =
-        r.attempt > 1
-          ? `<span style="font-family:var(--mono);font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px;color:${C.yellow};background:${hexA(C.yellow, 0.13)};border:1px solid ${hexA(C.yellow, 0.4)}">↺ attempt ${r.attempt}</span>`
+      const pass =
+        r.pass > 1
+          ? `<span style="font-family:var(--mono);font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px;color:${C.yellow};background:${hexA(C.yellow, 0.13)};border:1px solid ${hexA(C.yellow, 0.4)}">↺ pass ${r.pass}</span>`
           : "";
       const elapsed = now.getTime() - Date.parse(r.startedAt);
       const inStage = now.getTime() - Date.parse(r.stageSince);
@@ -262,7 +262,7 @@ function renderLiveLane(live: InflightRecord[], now: Date): string {
             <div style="color:${C.muted};font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.title)}</div>
             <div style="font-family:var(--mono);font-size:10.5px;color:${C.gray};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.task)} · ${esc(r.repo)}</div>
           </div>
-          ${attempt}
+          ${pass}
           <div style="width:78px;flex:none;text-align:right;font-family:var(--mono)">
             <div style="font-size:12px;color:${C.text}" data-live-since="${esc(r.startedAt)}">${fmtElapsed(elapsed)}</div>
             <div style="font-size:9.5px;letter-spacing:0.08em;text-transform:uppercase;color:${C.gray}">elapsed</div>

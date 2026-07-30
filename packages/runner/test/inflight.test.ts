@@ -54,7 +54,7 @@ describe("inflight store", () => {
         repo: "demo-ts-service",
         title: "Migrate the HTTP client",
         stage: "agent",
-        attempt: 1,
+        pass: 1,
         stageSince: "2026-07-09T12:00:00.000Z",
       } satisfies InflightRecord,
     ]);
@@ -68,19 +68,19 @@ describe("inflight store", () => {
     const [record] = readInflight(ledgerPath);
     expect(readdirSync(inflightDir(ledgerPath))).toEqual(["4242.json"]); // never an event log
     expect(record.stage).toBe("verify");
-    expect(record.attempt).toBe(1); // carried forward
+    expect(record.pass).toBe(1); // carried forward
     expect(Date.parse(record.stageSince)).toBeGreaterThan(Date.parse(record.startedAt));
   });
 
-  it("carries the attempt count, because the agent→verify→judge loop is not monotonic", () => {
+  it("carries the pass count, because the agent→verify→judge loop is not monotonic", () => {
     const ledgerPath = tmpLedger();
     const inflight = begin(ledgerPath);
 
     inflight.enter("agent", 2);
-    expect(readInflight(ledgerPath)[0]).toMatchObject({ stage: "agent", attempt: 2 });
+    expect(readInflight(ledgerPath)[0]).toMatchObject({ stage: "agent", pass: 2 });
 
     inflight.enter("judge");
-    expect(readInflight(ledgerPath)[0]).toMatchObject({ stage: "judge", attempt: 2 });
+    expect(readInflight(ledgerPath)[0]).toMatchObject({ stage: "judge", pass: 2 });
   });
 
   it("clears only its own claim, leaving concurrent runs in flight", () => {
@@ -172,7 +172,7 @@ const seed = (ledgerPath: string, over: Partial<InflightRecord> & { pid: number 
     repo: "demo-ts-service",
     title: "Migrate the HTTP client",
     stage: "agent",
-    attempt: 1,
+    pass: 1,
     stageSince: minutesAgo(5),
     ...over,
   };

@@ -9,7 +9,7 @@ interface CompletedRunRevision {
 interface InflightRunRevision {
   runId: string;
   stage: string;
-  attempt: number;
+  pass: number;
   stageSince: string;
 }
 
@@ -19,7 +19,7 @@ export function fleetRevision(
 ): string {
   return JSON.stringify({
     completed: completed.map(({ runId, ts, task, repo, status }) => ({ runId, ts, task, repo, status })),
-    inflight: inflight.map(({ runId, stage, attempt, stageSince }) => ({ runId, stage, attempt, stageSince })),
+    inflight: inflight.map(({ runId, stage, pass, stageSince }) => ({ runId, stage, pass, stageSince })),
   });
 }
 

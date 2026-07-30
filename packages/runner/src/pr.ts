@@ -130,7 +130,7 @@ export function buildPrBody(input: PrBodyInput): string {
       ? [
           ``,
           ...input.vetoes.map(
-            (v, i) => `Attempt ${i + 1} vetoed (${v.violations.join("; ")}) → corrected → re-judged.`,
+            (v, i) => `Pass ${i + 1} vetoed (${v.violations.join("; ")}) → corrected → re-judged.`,
           ),
           `Final verdict after ${input.vetoes.length} correction${input.vetoes.length === 1 ? "" : "s"}: approved.`,
         ]

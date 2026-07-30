@@ -24,7 +24,7 @@ function inflight(overrides: Partial<InflightRecord> = {}): InflightRecord {
     repo: "demo-api",
     title: "Add operator API",
     stage: "agent",
-    attempt: 1,
+    pass: 1,
     stageSince: "2026-07-15T10:00:00.000Z",
     ...overrides,
   };
