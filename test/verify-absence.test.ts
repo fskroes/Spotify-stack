@@ -29,10 +29,12 @@
  * rather than a thing you re-derive by reading — the same choice
  * `docs-drift.test.ts` makes for prose and `check-scrub.sh` makes for secrets.
  *
- * It covers the runner's report only. The operator's three surfaces are guarded
- * the same way and were verified by hand, but `main.ts` queries the DOM at module
- * scope, so they cannot be reached from a test until they are extracted — which
- * is why nothing here mentions them.
+ * It covers the runner's report only. The operator's surfaces are guarded the
+ * same way, but `main.ts` queries the DOM at module scope, so they cannot be
+ * rendered from a test until they are extracted. Until then they are pinned by
+ * [`operator-verify-guards.test.ts`](./operator-verify-guards.test.ts), which
+ * scans the source for the guards instead of exercising them — a weaker oracle,
+ * and the reason this file's assertions stop at the report.
  *
  * ## On the wording
  *
