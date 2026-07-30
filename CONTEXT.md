@@ -163,8 +163,17 @@ the composition lives there and verification stays task-blind.
 Orthogonal to [run status](#run-status-vs-verification-state). Every surface
 reads the state from its field — `VerifyResult.state`, or the ledger line's
 `verifyState` — and none may infer it by string-matching summary prose. A
-missing field (any line written before the tri-state existed) means *not
-known*, which is not the same as green and must never render as green.
+missing field means *not known*, which is not the same as green and must never
+render as green.
+
+Absence is ordinary in the record and rare in a readout, and the two are worth
+keeping apart. A line omits the field whenever the run reached no verification of
+its own — every empty diff, every scope violation, an engine failure that threw
+before the agent produced anything — as well as on any line written before the
+tri-state existed. But a run that never reached verify is answered by its [run
+status](#run-status-vs-verification-state) instead, so the only absence a reader
+is ever *shown* as *not known* is the historical one. "Nothing was recorded" and
+"there was nothing to record" are different claims, and only the first is a gap.
 
 ## Mandated gate
 
