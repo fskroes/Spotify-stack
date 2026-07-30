@@ -29,7 +29,7 @@ function inflight(overrides: Partial<InflightRecord> = {}): InflightRecord {
     repo: "demo-feed-service",
     title: "Dedupe feed items on ingest",
     stage: "verify",
-    attempt: 1,
+    pass: 1,
     stageSince: "2026-07-09T12:09:30.000Z",
     ...overrides,
   };
@@ -96,8 +96,8 @@ describe("renderLedgerHtml · the Live lane", () => {
   });
 
   it("badges a run that has bounced back through the loop", () => {
-    expect(render([inflight({ stage: "agent", attempt: 2 })])).toContain("↺ attempt 2");
-    expect(render([inflight()])).not.toContain("↺ attempt");
+    expect(render([inflight({ stage: "agent", pass: 2 })])).toContain("↺ pass 2");
+    expect(render([inflight()])).not.toContain("↺ pass");
   });
 
   it("drops a live row whose runId already reached the ledger", () => {

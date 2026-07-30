@@ -23,6 +23,11 @@ const GATES_UNMET_TASK = path.join(__dirname, "fixtures", "gates-unmet-task.md")
 const GATES_MET_TASK = path.join(__dirname, "fixtures", "gates-met-task.md");
 const GOOD_PATCH = path.join(__dirname, "fixtures", "001-good.patch");
 const BAD_PATCH = path.join(__dirname, "fixtures", "001-bad.patch");
+/** A copy of the good patch whose `.retry.patch` reverses it, so a resume
+ *  reverts the workspace instead of correcting it. Kept separate from
+ *  GOOD_PATCH: adding a retry patch beside that one would change what every
+ *  other resuming test does. */
+const REVERT_PATCH = path.join(__dirname, "fixtures", "001-revert.patch");
 
 const quiet = () => {};
 
@@ -254,7 +259,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
     // process's — and it said "judge". The second says which pass through the
     // agent→verify→judge loop it was on, which the stage alone cannot.
     expect(seen).toHaveLength(2);
-    expect(seen.map((r) => [r.stage, r.attempt])).toEqual([
+    expect(seen.map((r) => [r.stage, r.pass])).toEqual([
       ["judge", 1],
       ["judge", 2],
     ]);
@@ -436,7 +441,41 @@ describe("runner e2e (mock engine, hermetic)", () => {
     // The absorbed veto surfaces as the immune-system trace in the preview.
     expect(result.vetoes).toHaveLength(1);
     const preview = readFileSync(path.join(result.artifactsDir, "pr-preview.md"), "utf8");
-    expect(preview).toContain("Attempt 1 vetoed (stub: first attempt rejected)");
+    expect(preview).toContain("Pass 1 vetoed (stub: first attempt rejected)");
+  });
+
+  it("revert after veto: an emptied diff is classified on every pass, not approved", async () => {
+    const ledgerPath = tmpLedger();
+    // The judge vetoes pass 1's migration and the agent reverts the workspace
+    // instead of correcting it, so pass 2 stages nothing. Pass 1 classifies an
+    // empty diff (`no-changes` when the sentinel was declared, `agent-failed`
+    // otherwise); every later pass must apply the same rule. Otherwise the run
+    // records the judge's approval of a change that no longer exists, beside a
+    // zero-byte diff.patch — a claim the fleet did not earn.
+    const result = await run({
+      controlRepo: CONTROL_REPO,
+      taskPath: TASK_001,
+      repoName: "demo-ts-service",
+      local: true,
+      dryRun: true,
+      engine: "mock",
+      mockPatch: REVERT_PATCH,
+      judgeMode: "veto-once",
+      ledgerPath,
+      log: quiet,
+    });
+
+    // The revert is not declared with the sentinel, so it is a failure to
+    // correct — not a benign "nothing was needed".
+    expect(result.status).toBe("agent-failed");
+    expect(result.diff.trim()).toBe("");
+    expect(result.prUrl).toBeUndefined();
+    const [entry] = readLedger(ledgerPath);
+    expect(entry.status).toBe("agent-failed");
+    // The veto that triggered the retry stays on the record; the run ends on
+    // what the last pass produced, not on the judge's earlier word.
+    expect(result.vetoes).toHaveLength(1);
+    expect(entry.vetoes).toBe(1);
   });
 
   it("records usage across initial agent, veto, resume, and fresh judge review", async () => {

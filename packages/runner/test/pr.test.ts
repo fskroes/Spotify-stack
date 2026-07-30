@@ -118,7 +118,7 @@ describe("buildPrBody", () => {
         ],
       }),
     );
-    expect(body).toContain("Attempt 1 vetoed (package-lock.json modified without being asked) → corrected → re-judged.");
+    expect(body).toContain("Pass 1 vetoed (package-lock.json modified without being asked) → corrected → re-judged.");
     expect(body).toContain("Final verdict after 1 correction: approved.");
   });
 

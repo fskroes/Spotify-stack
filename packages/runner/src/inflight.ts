@@ -115,8 +115,8 @@ function dropClaim(file: string, log: (line: string) => void): void {
 }
 
 export interface InflightHandle {
-  /** Record a transition. `attempt` carries forward when omitted. */
-  enter(stage: Stage, attempt?: number): void;
+  /** Record a transition. The pass ordinal carries forward when omitted. */
+  enter(stage: Stage, pass?: number): void;
   /** Drop this run's claim. Called once the ledger line is durable. */
   clear(): void;
 }
@@ -155,7 +155,7 @@ export function beginInflight(opts: BeginInflightOptions): InflightHandle {
     repo: opts.repo,
     title: opts.title,
     stage: "agent",
-    attempt: 1,
+    pass: 1,
     stageSince: opts.startedAt.toISOString(),
   };
 
@@ -214,10 +214,10 @@ export function beginInflight(opts: BeginInflightOptions): InflightHandle {
   }
 
   return {
-    enter(stage, attempt) {
+    enter(stage, pass) {
       record.stage = stage;
       record.stageSince = new Date().toISOString();
-      if (attempt !== undefined) record.attempt = attempt;
+      if (pass !== undefined) record.pass = pass;
       write();
     },
     clear,

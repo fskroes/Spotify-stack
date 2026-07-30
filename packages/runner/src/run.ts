@@ -9,15 +9,15 @@ import { createCliJudgeClient, createJudgeClient, judgeWithEvidence, type JudgeC
 import { prepareRunArtifactsDir, REVIEW_ARTIFACTS } from "./artifacts.js";
 import { assertJudgeReadStartupMarker, preflightJudgeRead } from "./judge-read-check.js";
 import { claudeEngine, mockEngine, type Engine, type EngineResult } from "./engine.js";
-import { createUsageCollector, unavailableProducerUsage, writeModelUsageEvidence, type ProducerUsage } from "./model-usage.js";
+import { createUsageCollector, unavailableProducerUsage, writeModelUsageEvidence, type ProducerUsage, type UsageCollector } from "./model-usage.js";
 import { findRepo, type FleetRepo } from "./fleet.js";
-import { beginInflight, sweepInflight } from "./inflight.js";
+import { beginInflight, sweepInflight, type InflightHandle } from "./inflight.js";
 import { appendLedger, defaultLedgerPath, fleetRecord, readLedger } from "./ledger.js";
 import { defaultLedgerHtmlPath, writeLedgerHtml } from "./ledger-html.js";
 import { buildPrBody, type VerifyCheck } from "./pr.js";
 import { buildRunPreamble } from "@fleet/knowledge";
 import { loadTask, type Task } from "./task.js";
-import { eligibleVerifiers } from "./verifiers.js";
+import { eligibleVerifiers, type VerifierCheck } from "./verifiers.js";
 import { git, injectAgentConfig, injectKnowledge, prepareWorkspace, RUN_KNOWLEDGE_FILE, stagedDiff, stagedFiles } from "./workspace.js";
 
 interface VerifyResult {
@@ -425,6 +425,239 @@ function openPullRequest(opts: {
   return { url, sha };
 }
 
+/** Phase timings, accumulated across every pass of one run. */
+export interface PassTimings {
+  agentMs: number;
+  verifyMs: number;
+  judgeMs: number;
+}
+
+/**
+ * Everything a [pass](../../../CONTEXT.md#pass) needs, gathered once by `run()`.
+ * Deliberately a value rather than a closure: the four-phase sequence is then
+ * reachable from a test with fakes in place of the engine and the judge, which
+ * is what it never had while it lived twice inside `run()`.
+ */
+export interface PassContext {
+  task: Task;
+  workspace: string;
+  engine: Engine;
+  judgeOnce: (input: Omit<JudgeInput, "client" | "model">) => Promise<JudgeResult>;
+  registered: VerifierCheck[];
+  /** First prompt only: the file persists on disk across passes and `resume`
+   *  carries the session, so the agent keeps both without being re-told. */
+  knowledgePreamble?: string;
+  /** Absent when the task declares no `scope:` — unrestricted. */
+  inScope?: (file: string) => boolean;
+  artifact: (name: string, content: string) => void;
+  timed: <T>(phase: keyof PassTimings, fn: () => T | Promise<T>) => Promise<T>;
+  inflight: InflightHandle;
+  usage: UsageCollector;
+  log: (line: string) => void;
+}
+
+/** A pass that reached a fate of its own — no further pass can help. */
+export interface EndedPass {
+  outcome: "ended";
+  status: RunStatus;
+  diff: string;
+  resultText: string;
+  verify?: VerifyResult;
+  unmetGates?: string[];
+  scopeOffenders?: string[];
+  /** Only ever the *prior* pass's, and only when this pass never reached the
+   *  workspace — see the agent-failure path in `runPass`. */
+  verdict?: Verdict;
+}
+
+/**
+ * A pass the judge rejected. The only outcome that may seed another pass, which
+ * is why it alone carries the session and the ordinal: `runPass`'s second
+ * parameter accepts this type and no other, so "only a veto starts another
+ * pass" is a compile error rather than a convention.
+ */
+export interface VetoedPass {
+  outcome: "vetoed";
+  ordinal: number;
+  sessionId: string;
+  diff: string;
+  resultText: string;
+  verify: VerifyResult;
+  unmetGates: string[];
+  judgeResult: JudgeResult;
+}
+
+/** A pass the judge approved. The run may ship what it produced. */
+export interface ApprovedPass {
+  outcome: "approved";
+  diff: string;
+  resultText: string;
+  verify: VerifyResult;
+  unmetGates: string[];
+  judgeResult: JudgeResult;
+}
+
+export type PassOutcome = EndedPass | VetoedPass | ApprovedPass;
+
+/**
+ * The task's mandate, checked against what actually executed. Verification
+ * itself never learns about tasks — it is shared with the agent-facing MCP
+ * tool, and handing the agent a mandate it cannot act on would leave it
+ * chasing a pass it has no way to produce. Naming the unmet gates in the
+ * summary is not redundancy with the wire field: the judge's whole input is
+ * the task markdown, the diff, and this text, so this is what lets it
+ * decline to approve a change on the strength of checks the task never asked for.
+ */
+function applyGates(task: Task, result: VerifyResult): { verify: VerifyResult; unmetGates: string[] } {
+  const unmet = findUnmetGates(task.gates, result.checks);
+  if (unmet.length === 0) return { verify: result, unmetGates: unmet };
+  return {
+    verify: {
+      ...result,
+      summary:
+        `${result.summary}\n\nGATES UNMET — this task mandated ${unmet.join(", ")}, which did not run here. ` +
+        "What executed above is not the set the task required, so this change is unverified against its own mandate. This is not a pass.",
+    },
+    unmetGates: unmet,
+  };
+}
+
+/** The veto, handed back to the agent that produced the change. */
+function resumeGuidance(verdict: Verdict): string {
+  return (
+    `A reviewer rejected your change:\n${verdict.violations.map((v) => `- ${v}`).join("\n")}\n\n` +
+    `${verdict.guidance}\nCorrect the change, then call the verify tool again.`
+  );
+}
+
+/**
+ * One [pass](../../../CONTEXT.md#pass): agent → scope → verify → judge. A run
+ * has at least one; a judge veto starts another.
+ *
+ * The veto retry used to be a second copy of this sequence, and the two copies
+ * drifted — the copy never classified an empty diff, so an agent that reverted
+ * its vetoed change reached `approved` beside a zero-byte `diff.patch`. One
+ * implementation, looped, cannot drift.
+ *
+ * A pass reports **only what it observed** ([ADR-0012](../../../docs/adr/0012-a-pass-reports-only-what-it-observed.md)).
+ * It never pairs this pass's diff with an earlier pass's verification or
+ * verdict: that green belongs to a change this pass replaced, and a verdict on
+ * a diff nobody reviewed is the one output the system may not produce
+ * (ADR-0004). The single exception is documented at the agent-failure path,
+ * where this pass never reached the workspace at all.
+ */
+export async function runPass(ctx: PassContext, prior?: VetoedPass): Promise<PassOutcome> {
+  const ordinal = (prior?.ordinal ?? 0) + 1;
+  const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+  // Every pass, not only the retries: stage alone cannot tell a second trip
+  // through Agent from a run that never left it. Re-entering on the first pass
+  // too means `stageSince` marks the real start of the agent call, so a cold
+  // clone stops consuming the agent stage's staleness budget. The stage label is
+  // unchanged either way — cloning stays bracketed into the phase it starts.
+  ctx.inflight.enter("agent", ordinal);
+  ctx.log(prior ? "· resuming agent…" : "· running agent…");
+  let engineResult: EngineResult;
+  try {
+    engineResult = await ctx.timed("agentMs", () =>
+      prior
+        ? ctx.engine.resume(prior.sessionId, resumeGuidance(prior.judgeResult.verdict))
+        : ctx.engine.run(buildPreamble(ctx.task, ctx.knowledgePreamble)),
+    );
+    ctx.usage.recordAgent(engineResult.usage);
+  } catch (error) {
+    ctx.usage.recordAgent(
+      unavailableProducerUsage(
+        prior
+          ? "agent resume failed before a usable final envelope"
+          : "agent invocation failed before a usable final envelope",
+      ),
+    );
+    // The one place a pass may report an earlier pass's facts, and it is not the
+    // stale-green hazard: this pass never reached the workspace, so the change
+    // `prior` verified and judged is still exactly what is staged there. Diff,
+    // verification and verdict continue to describe the same change, and
+    // reporting nothing would misreport a dirty workspace as clean. Every path
+    // below has staged something of its own, where an earlier green would
+    // describe a change that no longer exists.
+    if (prior) ctx.artifact("diff.patch", prior.diff);
+    return {
+      outcome: "ended",
+      status: "engine-failed",
+      resultText: errorText(error),
+      diff: prior?.diff ?? "",
+      verify: prior?.verify,
+      unmetGates: prior?.unmetGates,
+      verdict: prior?.judgeResult.verdict,
+    };
+  }
+  ctx.artifact(prior ? `transcript.retry-${prior.ordinal}.json` : "transcript.json", engineResult.transcript);
+
+  const diff = stagedDiff(ctx.workspace);
+  const resultText = engineResult.resultText;
+
+  if (diff.trim() === "") {
+    // The task template requires the agent to END its reply with the sentinel —
+    // a mere mention (e.g. while explaining a failure) must not count as a
+    // benign no-op. Applied on every pass, not just the first: an agent that
+    // reverts its vetoed change has produced nothing to review, and the run has
+    // to say so rather than record an approval of a change that no longer exists.
+    const declared = resultText.trim().endsWith("NO_CHANGES_NEEDED");
+    return { outcome: "ended", status: declared ? "no-changes" : "agent-failed", diff, resultText };
+  }
+
+  // The scope contract is enforced mechanically, not just promised: any diff
+  // outside task.scope dies here — before verify, judge, or a human.
+  ctx.inflight.enter("scope");
+  const { inScope } = ctx;
+  const offenders = inScope ? stagedFiles(ctx.workspace).filter((file) => !inScope(file)) : [];
+  if (offenders.length > 0) {
+    ctx.artifact("diff.patch", diff);
+    ctx.artifact(
+      "scope-violation.json",
+      JSON.stringify({ scope: ctx.task.scope, offendingFiles: offenders }, null, 2),
+    );
+    ctx.log(`✖ scope violation: ${offenders.join(", ")}`);
+    return { outcome: "ended", status: "scope-violation", diff, resultText, scopeOffenders: offenders };
+  }
+
+  // Belt-and-braces deterministic verification (the Stop hook already ran it
+  // inside the session for the real engine, but nothing green goes unproven).
+  ctx.log("· verifying…");
+  ctx.inflight.enter("verify");
+  const { verify, unmetGates } = applyGates(
+    ctx.task,
+    (await ctx.timed("verifyMs", () => runVerify(ctx.workspace, { registered: ctx.registered }))) as VerifyResult,
+  );
+  ctx.artifact("verify.log", verify.summary);
+  if (verify.state === "failed") {
+    ctx.artifact("diff.patch", diff);
+    return { outcome: "ended", status: "verify-failed", diff, resultText, verify, unmetGates };
+  }
+
+  ctx.inflight.enter("judge");
+  let judgeResult: JudgeResult;
+  try {
+    judgeResult = await ctx.timed("judgeMs", () =>
+      ctx.judgeOnce({ taskMarkdown: ctx.task.raw, diff, verifySummary: verify.summary, workspace: ctx.workspace }),
+    );
+    ctx.usage.recordJudge(judgeResult.usage);
+  } catch (error) {
+    ctx.usage.recordJudge(unavailableProducerUsage("judge invocation failed before a usable producer response"));
+    ctx.artifact("diff.patch", diff);
+    // No verdict, deliberately: this pass never got one. An earlier pass's veto
+    // judged a *different* diff, and recording it beside this one would pair a
+    // verdict with a change its judge never saw.
+    return { outcome: "ended", status: "engine-failed", diff, resultText: errorText(error), verify, unmetGates };
+  }
+
+  ctx.artifact("diff.patch", diff);
+  const facts = { diff, resultText, verify, unmetGates, judgeResult };
+  return judgeResult.verdict.verdict === "veto"
+    ? { outcome: "vetoed", ordinal, sessionId: engineResult.sessionId, ...facts }
+    : { outcome: "approved", ...facts };
+}
+
 export async function run(opts: RunOptions): Promise<RunResult> {
   const log = opts.log ?? ((line: string) => console.log(line));
   const task = loadTask(opts.taskPath);
@@ -603,202 +836,84 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       }
     }
 
-    // The scope contract is enforced mechanically, not just promised: any diff
-    // outside task.scope dies here — before verify, judge, or a human.
-    const inScope = task.scope ? picomatch(task.scope, { dot: true }) : undefined;
-    const scopeOffenders = (): string[] =>
-      inScope ? stagedFiles(workspace).filter((file) => !inScope(file)) : [];
+    // The knowledge preamble need only be in the first prompt: the file
+    // persists on disk across passes (the workspace is not recreated) and
+    // engine.resume carries the session, so the agent keeps both.
+    const knowledgePreamble =
+      knowledge.injected && knowledge.relPath && knowledge.artifactSha
+        ? buildRunPreamble(knowledge.relPath, knowledge.artifactSha, knowledge.drift?.recompileRequired ?? false)
+        : undefined;
 
-    log("· running agent…");
-    let engineResult: EngineResult;
-    try {
-      // The knowledge preamble need only be in the first prompt: the file
-      // persists on disk across veto-retries (the workspace is not recreated)
-      // and engine.resume carries the session, so the agent keeps both.
-      const knowledgePreamble =
-        knowledge.injected && knowledge.relPath && knowledge.artifactSha
-          ? buildRunPreamble(knowledge.relPath, knowledge.artifactSha, knowledge.drift?.recompileRequired ?? false)
-          : undefined;
-      engineResult = await timed("agentMs", () => engine.run(buildPreamble(task, knowledgePreamble)));
-      usage.recordAgent(engineResult.usage);
-    } catch (error) {
-      usage.recordAgent(unavailableProducerUsage("agent invocation failed before a usable final envelope"));
+    const ctx: PassContext = {
+      task,
+      workspace,
+      engine,
+      judgeOnce,
+      registered,
+      knowledgePreamble,
+      // Absent when the task declares no scope, which leaves the judge as the
+      // only scope police.
+      inScope: task.scope ? picomatch(task.scope, { dot: true }) : undefined,
+      artifact,
+      timed,
+      inflight,
+      usage,
+      log,
+    };
+
+    /** A pass that reached a fate of its own: record it and stop. */
+    const settle = (pass: EndedPass): RunResult =>
+      finish(
+        {
+          task,
+          repo,
+          workspace,
+          artifactsDir,
+          diff: pass.diff,
+          resultText: pass.resultText,
+          verify: pass.verify,
+          unmetGates: pass.unmetGates,
+          verdict: pass.verdict,
+          status: pass.status,
+        },
+        pass.scopeOffenders,
+      );
+
+    // The loop — and the only place retry policy lives. A pass knows nothing
+    // about how many are allowed; it produces an outcome, and only a veto can
+    // seed the next one, which is why `runPass` accepts no other kind.
+    let pass = await runPass(ctx);
+    while (pass.outcome === "vetoed" && vetoes.length < maxRetries) {
+      vetoes.push(pass.judgeResult.verdict);
+      // This veto's own evidence, not the run's: each pass was a separate
+      // judgement with its own reads, and folding them together would credit
+      // one pass's grounding to another's. The filename records whether the veto
+      // was retried — this loop's decision, which the pass cannot know.
+      artifact(`verdict.veto-${vetoes.length}.json`, verdictRecord(pass.judgeResult.verdict, pass.judgeResult));
+      log(`· judge vetoed (retry ${vetoes.length}/${maxRetries}) — resuming agent with guidance`);
+      pass = await runPass(ctx, pass);
+    }
+
+    if (pass.outcome === "ended") return settle(pass);
+
+    const { diff, resultText, verify, unmetGates, judgeResult } = pass;
+    const verdict = judgeResult.verdict;
+    artifact("verdict.json", verdictRecord(verdict, judgeResult));
+
+    if (pass.outcome === "vetoed") {
+      vetoes.push(verdict);
       return finish({
         task,
         repo,
         workspace,
         artifactsDir,
-        diff: "",
-        resultText: error instanceof Error ? error.message : String(error),
-        status: "engine-failed",
-      });
-    }
-    artifact("transcript.json", engineResult.transcript);
-
-    let diff = stagedDiff(workspace);
-    const base: Omit<RunResult, "status" | "vetoes" | "runId"> = {
-      task,
-      repo,
-      workspace,
-      artifactsDir,
-      diff,
-      resultText: engineResult.resultText,
-    };
-
-    if (diff.trim() === "") {
-      // The task template requires the agent to END its reply with the
-      // sentinel — a mere mention (e.g. while explaining a failure) must not
-      // count as a benign no-op.
-      const declared = engineResult.resultText.trim().endsWith("NO_CHANGES_NEEDED");
-      return finish({ ...base, status: declared ? "no-changes" : "agent-failed" });
-    }
-
-    const enforceScope = (): string[] => {
-      inflight.enter("scope");
-      const offenders = scopeOffenders();
-      if (offenders.length > 0) {
-        artifact("diff.patch", diff);
-        artifact(
-          "scope-violation.json",
-          JSON.stringify({ scope: task.scope, offendingFiles: offenders }, null, 2),
-        );
-        log(`✖ scope violation: ${offenders.join(", ")}`);
-      }
-      return offenders;
-    };
-
-    let offenders = enforceScope();
-    if (offenders.length > 0) {
-      return finish({ ...base, diff, status: "scope-violation" }, offenders);
-    }
-
-    // The task's mandate, checked against what actually executed. Verification
-    // itself never learns about tasks — it is shared with the agent-facing MCP
-    // tool, and handing the agent a mandate it cannot act on would leave it
-    // chasing a pass it has no way to produce. Naming the unmet gates in the
-    // summary is not redundancy with the wire field: the judge's whole input is
-    // the task markdown, the diff, and this text, so this is what lets it
-    // decline to approve a change on the strength of checks the task never asked for.
-    const applyGates = (result: VerifyResult): { verify: VerifyResult; unmetGates: string[] } => {
-      const unmet = findUnmetGates(task.gates, result.checks);
-      if (unmet.length === 0) return { verify: result, unmetGates: unmet };
-      return {
-        verify: {
-          ...result,
-          summary:
-            `${result.summary}\n\nGATES UNMET — this task mandated ${unmet.join(", ")}, which did not run here. ` +
-            "What executed above is not the set the task required, so this change is unverified against its own mandate. This is not a pass.",
-        },
-        unmetGates: unmet,
-      };
-    };
-
-    // Belt-and-braces deterministic verification (the Stop hook already ran it
-    // inside the session for the real engine, but nothing green goes unproven).
-    log("· verifying…");
-    inflight.enter("verify");
-    let gated = applyGates((await timed("verifyMs", () => runVerify(workspace, { registered }))) as VerifyResult);
-    let verify = gated.verify;
-    let unmetGates = gated.unmetGates;
-    artifact("verify.log", verify.summary);
-    if (verify.state === "failed") {
-      artifact("diff.patch", diff);
-      return finish({ ...base, diff, verify, unmetGates, status: "verify-failed" });
-    }
-
-    // Judge loop — veto feeds guidance back into the same session (part 3).
-    inflight.enter("judge");
-    let judgeResult: JudgeResult;
-    try {
-      judgeResult = await timed("judgeMs", () => judgeOnce({ taskMarkdown: task.raw, diff, verifySummary: verify.summary, workspace }));
-      usage.recordJudge(judgeResult.usage);
-    } catch (error) {
-      usage.recordJudge(unavailableProducerUsage("judge invocation failed before a usable producer response"));
-      artifact("diff.patch", diff);
-      return finish({
-        ...base,
         diff,
+        resultText,
         verify,
         unmetGates,
-        resultText: error instanceof Error ? error.message : String(error),
-        status: "engine-failed",
+        verdict,
+        status: "vetoed",
       });
-    }
-    let verdict = judgeResult.verdict;
-    let retries = 0;
-    while (verdict.verdict === "veto" && retries < maxRetries) {
-      retries += 1;
-      vetoes.push(verdict);
-      log(`· judge vetoed (attempt ${retries}/${maxRetries}) — resuming agent with guidance`);
-      // This veto's own evidence, not the run's: each attempt was a separate
-      // judgement with its own reads, and folding them together would credit
-      // one attempt's grounding to another's.
-      artifact(`verdict.veto-${retries}.json`, verdictRecord(verdict, judgeResult));
-      // Back to the agent, on a later pass: stage alone cannot tell a second trip
-      // through Agent from a run that never left it.
-      inflight.enter("agent", retries + 1);
-      try {
-        engineResult = await timed("agentMs", () =>
-          engine.resume(
-            engineResult.sessionId,
-            `A reviewer rejected your change:\n${verdict.violations.map((v) => `- ${v}`).join("\n")}\n\n${verdict.guidance}\nCorrect the change, then call the verify tool again.`,
-          ),
-        );
-        usage.recordAgent(engineResult.usage);
-      } catch (error) {
-        usage.recordAgent(unavailableProducerUsage("agent resume failed before a usable final envelope"));
-        artifact("diff.patch", diff);
-        return finish({
-          ...base,
-          diff,
-          verify,
-          unmetGates,
-          verdict,
-          resultText: error instanceof Error ? error.message : String(error),
-          status: "engine-failed",
-        });
-      }
-      artifact(`transcript.retry-${retries}.json`, engineResult.transcript);
-      diff = stagedDiff(workspace);
-      offenders = enforceScope();
-      if (offenders.length > 0) {
-        return finish({ ...base, diff, status: "scope-violation" }, offenders);
-      }
-      inflight.enter("verify");
-      gated = applyGates((await timed("verifyMs", () => runVerify(workspace, { registered }))) as VerifyResult);
-      verify = gated.verify;
-      unmetGates = gated.unmetGates;
-      artifact("verify.log", verify.summary);
-      if (verify.state === "failed") {
-        artifact("diff.patch", diff);
-        return finish({ ...base, diff, verify, unmetGates, status: "verify-failed" });
-      }
-      inflight.enter("judge");
-      try {
-        judgeResult = await timed("judgeMs", () => judgeOnce({ taskMarkdown: task.raw, diff, verifySummary: verify.summary, workspace }));
-        usage.recordJudge(judgeResult.usage);
-      } catch (error) {
-        usage.recordJudge(unavailableProducerUsage("judge invocation failed before a usable producer response"));
-        artifact("diff.patch", diff);
-        return finish({
-          ...base,
-          diff,
-          verify,
-          unmetGates,
-          verdict,
-          resultText: error instanceof Error ? error.message : String(error),
-          status: "engine-failed",
-        });
-      }
-      verdict = judgeResult.verdict;
-    }
-
-    artifact("diff.patch", diff);
-    artifact("verdict.json", verdictRecord(verdict, judgeResult));
-
-    if (verdict.verdict === "veto") {
-      vetoes.push(verdict);
-      return finish({ ...base, diff, verify, unmetGates, verdict, status: "vetoed" });
     }
 
     // Assemble the reviewer-facing PR body (previewed as an artifact in
@@ -846,7 +961,20 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       }));
     }
 
-    return finish({ ...base, diff, verify, unmetGates, verdict, prUrl, sha, status: "approved" });
+    return finish({
+      task,
+      repo,
+      workspace,
+      artifactsDir,
+      diff,
+      resultText,
+      verify,
+      unmetGates,
+      verdict,
+      prUrl,
+      sha,
+      status: "approved",
+    });
   } finally {
     // The throw path: prepareWorkspace fails on a bad clone or a missing
     // local_path, and finish() never runs. Clearing is idempotent, so the

@@ -20,7 +20,7 @@ describe("Fleet Ledger refresh", () => {
     const inflightChanged = fleetRevision(completed, [{
       runId: "run-live",
       stage: "verify",
-      attempt: 1,
+      pass: 1,
       stageSince: "2026-07-11T10:01:00.000Z",
     }]);
 

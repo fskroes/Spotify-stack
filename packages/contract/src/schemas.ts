@@ -490,8 +490,10 @@ export const InflightRecordSchema = z.object({
   title: z.string(),
   /** See STAGES for the values this side knows. */
   stage: z.string(),
-  /** 1-based pass through the agent→verify→judge loop, which is not monotonic. */
-  attempt: z.number(),
+  /** 1-based pass through the agent→verify→judge loop, which is not monotonic.
+   *  Named for the pass, not the attempt: an *attempt* is one model invocation
+   *  on one rail (see `UsageAttemptSchema`), and a single pass contains two. */
+  pass: z.number(),
   /** The instant `stage` was entered. Not a heartbeat: writes happen only on
    *  transitions, so a healthy ten-minute agent phase looks ten minutes stale. */
   stageSince: z.string(),

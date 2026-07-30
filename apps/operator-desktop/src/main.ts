@@ -805,7 +805,7 @@ function runEvidence(run: FleetRun): string[] {
     ? run.data.evidence ?? (run.data.reason ? [run.data.reason] : [])
     : [
         `${statusLabel(run.data.stage)} since ${new Date(run.data.stageSince).toLocaleTimeString()}`,
-        `Attempt ${run.data.attempt} is active on the remote runner`,
+        `Pass ${run.data.pass} is active on the remote runner`,
       ];
 }
 
@@ -832,7 +832,7 @@ function spotlightFor(run: FleetRun): Spotlight {
       key: `live:${run.data.stage}`,
       eyebrow: "Live gate",
       title: statusLabel(run.data.stage),
-      detail: `Attempt ${run.data.attempt} · active since ${new Date(run.data.stageSince).toLocaleTimeString()}`,
+      detail: `Pass ${run.data.pass} · active since ${new Date(run.data.stageSince).toLocaleTimeString()}`,
       tone: "live",
       icon: "loader-circle",
     };
@@ -928,7 +928,7 @@ function gateReadouts(run: FleetRun): GateReadout[] {
   if (run.kind === "inflight") {
     return [
       { label: "Stage", value: statusLabel(run.data.stage), tone: "working" },
-      { label: "Attempt", value: String(run.data.attempt), tone: "neutral" },
+      { label: "Pass", value: String(run.data.pass), tone: "neutral" },
       { label: "Elapsed", value: relativeTime(run.data.startedAt), tone: "neutral" },
     ];
   }
@@ -1118,7 +1118,7 @@ function renderSelectedRun(): void {
   $("#selected-repo").textContent = runRepo(run);
   $("#selected-title").textContent = runTitle(run);
   $("#selected-meta").textContent = run.kind === "inflight"
-    ? `${run.data.task} · attempt ${run.data.attempt} · started ${relativeTime(run.data.startedAt)} ago`
+    ? `${run.data.task} · pass ${run.data.pass} · started ${relativeTime(run.data.startedAt)} ago`
     : `${run.data.task} · ${run.data.mode} · completed ${relativeTime(run.data.ts)} ago`;
   const badge = $("#selected-status");
   badge.textContent = statusLabel(value);
@@ -1161,7 +1161,7 @@ function renderMetadata(run: FleetRun | undefined): void {
   const list = $("#run-metadata");
   const rows: Array<[string, string]> = !run ? [["Status", "—"], ["Task", "—"], ["Repository", "—"], ["Started", "—"]] : run.kind === "inflight" ? [
     ["Status", statusLabel(run.data.stage)], ["Task", run.data.task], ["Repository", run.data.repo],
-    ["Started", new Date(run.data.startedAt).toLocaleString()], ["Attempt", String(run.data.attempt)], ["Stage age", relativeTime(run.data.stageSince)],
+    ["Started", new Date(run.data.startedAt).toLocaleString()], ["Pass", String(run.data.pass)], ["Stage age", relativeTime(run.data.stageSince)],
   ] : [
     ["Status", statusLabel(run.data.status)], ["Task", run.data.task], ["Repository", run.data.repo],
     ["Completed", new Date(run.data.ts).toLocaleString()], ["Mode", run.data.mode], ["Duration", duration(run.data.elapsedMs)],
