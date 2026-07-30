@@ -739,7 +739,12 @@ function renderQueue(): void {
   const nextKeys = [...list.querySelectorAll<HTMLElement>(".run-row[data-run-key]")].map((el) => el.dataset.runKey!);
   if (!reduce) {
     const sameSet = nextKeys.length === prevQueueKeys.length && nextKeys.every((key) => prevQueueKeys.includes(key));
-    if (sameSet && nextKeys.join(" ") !== prevQueueKeys.join(" ")) {
+    // NUL separates, because a run key is operator-supplied text and any
+    // printable separator could occur inside one — joining on it would let two
+    // different orders compare equal. Written as the escape, never as a raw NUL
+    // byte: a NUL in a source file makes grep treat the whole file as binary,
+    // and the scrub check greps with -I, so this file was invisible to it.
+    if (sameSet && nextKeys.join("\u0000") !== prevQueueKeys.join("\u0000")) {
       list.querySelectorAll<HTMLElement>(".run-row[data-run-key]").forEach((el) => {
         const first = firstRects.get(el.dataset.runKey!);
         if (!first) return;
