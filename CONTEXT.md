@@ -45,6 +45,16 @@ in exactly one of seven `RunStatus` values, and is appended to the ledger whethe
 it shipped or was killed. The status → facts table (`RUN_FACTS`) is the single
 source of truth for what a status means; no surface may re-derive it.
 
+## Pass
+
+One traversal of the four phases inside a [run](#run) — the agent produces a
+diff, [scope](#scope-contract) is enforced, verification runs, the judge rules.
+A run has at least one pass; a judge veto starts another, up to the run's retry
+limit. A pass reports **only what it observed**: one that died before verifying
+carries no [verification state](#verification-state) at all, because an earlier
+pass's green belongs to an earlier diff. Not an [attempt](#attempt) — an attempt
+is one model invocation on one [rail](#rail), so a single pass contains two.
+
 ## Engine
 
 The thing that produces the diff — `claude` (headless Claude Code, the default)
