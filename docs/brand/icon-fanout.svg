@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="56" height="56" viewBox="0 0 56 56" fill="none" role="img" aria-label="fan out">
+<circle cx="12" cy="28" r="6" fill="#1f9e7f"/>
+<circle cx="44" cy="12" r="5" stroke="#8b98a3" stroke-width="2.5"/>
+<circle cx="44" cy="28" r="5" stroke="#8b98a3" stroke-width="2.5"/>
+<circle cx="44" cy="44" r="5" stroke="#8b98a3" stroke-width="2.5"/>
+<path d="M18 28h6c3 0 3-16 6-16h9M18 28h21M18 28h6c3 0 3 16 6 16h9" stroke="#8b98a3" stroke-width="2.2" stroke-opacity=".6" stroke-linecap="round"/>
+</svg>

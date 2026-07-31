@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="56" height="56" viewBox="0 0 56 56" fill="none" role="img" aria-label="ledger">
+<rect x="10" y="9" width="36" height="38" rx="4" stroke="#8b98a3" stroke-width="2.5"/>
+<path d="M18 20h12M18 28h12M18 36h12" stroke="#8b98a3" stroke-width="2.2" stroke-linecap="round" stroke-opacity=".6"/>
+<path d="M34 18.5l2.5 2.5 4-4.5" stroke="#1f9e7f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M34.5 26.5l5 5M39.5 26.5l-5 5" stroke="#c74450" stroke-width="2.4" stroke-linecap="round"/>
+<path d="M34.5 34.5l5 5M39.5 34.5l-5 5" stroke="#c74450" stroke-width="2.4" stroke-linecap="round"/>
+</svg>

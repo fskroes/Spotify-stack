@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="56" height="56" viewBox="0 0 56 56" fill="none" role="img" aria-label="tri-state">
+<circle cx="14" cy="28" r="7" fill="#1f9e7f"/>
+<circle cx="28" cy="28" r="7" stroke="#c74450" stroke-width="2.5"/>
+<path d="M25 25l6 6M31 25l-6 6" stroke="#c74450" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="42" cy="28" r="7" stroke="#8b98a3" stroke-width="2.5" stroke-dasharray="3 3"/>
+<path d="M42 25v3.5" stroke="#8b98a3" stroke-width="2.2" stroke-linecap="round"/>
+<circle cx="42" cy="31.5" r="1.2" fill="#8b98a3"/>
+</svg>
