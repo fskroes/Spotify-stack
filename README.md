@@ -14,7 +14,7 @@
 
 [![Quickstart](https://img.shields.io/badge/Quickstart-60_seconds-1f9e7f?style=for-the-badge&logoColor=white)](#start-in-60-seconds)
 [![Docs](https://img.shields.io/badge/Docs-11181d?style=for-the-badge)](docs/README.md)
-[![Decisions](https://img.shields.io/badge/12_Decisions-11181d?style=for-the-badge)](docs/adr)
+[![Decisions](https://img.shields.io/badge/14_Decisions-11181d?style=for-the-badge)](docs/adr)
 
 <sub>Runs anywhere Node ≥ 20 does &nbsp;·&nbsp; GitHub Actions optional &nbsp;·&nbsp; dry-run by default &nbsp;·&nbsp; MIT</sub>
 
@@ -193,7 +193,7 @@ Four boundaries carry the design weight.
 
 <div align="center">
 
-<sub><b>A new agent capability is a cage change, not a feature.</b> &nbsp;·&nbsp; <a href="docs/adr">All 12 decisions →</a></sub>
+<sub><b>A new agent capability is a cage change, not a feature.</b> &nbsp;·&nbsp; <a href="docs/adr">All 14 decisions →</a></sub>
 
 </div>
 

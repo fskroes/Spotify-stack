@@ -31,3 +31,7 @@ fleet/evidence/
 # own .claude/ into sandboxes from agent-config/ at run time)
 .claude/
 .gstack/
+
+# working notes and conversation transcripts. Not docs: nothing here is a
+# decision, a term, or a measurement, so none of it belongs in the public record.
+conv/
