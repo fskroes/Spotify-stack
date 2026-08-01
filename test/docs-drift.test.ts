@@ -23,62 +23,79 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { REVIEW_ARTIFACTS } from "../packages/runner/src/artifacts.js";
-
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(path.join(repoRoot, rel), "utf8");
 
-/** Backticked `code spans` inside a chunk of markdown. */
-function codeSpans(markdown: string): string[] {
-  return [...markdown.matchAll(/`([^`\n]+)`/g)].map((m) => m[1]);
-}
-
-/** The paragraph beginning with `prefix`, or a loud failure naming the file. */
-function paragraphStartingWith(markdown: string, prefix: string, file: string): string {
-  const start = markdown.indexOf(prefix);
-  if (start === -1) {
+/** The `## `-delimited section under `heading`, up to the next one. */
+function sectionUnderHeading(markdown: string, heading: string, file: string): string {
+  const at = markdown.indexOf(heading);
+  if (at === -1) {
     throw new Error(
-      `drift-lock anchor not found in ${file}: no paragraph starts with "${prefix}". ` +
+      `drift-lock anchor not found in ${file}: no "${heading}" heading. ` +
         `The prose was reworded — re-point this lock at the new wording.`,
     );
   }
-  const end = markdown.indexOf("\n\n", start);
-  return markdown.slice(start, end === -1 ? undefined : end);
+  const end = markdown.indexOf("\n## ", at + heading.length);
+  return markdown.slice(at, end === -1 ? undefined : end);
 }
 
-/** The first fenced code block after `heading`. */
-function fenceAfterHeading(markdown: string, heading: string, file: string): string {
-  const at = markdown.indexOf(heading);
-  if (at === -1) throw new Error(`drift-lock anchor not found in ${file}: no "${heading}" heading.`);
-  const open = markdown.indexOf("```", at);
-  const close = markdown.indexOf("```", open + 3);
-  if (open === -1 || close === -1) {
-    throw new Error(`drift-lock anchor not found in ${file}: no fenced block under "${heading}".`);
-  }
-  return markdown.slice(open + 3, close);
-}
+/**
+ * The artifact allowlist lock is **deleted, not re-pointed** (2026-08-01).
+ *
+ * It pinned a hand-copied filename list in README.md to `REVIEW_ARTIFACTS`. The
+ * README no longer carries that list: it became a landing page, and the two
+ * places that still describe the served set — ADR-0005 and ADR-0007 — name the
+ * constant instead of restating its members. A reference to a constant cannot
+ * drift from it, so there is no longer a copy to lock, and a lock with no
+ * subject is worse than none: it fails on wording and teaches people that a red
+ * drift test is noise.
+ *
+ * If a list of those filenames is ever written into prose again, bring this back
+ * — that is the moment it starts being able to lie.
+ */
 
-describe("README artifact allowlist", () => {
-  it("names exactly the REVIEW_ARTIFACTS the operator API will serve", () => {
-    const paragraph = paragraphStartingWith(read("README.md"), "Artifact reads are limited to", "README.md");
-    // `artifacts/` also appears in the sentence as a path; only filenames carry a dot.
-    const documented = codeSpans(paragraph).filter((s) => s.includes("."));
+describe("README decision count", () => {
+  /**
+   * The landing page states how many ADRs exist, twice — a badge and a link.
+   * Both were written when there were twelve and neither moved when 0013–0015
+   * landed, which is the same failure the locks above exist for: a number is a
+   * one-token enumeration, and `docs/adr/` is the thing that actually knows it.
+   */
+  it("agrees with the number of ADRs on disk", () => {
+    const adrs = readdirSync(path.join(repoRoot, "docs/adr")).filter((f) => /^\d{4}-.*\.md$/.test(f));
+    const readme = read("README.md");
+    const claims = [...readme.matchAll(/(\d+)[ _](?:Decisions|decisions)/g)].map((m) => Number(m[1]));
 
-    expect(new Set(documented)).toEqual(new Set(REVIEW_ARTIFACTS.keys()));
+    expect(
+      claims.length,
+      "anchor not found in README.md: nothing reads as a decision count. " +
+        "The prose was reworded — re-point this lock at the new wording.",
+    ).toBeGreaterThan(0);
+    expect(new Set(claims)).toEqual(new Set([adrs.length]));
   });
 });
 
-describe("README layout block", () => {
+describe("docs map layout table", () => {
+  /**
+   * The workspace enumeration moved with the README rewrite: the landing page
+   * dropped its `## Layout` fence, and `docs/README.md`'s "Where the code lives"
+   * table is now the only prose that claims to list every unit. Same list, same
+   * failure mode, so the lock follows it rather than dying with the fence.
+   */
   it("lists every workspace under packages/ and apps/", () => {
-    const fence = fenceAfterHeading(read("README.md"), "## Layout", "README.md");
+    const section = sectionUnderHeading(
+      read("docs/README.md"),
+      "## Where the code lives, and what each part owns",
+      "docs/README.md",
+    );
     const workspaces = ["packages", "apps"].flatMap((group) =>
       readdirSync(path.join(repoRoot, group), { withFileTypes: true })
         .filter((e) => e.isDirectory())
         .map((e) => `${group}/${e.name}`),
     );
 
-    const missing = workspaces.filter((w) => !fence.includes(w));
-    expect(missing, `README "## Layout" does not mention: ${missing.join(", ")}`).toEqual([]);
+    const missing = workspaces.filter((w) => !section.includes(w));
+    expect(missing, `docs/README.md's layout table does not mention: ${missing.join(", ")}`).toEqual([]);
   });
 });
 
