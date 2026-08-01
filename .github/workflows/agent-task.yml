@@ -105,7 +105,13 @@ jobs:
           # files instead. This is deliberately not `git diff`: an untracked file
           # is not a diff, and this excludes the committed baseline evidence while
           # capturing exactly this run's fleet/evidence/<runId>/model-usage.json.
-          git ls-files --others -- fleet/evidence | while read -r file; do
+          #
+          # Named to that one file rather than sweeping the directory: the store
+          # also holds the retained kill (ADR-0015), whose diff and killing
+          # artefact are private target prose, and whose scope-violation.json is
+          # deliberately outside REVIEW_ARTIFACTS. This upload is a public-repo
+          # artifact — the same reason dotfiles are excluded above.
+          git ls-files --others -- 'fleet/evidence/*/model-usage.json' | while read -r file; do
             [ -n "$file" ] && cp --parents "$file" fleet-upload/
           done
           echo "staged for upload:"

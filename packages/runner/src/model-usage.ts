@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { runEvidenceDir } from "./evidence.js";
 import {
   ModelUsageEvidenceSchema,
   type LedgerUsageProjection,
@@ -100,7 +101,7 @@ export function writeModelUsageEvidence(opts: {
   evidence: ModelUsageEvidence;
 }): { path: string; content: string; sha256: string } {
   const evidence = ModelUsageEvidenceSchema.parse(opts.evidence);
-  const dir = path.join(opts.controlRepo, "fleet", "evidence", evidence.runId);
+  const dir = runEvidenceDir(opts.controlRepo, evidence.runId);
   mkdirSync(dir, { recursive: true });
   const artifactPath = path.join(dir, "model-usage.json");
   const content = `${JSON.stringify(evidence, null, 2)}\n`;

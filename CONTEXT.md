@@ -107,7 +107,43 @@ is pushed and no PR opened. `--pr` opts in. A dry run is the honest rehearsal:
 The half of the ledger recording runs the fleet stopped **before anyone reviewed
 them** — scope violations, red verifiers, judge vetoes — each with its reason. A
 system that showed only its successes would be advertising; the kill log is what
-makes the successes mean something.
+makes the successes mean something. What each of those runs *left behind* is a
+[retained kill](#retained-kill).
+
+## Retained kill
+
+What survives a killed run: its diff, the artefact that killed it, and a slot for
+the verdict of any later review — kept apart from each other on purpose, so the
+first can be read without the second
+([ADR-0015](docs/adr/0015-a-kill-is-retained-forever-and-blinded.md)).
+
+Kept **forever**, in the git-ignored private evidence store, and not cleaned up
+when a kill is overturned — an overturned kill is the rarest and most valuable row
+the fleet produces, and deleting it would delete the finding. Retention is the
+**substrate**, never the instrument: it is what makes a gradient possible later,
+and it is deliberately exempt from the standing test that a measurement must name
+the decision it changes.
+
+Distinct from the [kill log](#kill-log), which is the ledger's compact projection
+— *that* a run was killed and roughly why. A retained kill is what the projection
+was taken from, and only it can reconstruct the judgement.
+
+## Blind re-adjudication
+
+Re-reviewing a [retained kill](#retained-kill) with the reason withheld: a reader
+sees the diff and the task, and rules on it without knowing what the fleet
+objected to. The comparison against the original ruling is the only thing that
+could ever establish a false-kill rate.
+
+Not a [cold](#primed-vs-cold) run, which is the knowledge-experiment sense of the
+word — a run that explores its target from nothing. Both are concealments with
+different subjects, so the vocabulary keeps them apart: **cold** is what the
+*agent* was denied, **blind** is what the *reviewer* is.
+
+The blinding is a property of where the files sit, not of a reader's restraint,
+and it is only meaningful because the withheld reason is retained rather than
+discarded. A blinded review with no unblinding key cannot be scored, and an
+unscoreable review is a ritual rather than an instrument.
 
 ## Wire contract
 

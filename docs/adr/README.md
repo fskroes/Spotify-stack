@@ -20,6 +20,7 @@ record shows what was considered instead and why it lost.
 | [0012](0012-a-pass-reports-only-what-it-observed.md) | A pass reports only what it observed | run loop |
 | [0013](0013-verification-runs-on-the-shipped-artefact.md) | Verification runs on the shipped artefact, not the workspace | verify↔run |
 | [0014](0014-gate-inputs-are-carried-only-under-an-amendment.md) | Gate inputs are carried into verification only under an amendment | verify↔run |
+| [0015](0015-a-kill-is-retained-forever-and-blinded.md) | A kill is retained forever, blinded, with a slot for its verdict | evidence |
 
 **0003–0008 were written retroactively** (2026-07-26), reconstructing the
 reasoning behind decisions already in the code. They are sound arguments, not

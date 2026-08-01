@@ -6,13 +6,14 @@
  * engine is the same code path with a different spawn.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { JudgeClient, Verdict } from "@fleet/judge";
 import type { InflightRecord } from "@fleet/contract";
 import { inflightDir, readInflight } from "../src/inflight.js";
+import { retainedKillDir } from "../src/kill-retention.js";
 import { readLedger } from "../src/ledger.js";
 import { run } from "../src/run.js";
 
@@ -34,6 +35,12 @@ const quiet = () => {};
 /** Every test run gets a throwaway ledger so the committed one stays clean. */
 const tmpLedger = () =>
   path.join(mkdtempSync(path.join(os.tmpdir(), "fleet-e2e-ledger-")), "ledger.jsonl");
+
+/** Where this run's retained kill landed (ADR-0015). A custom ledger moves the
+ *  whole evidence store beside it, so hermetic runs never write into the
+ *  control repo's `fleet/evidence/`. */
+const killStore = (ledgerPath: string, runId: string) =>
+  retainedKillDir(path.dirname(ledgerPath), runId);
 
 beforeAll(() => {
   // The workspace symlinks the demo repo's node_modules so verify doesn't
@@ -102,6 +109,9 @@ describe("runner e2e (mock engine, hermetic)", () => {
       );
     }
     expect(existsSync(path.join(runDir, "transcript.json"))).toBe(false);
+    // Nothing was killed, so nothing is awaiting re-adjudication: an approved
+    // run's evidence is its PR, and the kill store stays empty (ADR-0015).
+    expect(existsSync(killStore(ledgerPath, result.runId))).toBe(false);
     // result.json names its run, so the archive is attributable on its own.
     expect(JSON.parse(readFileSync(path.join(runDir, "result.json"), "utf8")).runId).toBe(result.runId);
     const diffPatch = readFileSync(path.join(result.artifactsDir, "diff.patch"), "utf8");
@@ -314,6 +324,17 @@ describe("runner e2e (mock engine, hermetic)", () => {
     // A kill is a terminal path like any other: it must not leave a ghost in
     // the lane, claiming to be running forever.
     expect(readInflight(ledgerPath)).toEqual([]);
+
+    // …and it leaves a retained kill behind, in the store nothing prunes: the
+    // diff by itself, the artefact that killed it one directory down, and no
+    // outcome — nobody has re-adjudicated this yet (ADR-0015). The ledger line
+    // above keeps only the first five offenders; this keeps all of them.
+    const kill = killStore(ledgerPath, result.runId);
+    expect(readFileSync(path.join(kill, "diff.patch"), "utf8")).toBe(
+      readFileSync(path.join(result.artifactsDir, "diff.patch"), "utf8"),
+    );
+    expect(JSON.parse(readFileSync(path.join(kill, "why", "scope-violation.json"), "utf8"))).toEqual(violation);
+    expect(readdirSync(kill).sort()).toEqual(["diff.patch", "why"]);
   });
 
   // The whole gates path in one place: frontmatter parse, the mandated-vs-
@@ -397,6 +418,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
   });
 
   it("negative path: broken change → verify red → no PR, no verdict", async () => {
+    const ledgerPath = tmpLedger();
     const result = await run({
       controlRepo: CONTROL_REPO,
       taskPath: TASK_001,
@@ -406,7 +428,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
       engine: "mock",
       mockPatch: BAD_PATCH,
       judgeMode: "approve",
-      ledgerPath: tmpLedger(),
+      ledgerPath,
       log: quiet,
     });
 
@@ -419,6 +441,12 @@ describe("runner e2e (mock engine, hermetic)", () => {
     expect(result.verify?.summary).toContain("userService.ts");
     expect(result.verdict).toBeUndefined();
     expect(existsSync(path.join(result.artifactsDir, "verdict.json"))).toBe(false);
+
+    // Retained: the whole verify log, not the ledger's first-failed-check
+    // projection capped at 8 lines (ADR-0015).
+    const kill = killStore(ledgerPath, result.runId);
+    expect(readFileSync(path.join(kill, "why", "verify.log"), "utf8")).toBe(result.verify?.summary);
+    expect(readFileSync(path.join(kill, "diff.patch"), "utf8")).toContain("userService.ts");
   });
 
   it("judge veto with self-correction: veto once → resume → approved", async () => {
@@ -551,6 +579,16 @@ describe("runner e2e (mock engine, hermetic)", () => {
 
     const entries = readLedger(vetoLedger);
     expect(entries[0]).toMatchObject({ status: "vetoed", vetoes: 2, reason: "stub: change rejected" });
+
+    // The retained verdict is the answer key the ledger's `reason` cannot be:
+    // the full violation array, the rationale, and the judge identity pair
+    // ADR-0011 exists to preserve (ADR-0015).
+    const verdict = JSON.parse(
+      readFileSync(path.join(killStore(vetoLedger, result.runId), "why", "verdict.json"), "utf8"),
+    ) as { violations: string[]; rationale: string; judge: { model: string; capability: string } };
+    expect(verdict.violations).toEqual(["stub: change rejected"]);
+    expect(verdict.rationale).toBe("stub judge: auto-vetoed");
+    expect(verdict.judge).toEqual({ model: "stub judge (veto)", capability: "stub" });
   });
 
   it("precondition path: agent makes no changes and declares NO_CHANGES_NEEDED", async () => {
