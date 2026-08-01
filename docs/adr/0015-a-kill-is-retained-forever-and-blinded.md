@@ -15,9 +15,22 @@ overturned. Resolves #120 under map #115. Definitions are in
 
 ## Status
 
-**Accepted** (2026-08-01). **Not implemented.** Nothing writes `kill/` today, and
-nothing writes `outcome.json` at all — the slot is defined here and filled by
-whatever #121 decides a resurrection means.
+**Accepted** (2026-08-01). **Retention built for local runs** (2026-08-01): a
+run killed at the scope, verify, or judge gate copies its diff and its killing
+artefact into `kill/`. An `agent-failed` kill retains nothing, and that is not an
+omission — the status exists because the agent produced no diff, so there is no
+change to re-adjudicate.
+
+Two things are deliberately still unbuilt:
+
+- Nothing writes `outcome.json`. The slot is defined here and filled by whatever
+  #121 decides a resurrection means.
+- **A cloud run's kill is not retained anywhere durable.** It is written to
+  `fleet/evidence/` on the Actions runner, which is destroyed with it. Landing it
+  in the operator's store needs a decision this ADR did not make: the only
+  channel home is a public-repo Actions artifact, and `scope-violation.json` is
+  not in the set that channel carries. Until then the promise below holds for
+  `mode: local` and not for `mode: cloud`.
 
 ## Why this was urgent, and it is not the reason the map gave
 

@@ -8,6 +8,7 @@ import { runVerify } from "@fleet/mcp-verify";
 import { createCliJudgeClient, createJudgeClient, judgeWithEvidence, type JudgeClient, type JudgeInput, type JudgeResult, type Verdict } from "@fleet/judge";
 import { prepareRunArtifactsDir, REVIEW_ARTIFACTS } from "./artifacts.js";
 import { assertJudgeReadStartupMarker, preflightJudgeRead } from "./judge-read-check.js";
+import { killRetentionLog, retainKill } from "./kill-retention.js";
 import { claudeEngine, mockEngine, type Engine, type EngineResult } from "./engine.js";
 import { createUsageCollector, unavailableProducerUsage, writeModelUsageEvidence, type ProducerUsage, type UsageCollector } from "./model-usage.js";
 import { findRepo, type FleetRepo } from "./fleet.js";
@@ -754,8 +755,9 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       // A custom ledger is the runner's hermetic-test seam. Keep its durable
       // evidence beside that ledger instead of leaking test runs into the control
       // repo's committed fleet/evidence directory.
+      const evidenceRoot = opts.ledgerPath ? path.dirname(ledgerPath) : opts.controlRepo;
       const persistedUsage = writeModelUsageEvidence({
-        controlRepo: opts.ledgerPath ? path.dirname(ledgerPath) : opts.controlRepo,
+        controlRepo: evidenceRoot,
         evidence: modelUsageEvidence,
       });
       const modelUsage = usage.projection(modelUsageEvidence, persistedUsage.sha256);
@@ -799,6 +801,14 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       // A reader that catches the gap sees the run twice — once live, once
       // decided — and reconciles on runId.
       inflight.clear();
+      // A kill's diff and the artefact that killed it are copied into the
+      // evidence store, which nothing prunes (ADR-0015). Best-effort like the
+      // render below — the run is already decided and durable, so nothing here
+      // may fail it — but reported rather than swallowed.
+      const retentionLine = killRetentionLog(
+        retainKill({ evidenceRoot, runId, status: full.status, artifactsDir }),
+      );
+      if (retentionLine) log(retentionLine);
       // Keep the rendered report current: re-render from the whole ledger after
       // every run so artifacts/ledger.html never lags the data. Only for the real
       // committed ledger — a caller pointing at a custom ledger (tests) opts out,

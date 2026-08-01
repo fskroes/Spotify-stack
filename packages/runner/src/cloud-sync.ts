@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { ModelUsageEvidenceSchema, type LedgerEntry, type SyncState } from "@fleet/contract";
 import { REVIEW_ARTIFACTS, runArtifactsDir, runArtifactsRoot } from "./artifacts.js";
+import { runEvidenceDir } from "./evidence.js";
 
 /** Runs `gh` asynchronously (spawn-based, so a slow download never blocks the
  *  server's event loop) and resolves with stdout; rejects on a non-zero exit. */
@@ -173,7 +174,7 @@ export class CloudArtifactSync {
       if (name === "model-usage.json") {
         const evidence = ModelUsageEvidenceSchema.parse(JSON.parse(readFileSync(from, "utf8")));
         if (evidence.runId !== runId) throw new Error("cloud model usage evidence run id does not match requested run");
-        const canonicalDir = path.join(this.controlRepo, "fleet", "evidence", runId);
+        const canonicalDir = runEvidenceDir(this.controlRepo, runId);
         mkdirSync(canonicalDir, { recursive: true });
         copyFileSync(from, path.join(canonicalDir, name));
       }
