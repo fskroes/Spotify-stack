@@ -26,8 +26,9 @@ hit its own precondition.
 
 A version-controlled natural-language prompt in `tasks/`, with frontmatter
 declaring `targets`, [`scope`](#scope-contract), [`gates`](#mandated-gate),
-`risk`, and `why`. It describes an **end state and its preconditions**, not
-steps. A task is the unit that fans out: one prompt, many targets.
+[`amends`](#amendment), `risk`, and `why`. It describes an **end state and its
+preconditions**, not steps. A task is the unit that fans out: one prompt, many
+targets.
 
 ## Scope contract
 
@@ -229,6 +230,71 @@ runs only when a task mandates it.
 #64). The term is here because the decision is settled; there is no code behind
 it yet, so read it as language the fleet has committed to, not as behaviour you
 can observe.
+
+## Gate input
+
+Anything a check reads **when it runs** — not merely what the detector reads to
+decide the check exists. Test files and fixtures, the helpers and conftest-shaped
+files a suite loads, runner and lint configuration, `tsconfig.json` contents,
+`package.json` scripts, `Package.swift`, the injected harness config, and the
+installed dependencies the checks actually execute.
+
+The execution-time reading is the load-bearing half of the definition. A file
+that only the *detector* consults is a narrower set, and a term scoped that way
+would silently exclude the fixtures and helpers where the shortest path to a
+false green runs.
+
+Gate inputs are not all visible. Some appear in a run's diff; the harness config
+and the installed dependencies never can — one is reset out of the index, the
+other is ignored by git. So "the diff touched a gate input" is not a question the
+record can always answer, which is why verification is built to be indifferent to
+it ([ADR-0013](docs/adr/0013-verification-runs-on-the-shipped-artefact.md)) rather
+than to detect it.
+
+## Amendment
+
+A task's `amends:` frontmatter — a mapping of path glob to reason — declaring
+that this task's diff may change the named [gate inputs](#gate-input), and that
+verification will carry them rather than taking them from the base.
+
+A **licence, not a mandate** — the exact mirror of a [mandated
+gate](#mandated-gate), which asserts that evidence exists and never grants
+anything. Absent an amendment, an edit to a gate input still ships; it is simply
+not part of what proves itself.
+
+Trustworthy because it lives in the control repo, which the agent cannot write —
+the same property that keeps [`scope`](#scope-contract), `gates`, and a
+[registered verifier](#registered-verifier) honest. The reason string is required
+and is not decoration: the failure this design cannot mechanically prevent is an
+operator declaring amendments reflexively, and a justification is the friction
+that a bare glob would not carry. An amendment is loud by construction — named
+with its reason in the PR header, on the ledger line, and in what the judge reads.
+
+## Moving the scoreboard
+
+Editing the things that judge you — weakening a test, deleting the script that
+names a check, loosening a compiler or lint setting, retiring the in-session gate.
+The defect map #115 calls
+tier 1, and the one closed by
+[ADR-0013](docs/adr/0013-verification-runs-on-the-shipped-artefact.md) and
+[ADR-0014](docs/adr/0014-gate-inputs-are-carried-only-under-an-amendment.md).
+
+Distinct from [playing to the scoreboard](#playing-to-the-scoreboard), and the
+distinction is what stops a path list from reading as coverage.
+
+## Playing to the scoreboard
+
+Writing source that satisfies the check without doing the work — a stubbed
+dependency the test framework imports, an early exit before the assertion, an
+equality override that defeats the comparison, reading the expected answer
+instead of computing it.
+
+**Named here, not addressed.** It is unreachable by any path-shaped mechanism in
+principle, because the changes live in ordinary source code — the thing the agent
+is employed to write, and indistinguishable by path from legitimate work. The
+mechanisms that could reach it are a check the agent cannot enumerate, mutation
+testing, the judge, and the human. Carried on #115 as unspecified; it must pass
+that map's standing instrument test before it graduates.
 
 ## Run status vs. verification state
 
