@@ -197,6 +197,14 @@ nothing was detectable to run, or something the task demanded did not — and
 mandated gate was among them. Only the runner holds both halves, which is why
 the composition lives there and verification stays task-blind.
 
+What `passed` does **not** mean is that every language in the diff was checked.
+Detection is path-shaped — it asks whether a `package.json` or a `Package.swift`
+is present, never which files a check governs — so a change in a language no
+detector recognises is green on the strength of the checks that did run. Closing
+that for a given target is a [registered verifier](#registered-verifier), not a
+property of the term; closing it in general is unspecified on #115
+([ADR-0016](docs/adr/0016-the-tree-blocks-and-an-install-is-not-a-check.md)).
+
 Orthogonal to [run status](#run-status-vs-verification-state). Every surface
 reads the state from its field — `VerifyResult.state`, or the ledger line's
 `verifyState` — and none may infer it by string-matching summary prose. A

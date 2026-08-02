@@ -21,6 +21,7 @@ record shows what was considered instead and why it lost.
 | [0013](0013-verification-runs-on-the-shipped-artefact.md) | Verification runs on the shipped artefact, not the workspace | verify↔run |
 | [0014](0014-gate-inputs-are-carried-only-under-an-amendment.md) | Gate inputs are carried into verification only under an amendment | verify↔run |
 | [0015](0015-a-kill-is-retained-forever-and-blinded.md) | A kill is retained forever, blinded, with a slot for its verdict | evidence |
+| [0016](0016-the-tree-blocks-and-an-install-is-not-a-check.md) | The reconstituted tree blocks, and an install is not a check | verify↔run |
 
 **0003–0008 were written retroactively** (2026-07-26), reconstructing the
 reasoning behind decisions already in the code. They are sound arguments, not
