@@ -84,6 +84,7 @@ measurements, not its current accuracy.
 | [`experiments/knowledge-payback-discrimination.md`](experiments/knowledge-payback-discrimination.md) | The run-time half, measured for real — and the result that **weakened** the payback bet. The counter-evidence is kept on purpose. |
 | [`experiments/knowledge-payback-regime-map.md`](experiments/knowledge-payback-regime-map.md) | After four ties, the step back: for which class of fact could run-time priming pay back *at all*. Characterizes the regime space and recommends what to keep open. |
 | [`experiments/knowledge-ask-usage-pass.md`](experiments/knowledge-ask-usage-pass.md) | The design pass for the ideation half — the [`ask`](../CONTEXT.md#ask) seam — which is the half showing a positive signal. Method, metrics, and tiers; target-neutral by construction. |
+| [`experiments/2026-08-02-reconstituted-verification-tree-cost.md`](experiments/2026-08-02-reconstituted-verification-tree-cost.md) | The number [ADR-0013](adr/0013-verification-runs-on-the-shipped-artefact.md) declared missing, measured on both live targets: the per-run install is ~1 second, the retreat is not worth taking, and the cost that matters is the lost build cache rather than the install. |
 | [`conductor-ui-ux-research.md`](conductor-ui-ux-research.md) | Conductor's interaction model, recorded as design input for the operator. Explicitly not a requirements document. |
 | [`agents/issue-tracker.md`](agents/issue-tracker.md) | How issues, PRDs, and wayfinder maps are operated with `gh`. |
 
