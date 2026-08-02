@@ -242,6 +242,13 @@ still ships as `approved`. Blocking would make declaring a gate dangerous, so
 authors would stop declaring them; the proposition is *cheap to declare, loud
 when unmet*. What is unproven is the verification, not the run.
 
+An unmet gate is an **absence** — a check the task demanded and nothing ran. Do
+not reason about it together with an [amendment](#amendment), which governs a
+check that *did* run against a base the diff tried to move. The two look alike
+because both concern a gate the diff did not honour, and they resolve opposite
+ways: an absence is annotated and ships, a gate held at the base is verified for
+real and can kill. Nothing about that second answer disturbs this one.
+
 A run that declared no gates and a run whose gates were all met both record
 none, and no surface shows an unmet-gate affordance for either. A ledger line
 with no `unmetGates` field at all means *not recorded* — never an assertion that
@@ -262,10 +269,11 @@ judges it. A missing prerequisite (`requiresEnv`) makes a verifier **ineligible*
 — an [unmet gate](#unmet-gate), not a failure — and a `cost: billed` verifier
 runs only when a task mandates it.
 
-**Decided 2026-07-28, not yet built** ([ADR-0009](docs/adr/0009-registered-verifiers-live-in-the-control-repo.md),
-#64). The term is here because the decision is settled; there is no code behind
-it yet, so read it as language the fleet has committed to, not as behaviour you
-can observe.
+Decided 2026-07-28 ([ADR-0009](docs/adr/0009-registered-verifiers-live-in-the-control-repo.md),
+#64) and **built** — the runner resolves a target's eligible verifiers per run
+and hands them to verification as ordinary checks. Registering one is a change to
+the registry, not an engineering effort, which is what makes a language the
+detector cannot see a config-sized hole rather than a build-sized one.
 
 ## Gate input
 
@@ -295,8 +303,18 @@ verification will carry them rather than taking them from the base.
 
 A **licence, not a mandate** — the exact mirror of a [mandated
 gate](#mandated-gate), which asserts that evidence exists and never grants
-anything. Absent an amendment, an edit to a gate input still ships; it is simply
-not part of what proves itself.
+anything. Absent an amendment, an edit to a gate input stays in the diff and is
+simply not part of what proves itself — the verification tree holds that file at
+the base while carrying the rest of the change.
+
+"Stays in the diff" is a claim about the *diff*, never a promise about the run.
+Holding a gate at the base means verification asks whether the **shipped source
+satisfies the gate the agent inherited**, and a change that legitimately moved
+source and gate together fails that question: the base gate goes red against the
+new source and the run is killed as an ordinary `verify-failed`. That kill is the
+rule working, and it is also the whole cost of forgetting an amendment — which is
+why the reason string buys a second thing besides friction, an operator who has
+been made to think about the licence before the kill teaches them.
 
 Trustworthy because it lives in the control repo, which the agent cannot write —
 the same property that keeps [`scope`](#scope-contract), `gates`, and a
