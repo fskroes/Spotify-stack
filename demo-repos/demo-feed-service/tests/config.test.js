@@ -23,3 +23,40 @@ test("getServerConfig applies valid overrides", () => {
   assert.equal(config.logFormat, "json");
   assert.equal(config.rateLimitMax, 50);
 });
+
+test("getServerConfig falls back on an invalid LOG_LEVEL", () => {
+  const config = getServerConfig({ LOG_LEVEL: "verbose" });
+  assert.equal(config.logLevel, "debug");
+});
+
+test("getServerConfig falls back on an invalid LOG_LEVEL in production", () => {
+  const config = getServerConfig({ LOG_LEVEL: "verbose", NODE_ENV: "production" });
+  assert.equal(config.logLevel, "info");
+});
+
+test("getServerConfig falls back on an invalid LOG_FORMAT", () => {
+  const config = getServerConfig({ LOG_FORMAT: "xml" });
+  assert.equal(config.logFormat, "pretty");
+});
+
+test("getServerConfig falls back on a non-numeric PORT", () => {
+  const config = getServerConfig({ PORT: "not-a-port" });
+  assert.equal(config.port, 3001);
+});
+
+test("getServerConfig falls back on a non-numeric RATE_LIMIT_MAX", () => {
+  const config = getServerConfig({ RATE_LIMIT_MAX: "lots" });
+  assert.equal(config.rateLimitMax, 0);
+});
+
+test("getServerConfig falls back on a non-numeric RATE_LIMIT_MAX in production", () => {
+  const config = getServerConfig({ RATE_LIMIT_MAX: "lots", NODE_ENV: "production" });
+  assert.equal(config.rateLimitMax, 200);
+});
+
+test("getServerConfig returns production defaults without overrides", () => {
+  const config = getServerConfig({ NODE_ENV: "production" });
+  assert.equal(config.trustProxy, 1);
+  assert.equal(config.rateLimitMax, 200);
+  assert.equal(config.logFormat, "json");
+});
