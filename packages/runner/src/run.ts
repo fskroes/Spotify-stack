@@ -343,7 +343,14 @@ export function taskFileUrl(
   const rel = path.relative(controlRepo, taskPath);
   if (rel.startsWith("..") || path.isAbsolute(rel)) return undefined;
   try {
-    git(controlRepo, ["ls-files", "--error-unmatch", "--", rel]);
+    // stderr piped: not-tracked is this probe's answer, not a fault. Inherited,
+    // git's "did you forget to 'git add'?" prints mid-run and reads as a run
+    // that went wrong — on most runs, since private tasks are the common case.
+    execFileSync("git", ["ls-files", "--error-unmatch", "--", rel], {
+      cwd: controlRepo,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
   } catch {
     return undefined;
   }
