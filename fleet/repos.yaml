@@ -2,11 +2,13 @@
 # `url` supports ${GH_OWNER} which is resolved from the GH_OWNER env var
 # (set by scripts/bootstrap-github.sh output, or your shell).
 #
-# `local_path` (optional): source directory for `--local` runs. When set, local
-# mode copies from here instead of demo-repos/<name>, so you can point the fleet
-# at your own working tree — no rsync into demo-repos/ needed. Supports a leading
-# ~ and any ${ENV_VAR} (e.g. ~/dev/my-repo or ${DEV_ROOT}/my-repo); relative
-# paths resolve against this control repo. Ignored in cloud mode (always clones).
+# `local_path` (optional): source directory for `--local` dry runs, checked out
+# at its HEAD instead of demo-repos/<name>, so you can point the fleet at your
+# own repo — no rsync into demo-repos/ needed. Committed work only: the checkout
+# reads git objects, not the working tree. Supports a leading ~ and any
+# ${ENV_VAR} (e.g. ~/dev/my-repo or ${DEV_ROOT}/my-repo); relative paths resolve
+# against this control repo. Unread by --pr and by cloud runs, which are based on
+# the upstream branch they open the PR against.
 #
 # `verifiers` (optional): checks this target needs that no detector infers from
 # repo shape — a live contract probe, a bespoke build script, a house linter.

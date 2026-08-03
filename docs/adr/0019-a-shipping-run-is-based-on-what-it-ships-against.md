@@ -14,6 +14,17 @@ checked against another, and not two bases that are expected to agree — one.
 **Accepted** (2026-08-03). **Implemented** (2026-08-03) in `prepareWorkspace`,
 with the re-parent it makes dead deleted from `openPullRequest`.
 
+**Corrected before publication** (2026-08-03), and stated here rather than in a
+superseding record because this one had never been pushed and so was not yet
+something anyone could have read. The decision is unchanged; a factual claim
+inside it was wrong when written, and correcting a draft's false statement is
+not [the retconning](README.md) the supersede rule exists to prevent. What
+changed: the first draft kept the source's `node_modules` symlink on the `--pr`
+path and asserted a benefit for it. Measurement found the benefit to be zero on
+every target in the fleet and the mechanism to be a latent false green. The
+symlink is gone from that path, *What replaces it* carries the measurement, and
+*Rejected alternatives* carries the option that lost.
+
 **Supersedes two bullets of ADR-0018**, which is otherwise intact and still
 governs how a dry run builds its workspace:
 
@@ -77,10 +88,41 @@ prepareWorkspace({ …, local: true, pr: true })   // clone upstream; symlink th
 prepareWorkspace({ …, local: true })             // ADR-0018's checkout at the source's HEAD
 ```
 
-A `--local --pr` run clones the target at `--depth 1` exactly as cloud mode
-does, then symlinks the local source's `node_modules` on top. `--local` still
-earns its flag on a `--pr` run: the base comes from upstream, the dependencies
-come from disk instead of an install.
+A `--pr` run clones the target at `--depth 1` and takes nothing from the
+operator's disk, so `--local` has no meaning alongside it. The flag is read as
+`local && !pr`, and there is one branch, not two.
+
+That second sentence is the correction recorded in *Status* below. The first
+draft kept the source's `node_modules` symlink on the PR path and claimed
+`--local` still earned its flag by supplying dependencies without an install.
+The claim was false on arrival, in two independent ways.
+
+**It is unreachable.** The symlink fires only where the source has a
+`node_modules` on disk. Surveyed across the whole registry on 2026-08-03,
+public and private:
+
+| language | `package.json` | `node_modules` on disk | reachable by `--pr` |
+|---|---|---|---|
+| typescript (fixture) | yes | **yes** | **no upstream — 404** |
+| javascript (fixture) | yes | no (zero dependencies) | yes |
+| swift (fixture) | no | no | no upstream — 404 |
+| swift | no | no | yes |
+| rust | no | no | yes |
+
+The one target holding dependencies has no GitHub repository, so it can never
+open a pull request. On every target that can, `ensureDependencies` returns
+without doing anything — it skips any directory with no `package.json` — and
+there is nothing to link. The saving was zero on the entire fleet.
+
+**And if it were reachable it would be a defect.** The dependencies would be
+resolved from the *source's* lockfile and mounted over a tree built from
+*upstream's*. Those are two different commits, and `ensureDependencies` skips
+the install that would settle the disagreement precisely because the symlink
+made `node_modules` present. Verification would then run, honestly and
+reproducibly, against dependencies the shipped base does not have — the false
+green of [ADR-0013](0013-verification-runs-on-the-shipped-artefact.md) and
+ADR-0018 reaching the tree through the base rather than through a check. The
+deletion is not a tidy-up; it closes a hole this record opened.
 
 `openPullRequest` loses its `fetch` + `reset --soft FETCH_HEAD` and its `local`
 parameter. Every workspace that reaches it now descends from the default branch
@@ -123,6 +165,17 @@ failed. It also entrenches a vendored copy as a second source of truth for a
 target that already has one. `demo-repos/*` should be what it is — a fixture set
 for the hermetic suite — and not a base anything ships from.
 
+**Keep the `node_modules` symlink on the `--pr` path, for the Node target with
+dependencies that the fleet will have one day.** The speculative case, and the
+one the first draft took without noticing it was speculative. Rejected on the
+measurement above — zero targets today — but it would lose even at a saving,
+because the thing being reused is resolved from a different commit than the
+base. A dependency set and the tree it is checked against have to come from the
+same place, and "install it properly" is the cheap half of that sentence. When
+a Node target with real dependencies does arrive, the answer is a cache keyed
+on the *upstream* lockfile, which is a different mechanism with a different
+name, not this symlink with its precondition quietly widened.
+
 **Drop `--local` entirely.** ADR-0018 rejected this on the hermetic suite's
 runtime and that measurement is unchanged: the suite dry-runs, so it never takes
 the cloning path. Dry-run `--local` is also the mode an operator iterates in,
@@ -149,6 +202,13 @@ stake.
   that point** — the same fetch, moved earlier. Dry runs are untouched, so the
   9.2 GB-per-run copy ADR-0018 closed stays closed and its 59 MB measurement
   still describes the mode it was taken in.
+- **`--local` is inert on a `--pr` run, and the CLI says so** rather than
+  leaving an operator to believe a flag is doing something. It is not an error:
+  `fleet run … --local` then `--pr` is how a task graduates from dry run to
+  shipping, and refusing the pair would tax the one workflow this is for.
+- **A `--pr` run reaches the agent without ever reading `local_path`.** It also
+  no longer fails when that directory is missing, which it used to do for a
+  source it was not going to use.
 - No wire shape changes ([ADR-0001](0001-tolerant-reader-wire-contract.md)), and
   the agent's capabilities do not move
   ([ADR-0003](0003-the-runner-owns-git.md)). This is a runner change.

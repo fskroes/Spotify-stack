@@ -400,4 +400,24 @@ describe("prepareWorkspace for a run that will open a PR", () => {
     expect(treePaths(workspace)).toContain("shipped-by-the-last-run.ts");
     expect(treePaths(workspace)).toEqual(["index.ts", "shipped-by-the-last-run.ts"]);
   });
+
+  it("takes its dependencies from the base too, not from the operator's disk", () => {
+    const { source, url } = behindUpstream();
+    mkdirSync(path.join(source, "node_modules", "left-pad"), { recursive: true });
+    writeFileSync(path.join(source, "node_modules", "left-pad", "index.js"), "module.exports = 1;\n");
+
+    const workspace = prepareWorkspace({
+      controlRepo: CONTROL_REPO,
+      repo: prRepo(source, url),
+      taskId: "t-pr-deps",
+      local: true,
+      pr: true,
+    });
+
+    // Resolved from the source's lockfile, mounted over a tree built from
+    // upstream's: the two can disagree, and `ensureDependencies` skips the
+    // install that would settle it because node_modules is already present.
+    // Verification would then run against dependencies the base does not have.
+    expect(existsSync(path.join(workspace, "node_modules"))).toBe(false);
+  });
 });

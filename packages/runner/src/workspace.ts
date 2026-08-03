@@ -111,8 +111,12 @@ function materialiseHead(source: string, into: string): void {
  * deleted 163 lines of another run's tests under a header that said "1 file".
  * With one base there is nothing to compare, so no check has to be right.
  *
- * `--local --pr` still earns its flag: the base comes from upstream, and the
- * dependencies come from the source's `node_modules` rather than an install.
+ * So `--local` has no meaning on a `--pr` run, and does not get one. Reusing the
+ * source's `node_modules` there would resolve dependencies from the source's
+ * lockfile and mount them over a tree built from upstream's — a base and a
+ * dependency set from two different commits, with `ensureDependencies` skipping
+ * the install that would settle it. That is the same false green arriving
+ * through the base, one layer over.
  *
  * Either way the workspace leaves here with its dependencies present — see
  * ensureDependencies for why that is the runner's job and not a verifier's.
@@ -122,48 +126,31 @@ export function prepareWorkspace(opts: {
   repo: FleetRepo;
   taskId: string;
   local: boolean;
-  /** This run intends to open a PR, so upstream is the base. */
+  /** This run intends to open a PR, so upstream is the base and `local` is moot. */
   pr?: boolean;
 }): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const workspace = path.join(opts.controlRepo, ".tmp", "runs", `${opts.taskId}-${opts.repo.name}-${stamp}`);
   mkdirSync(workspace, { recursive: true });
 
-  const cloneUpstream = () =>
-    git(path.dirname(workspace), [
-      "clone",
-      "--depth",
-      "1",
-      "--branch",
-      opts.repo.default_branch,
-      opts.repo.url,
-      workspace,
-    ]);
-
-  if (opts.local) {
+  if (opts.local && !opts.pr) {
     const source = resolveLocalSource(opts.repo, opts.controlRepo);
     if (!existsSync(source)) {
       throw new Error(`local repo not found: ${source}`);
     }
-    if (opts.pr) {
-      // The base is upstream's, not the source's. No baseline commit of its
-      // own: the clone's HEAD is the base, exactly as in remote mode, which is
-      // what leaves openPullRequest with nothing to re-parent.
-      cloneUpstream();
-    } else {
-      materialiseHead(source, workspace);
-      git(workspace, ["init", "-b", "main"]);
-      // `-f` stages ignored paths, and here that is the correct reading rather
-      // than a loosening: the only thing on disk is what materialiseHead wrote
-      // out of the source's HEAD, so forcing can commit nothing the source does
-      // not already track. Without it the target's own `.gitignore` gets a
-      // second vote — a file it tracks *and* ignores (vendored output is the
-      // usual way) would be materialised and then dropped, leaving the
-      // verification tree short a file the target ships. The `node_modules`
-      // symlink is created after this commit and so is untouched by the force.
-      git(workspace, ["add", "-A", "-f"]);
-      git(workspace, ["commit", "-m", "baseline", "--quiet"]);
-    }
+    materialiseHead(source, workspace);
+    git(workspace, ["init", "-b", "main"]);
+    // `-f` stages ignored paths, and here that is the correct reading rather
+    // than a loosening: the only thing on disk is what materialiseHead wrote
+    // out of the source's HEAD, so forcing can commit nothing the source does
+    // not already track. Without it the target's own `.gitignore` gets a
+    // second vote — a file it tracks *and* ignores (vendored output is the
+    // usual way) would be materialised and then dropped, leaving the
+    // verification tree short a file the target ships. The `node_modules`
+    // symlink is created after this commit and so is untouched by the force.
+    git(workspace, ["add", "-A", "-f"]);
+    git(workspace, ["commit", "-m", "baseline", "--quiet"]);
+
     // Reuse the source's installed deps rather than installing per run — this
     // is what makes ensureDependencies a no-op below, and it keeps the hermetic
     // e2e suite off the network. Safe since ADR-0013: the verdict of record is
@@ -189,7 +176,15 @@ export function prepareWorkspace(opts: {
       writeFileSync(path.join(workspace, ".git", "info", "exclude"), "/node_modules\n");
     }
   } else {
-    cloneUpstream();
+    git(path.dirname(workspace), [
+      "clone",
+      "--depth",
+      "1",
+      "--branch",
+      opts.repo.default_branch,
+      opts.repo.url,
+      workspace,
+    ]);
   }
 
   // After the baseline commit, never before: an install writes into

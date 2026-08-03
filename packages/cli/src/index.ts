@@ -286,7 +286,7 @@ program
   .description("Run a task against one repo (the per-repo agent loop)")
   .argument("<task>", "task id or path to a task file")
   .requiredOption("--repo <name>", "repo name from fleet/repos.yaml")
-  .option("--local", "copy the repo from demo-repos/ instead of cloning", false)
+  .option("--local", "build the workspace from a local source's HEAD instead of cloning (ignored with --pr, which is based on upstream)", false)
   .option("--pr", "push a branch and open a PR (default: dry-run)", false)
   .option("--engine <engine>", "claude | mock", "claude")
   .option("--mock-patch <path>", "patch file for the mock engine (or NONE)")

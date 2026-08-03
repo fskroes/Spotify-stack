@@ -15,9 +15,10 @@ export interface FleetRepo {
   /** The registry file that supplied this target after the local overlay merged. */
   visibility: FleetRepoVisibility;
   /**
-   * Optional source directory for `--local` runs. When set, local mode copies
-   * from here instead of `demo-repos/<name>`. After load this holds a resolved
-   * absolute path (see resolveLocalPath); undefined falls back to demo-repos/.
+   * Optional source directory for `--local` dry runs, checked out at its `HEAD`
+   * (ADR-0018) instead of `demo-repos/<name>`. A `--pr` run never reads this: it
+   * is based on upstream (ADR-0019). After load this holds a resolved absolute
+   * path (see resolveLocalPath); undefined falls back to demo-repos/.
    */
   local_path?: string;
   /**
