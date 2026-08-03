@@ -15,6 +15,14 @@ diff, and is not in the PR.
 
 **Accepted** (2026-08-03). **Implemented** (2026-08-03) in `prepareWorkspace`.
 
+**Superseded in part** (2026-08-03) by
+[ADR-0019](0019-a-shipping-run-is-based-on-what-it-ships-against.md), which
+takes the base of a run that opens a PR from upstream rather than from the
+source's `HEAD`. Two bullets below no longer hold — the one keeping `openPr`'s
+`reset --soft FETCH_HEAD`, and the *ahead of upstream* residual. Everything else
+here still governs, and it is the whole of how a dry run builds its workspace.
+The reasoning below is left exactly as written.
+
 This closes the defect recorded in
 [`docs/experiments/2026-08-03-tree-construction-on-live-targets.md`](../experiments/2026-08-03-tree-construction-on-live-targets.md)
 under *A defect this probe walked around* — a `target/` directory of 9.2 GB

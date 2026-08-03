@@ -335,3 +335,69 @@ describe("prepareWorkspace with local_path", () => {
     ).toThrow(/local repo not found: \/no\/such\/dir/);
   });
 });
+
+/**
+ * The base a run that will open a PR is built on.
+ *
+ * A `--local` run has two candidate bases — the source's `HEAD` and the
+ * upstream branch the PR will be opened against — and for a long time it used
+ * the first to verify and the second to ship. On 2026-08-03 that shipped a PR
+ * whose header truthfully said "1 file, +37 -0" and whose diff also reverted
+ * 163 lines of tests a previous run had merged: every blob where the two bases
+ * disagreed rode along as an unauthored change, invisible to the agent that
+ * caused none of it and to the judge that reviewed the staged diff.
+ *
+ * A run that opens a PR is therefore based on what it opens the PR against.
+ * There is one base, so there is nothing for a guard to compare.
+ */
+describe("prepareWorkspace for a run that will open a PR", () => {
+  /**
+   * A source one commit behind the upstream it opens PRs against — the state
+   * every successful `fleet cosign` puts a `demo-repos/*` target into, since
+   * the merge lands upstream and the control repo's copy is not told.
+   */
+  function behindUpstream(): { source: string; url: string } {
+    const source = mkdtempSync(path.join(os.tmpdir(), "fleet-behind-"));
+    writeFileSync(path.join(source, "index.ts"), "export const x = 1;\n");
+    git(source, ["init", "-b", "main"]);
+    git(source, ["add", "-A"]);
+    git(source, ["commit", "-m", "shared", "--quiet"]);
+    writeFileSync(path.join(source, "shipped-by-the-last-run.ts"), "export const shipped = true;\n");
+    git(source, ["add", "-A"]);
+    git(source, ["commit", "-m", "a previous run, already merged", "--quiet"]);
+
+    const url = mkdtempSync(path.join(os.tmpdir(), "fleet-origin-"));
+    git(url, ["init", "--bare", "-b", "main"]);
+    git(source, ["push", "--quiet", url, "main"]);
+    // The control repo's copy never learned about the merge.
+    git(source, ["reset", "--hard", "--quiet", "HEAD~1"]);
+
+    return { source, url };
+  }
+
+  const prRepo = (source: string, url: string): FleetRepo => ({
+    name: "my-repo",
+    url,
+    language: "typescript",
+    default_branch: "main",
+    visibility: "public",
+    local_path: source,
+  });
+
+  it("bases the workspace on upstream, not on the source's stale HEAD", () => {
+    const { source, url } = behindUpstream();
+
+    const workspace = prepareWorkspace({
+      controlRepo: CONTROL_REPO,
+      repo: prRepo(source, url),
+      taskId: "t-pr-behind",
+      local: true,
+      pr: true,
+    });
+
+    // The file the source lacks and upstream has. Based on the source's HEAD
+    // this is absent, and the PR commit then deletes it from upstream.
+    expect(treePaths(workspace)).toContain("shipped-by-the-last-run.ts");
+    expect(treePaths(workspace)).toEqual(["index.ts", "shipped-by-the-last-run.ts"]);
+  });
+});

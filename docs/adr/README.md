@@ -24,6 +24,7 @@ record shows what was considered instead and why it lost.
 | [0016](0016-the-tree-blocks-and-an-install-is-not-a-check.md) | The reconstituted tree blocks, and an install is not a check | verify↔run |
 | [0017](0017-the-in-session-verify-is-the-retry-loop.md) | The in-session verify is the retry loop, and the runner installs | verify↔run |
 | [0018](0018-the-local-workspace-is-a-checkout.md) | The local workspace is a checkout, not a copy | workspace |
+| [0019](0019-a-shipping-run-is-based-on-what-it-ships-against.md) | A run that opens a PR is based on what it opens the PR against | workspace |
 
 **0003–0008 were written retroactively** (2026-07-26), reconstructing the
 reasoning behind decisions already in the code. They are sound arguments, not

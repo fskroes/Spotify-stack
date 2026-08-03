@@ -387,23 +387,21 @@ function openPullRequest(opts: {
   workspace: string;
   repo: FleetRepo;
   task: Task;
-  local: boolean;
   bodyFor: (sha: string) => string;
 }): { url: string; sha: string } {
   const branch = `agent/${opts.task.id}`;
-  // Cloud mode clones (origin set, history descends from the default branch);
-  // local mode git-inits a fresh, unrelated history with no remote. Wire origin,
-  // and for local re-parent the change onto the real default branch — otherwise
-  // GitHub rejects the PR ("no history in common with <base>").
-  const hasOrigin = git(opts.workspace, ["remote"]).split("\n").map((r) => r.trim()).includes("origin");
-  if (!hasOrigin) git(opts.workspace, ["remote", "add", "origin", opts.repo.url]);
+  // Every workspace that reaches here was cloned from the target — local runs
+  // included, since a run that opens a PR is based on what it opens the PR
+  // against (prepareWorkspace). So origin is already set and the history
+  // already descends from the default branch.
+  //
+  // What used to live here was a `fetch` + `reset --soft FETCH_HEAD`, because
+  // local mode git-init'd an unrelated history and GitHub rejects a PR with no
+  // history in common. That re-parent was also the second base: it re-diffed
+  // the workspace against upstream after verification had run against the
+  // source's HEAD, so anything the two disagreed on shipped unauthored. There
+  // is one base now, and nothing to re-parent.
   git(opts.workspace, ["checkout", "-b", branch]);
-  if (opts.local) {
-    git(opts.workspace, ["fetch", "--depth=1", "origin", opts.repo.default_branch]);
-    // reset --soft keeps the staged tree but moves the branch onto the fetched
-    // base, so the single commit's diff is exactly the agent's change vs. it.
-    git(opts.workspace, ["reset", "--soft", "FETCH_HEAD"]);
-  }
   // The commit is authored by the fleet, not a person — the -c overrides
   // beat the default runner identity because later -c flags win.
   git(opts.workspace, [...FLEET_COMMIT_AUTHOR, "commit", "-m", `${opts.task.id}: ${opts.task.title}`, "--quiet"]);
@@ -746,6 +744,9 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       repo,
       taskId: task.id,
       local: opts.local ?? false,
+      // A run that will open a PR is based on what it opens the PR against,
+      // decided here because only the caller knows the run's intent.
+      pr: !dryRun,
     });
     // Which of this target's registered verifiers actually run here (ADR-0009).
     // Composed by the runner because only the runner holds both halves: the
@@ -991,7 +992,6 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         workspace,
         repo,
         task,
-        local: opts.local ?? false,
         bodyFor: (s) => buildPrBody({ ...bodyInput, sha: s }),
       }));
     }

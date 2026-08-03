@@ -95,51 +95,88 @@ function materialiseHead(source: string, into: string): void {
 }
 
 /**
- * Prepare an isolated workspace for a run. Local mode checks the repo's
- * local_path (or demo-repos/<name> if unset) out of git at its HEAD and creates
- * a baseline commit; remote mode shallow-clones. Either way the workspace leaves
- * here with its dependencies present — see ensureDependencies for why that is
- * the runner's job and not a verifier's.
+ * Prepare an isolated workspace for a run.
+ *
+ * **A run's base is what it will be judged against.** A run that opens a PR is
+ * based on the upstream branch that PR targets, so it shallow-clones — whether
+ * or not it is `--local`. A dry run has no upstream to answer to, so `--local`
+ * checks the source out at its own `HEAD` (ADR-0018) and gets an operator's
+ * committed work without a network round trip.
+ *
+ * That split is the whole of it, and it replaces a defect rather than guarding
+ * one. Basing every local run on the source's `HEAD` while `openPr` re-parented
+ * the result onto `FETCH_HEAD` gave a shipping run two bases: the tree it
+ * verified and the tree it was diffed against. Where they disagreed the
+ * difference shipped as an unauthored change — see the 2026-08-03 run that
+ * deleted 163 lines of another run's tests under a header that said "1 file".
+ * With one base there is nothing to compare, so no check has to be right.
+ *
+ * `--local --pr` still earns its flag: the base comes from upstream, and the
+ * dependencies come from the source's `node_modules` rather than an install.
+ *
+ * Either way the workspace leaves here with its dependencies present — see
+ * ensureDependencies for why that is the runner's job and not a verifier's.
  */
 export function prepareWorkspace(opts: {
   controlRepo: string;
   repo: FleetRepo;
   taskId: string;
   local: boolean;
+  /** This run intends to open a PR, so upstream is the base. */
+  pr?: boolean;
 }): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const workspace = path.join(opts.controlRepo, ".tmp", "runs", `${opts.taskId}-${opts.repo.name}-${stamp}`);
   mkdirSync(workspace, { recursive: true });
+
+  const cloneUpstream = () =>
+    git(path.dirname(workspace), [
+      "clone",
+      "--depth",
+      "1",
+      "--branch",
+      opts.repo.default_branch,
+      opts.repo.url,
+      workspace,
+    ]);
 
   if (opts.local) {
     const source = resolveLocalSource(opts.repo, opts.controlRepo);
     if (!existsSync(source)) {
       throw new Error(`local repo not found: ${source}`);
     }
-    materialiseHead(source, workspace);
-    git(workspace, ["init", "-b", "main"]);
-    // `-f` stages ignored paths, and here that is the correct reading rather
-    // than a loosening: the only thing on disk is what materialiseHead wrote
-    // out of the source's HEAD, so forcing can commit nothing the source does
-    // not already track. Without it the target's own `.gitignore` gets a second
-    // vote — a file it tracks *and* ignores (vendored output is the usual way)
-    // would be materialised and then dropped, leaving the verification tree
-    // short a file the target ships. The `node_modules` symlink is created
-    // after this commit and so is untouched by the force.
-    git(workspace, ["add", "-A", "-f"]);
-    git(workspace, ["commit", "-m", "baseline", "--quiet"]);
+    if (opts.pr) {
+      // The base is upstream's, not the source's. No baseline commit of its
+      // own: the clone's HEAD is the base, exactly as in remote mode, which is
+      // what leaves openPullRequest with nothing to re-parent.
+      cloneUpstream();
+    } else {
+      materialiseHead(source, workspace);
+      git(workspace, ["init", "-b", "main"]);
+      // `-f` stages ignored paths, and here that is the correct reading rather
+      // than a loosening: the only thing on disk is what materialiseHead wrote
+      // out of the source's HEAD, so forcing can commit nothing the source does
+      // not already track. Without it the target's own `.gitignore` gets a
+      // second vote — a file it tracks *and* ignores (vendored output is the
+      // usual way) would be materialised and then dropped, leaving the
+      // verification tree short a file the target ships. The `node_modules`
+      // symlink is created after this commit and so is untouched by the force.
+      git(workspace, ["add", "-A", "-f"]);
+      git(workspace, ["commit", "-m", "baseline", "--quiet"]);
+    }
     // Reuse the source's installed deps rather than installing per run — this
     // is what makes ensureDependencies a no-op below, and it keeps the hermetic
     // e2e suite off the network. Safe since ADR-0013: the verdict of record is
     // no longer produced in this workspace, so a write reaching the source
     // through this symlink cannot reach a verification result.
     //
-    // After the baseline commit, and a target's `.gitignore` is not what keeps
-    // it out: `node_modules/` matches a directory and this is a symlink, so it
-    // would be committed, and the verification tree — built from that commit —
-    // would materialise it and run the checks against the source's dependencies,
-    // which the agent can write through exactly this link. That is the tier-3
-    // contamination ADR-0013 exists to end, arriving through the base.
+    // After the base exists, never before, and a target's `.gitignore` is not
+    // what keeps it out: `node_modules/` matches a directory and this is a
+    // symlink, so it would be committed, and the verification tree — built from
+    // that commit — would materialise it and run the checks against the
+    // source's dependencies, which the agent can write through exactly this
+    // link. That is the tier-3 contamination ADR-0013 exists to end, arriving
+    // through the base.
     const sourceModules = path.join(source, "node_modules");
     if (existsSync(sourceModules) && !existsSync(path.join(workspace, "node_modules"))) {
       symlinkSync(sourceModules, path.join(workspace, "node_modules"), "dir");
@@ -152,15 +189,7 @@ export function prepareWorkspace(opts: {
       writeFileSync(path.join(workspace, ".git", "info", "exclude"), "/node_modules\n");
     }
   } else {
-    git(path.dirname(workspace), [
-      "clone",
-      "--depth",
-      "1",
-      "--branch",
-      opts.repo.default_branch,
-      opts.repo.url,
-      workspace,
-    ]);
+    cloneUpstream();
   }
 
   // After the baseline commit, never before: an install writes into
