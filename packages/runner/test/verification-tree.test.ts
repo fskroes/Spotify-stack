@@ -125,4 +125,22 @@ describe("constructVerificationTree", () => {
     expect(existsSync(path.join(tree.path, ".claude"))).toBe(false);
     expect(existsSync(path.join(tree.path, "node_modules"))).toBe(false);
   });
+
+  // The cloud shape. `prepareWorkspace` shallow-clones when it is not `--local`,
+  // and a worktree of a repository with no history is the one construction that
+  // could plausibly behave differently there than on a developer's machine —
+  // where every workspace is a `git init` with a baseline commit.
+  it("builds from a shallow clone, which is what a cloud run gives it", () => {
+    const origin = tempWorkspace({ "src/a.js": "export const a = 1;\n" });
+    const workspace = `${origin}.clone`;
+    dirs.push(workspace, `${workspace}.verify`);
+    // file:// because git ignores --depth on a plain local path.
+    execFileSync("git", ["clone", "--quiet", "--depth", "1", `file://${origin}`, workspace]);
+    const diff = stagedDiff(workspace, { "src/a.js": "export const a = 2;\n" });
+
+    const tree = constructVerificationTree({ workspace, diff });
+
+    expect(git(workspace, ["rev-parse", "--is-shallow-repository"]).trim()).toBe("true");
+    expect(readFileSync(path.join(tree.path, "src/a.js"), "utf8")).toBe("export const a = 2;\n");
+  });
 });
