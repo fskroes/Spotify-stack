@@ -323,6 +323,33 @@ export function verdictRecord(verdict: Verdict, result: Pick<JudgeResult, "readP
  * A stub names no capability. "stub judge (approve) + stub" says the same thing
  * twice, and the model half already says the only thing that matters about it.
  */
+/**
+ * Where a co-signer can read the task this PR claims to satisfy, or nothing.
+ *
+ * **Tracked, not merely present.** `tasks/private/` is git-ignored, so a private
+ * task's file resolves to a path inside the control repo and its blob URL 404s
+ * on every run, forever. The header exists so a reviewer can check the claim
+ * against what was asked for; a citation that cannot resolve is worse than the
+ * bare id, because it looks checkable and isn't
+ * ([ADR-0012](../../../docs/adr/0012-a-pass-reports-only-what-it-observed.md) —
+ * a pass reports only what it observed, and it never observed that page).
+ */
+export function taskFileUrl(
+  controlRepo: string,
+  taskPath: string,
+  webUrl: string | undefined,
+): string | undefined {
+  if (!webUrl) return undefined;
+  const rel = path.relative(controlRepo, taskPath);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return undefined;
+  try {
+    git(controlRepo, ["ls-files", "--error-unmatch", "--", rel]);
+  } catch {
+    return undefined;
+  }
+  return `${webUrl}/blob/main/${rel}`;
+}
+
 export function judgeLine(judge: JudgeIdentity | undefined): string {
   if (!judge) return "an unrecorded judge";
   return knownJudgeCapability(judge.capability) === "stub" ? judge.model : `${judge.model} + ${judge.capability}`;
@@ -956,7 +983,6 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     // dry-run). The fleet record deliberately reads the ledger *before* this
     // run's own line is appended in finish().
     const webUrl = controlRepoWebUrl(opts.controlRepo);
-    const taskRelPath = path.relative(opts.controlRepo, opts.taskPath);
     const bodyInput = {
       task,
       diff,
@@ -975,8 +1001,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       judgeName: judgeLine(judgeResult.judge),
       readPaths: judgeResult.readPaths,
       record: fleetRecord(readLedger(ledgerPath)),
-      taskFileUrl:
-        webUrl && !taskRelPath.startsWith("..") ? `${webUrl}/blob/main/${taskRelPath}` : undefined,
+      taskFileUrl: taskFileUrl(opts.controlRepo, opts.taskPath, webUrl),
       newIssueUrl: webUrl ? `${webUrl}/issues/new` : undefined,
     };
 
