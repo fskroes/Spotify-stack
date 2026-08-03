@@ -178,11 +178,16 @@ fn fleet_command(profile: &HostProfile, action: &FleetAction) -> Result<String, 
             }
             Ok(command)
         }
+        // "Local" here means executed on the SSH host rather than dispatched to
+        // Actions — a different axis from where the workspace comes from. On a
+        // shipping run the two part company: the base is upstream's whatever the
+        // operator asked for (ADR-0019), so `--local` would be a flag in the
+        // command line doing nothing, which is how a UI teaches the wrong model.
         FleetAction::LocalRun { task, repo, pr } => Ok(format!(
-            "{prefix} run {} --repo {} --local{}",
+            "{prefix} run {} --repo {}{}",
             quoted(task, "task")?,
             quoted(repo, "repo")?,
-            if *pr { " --pr" } else { "" }
+            if *pr { " --pr" } else { " --local" }
         )),
         // Fixed flag set — --merge --json, no --force by design: a refusal
         // from the runner's cosign gate is the product working.
@@ -257,8 +262,8 @@ fn action_spec(profile: &HostProfile, action: &FleetAction) -> Result<CommandSpe
         ),
         FleetAction::LocalRun { task, repo, pr } => {
             format!(
-                "fleet run {task} --repo {repo} --local{}",
-                if *pr { " --pr" } else { "" }
+                "fleet run {task} --repo {repo}{}",
+                if *pr { " --pr" } else { " --local" }
             )
         }
         FleetAction::CosignMerge { run_id } => format!("fleet cosign {run_id} --merge"),
@@ -642,7 +647,7 @@ mod tests {
                 },
             )
             .unwrap(),
-            "cd -- '/srv/fleet control' && exec pnpm fleet run '007-api' --repo 'demo-api' --local --pr"
+            "cd -- '/srv/fleet control' && exec pnpm fleet run '007-api' --repo 'demo-api' --pr"
         );
         // The flag is a bool on a fixed spec — the only free values stay the
         // identifier-validated task and repo.
@@ -666,7 +671,7 @@ mod tests {
         };
         assert_eq!(
             action_spec(&profile(), &action(true)).unwrap().display,
-            "ssh fleet@example.test fleet run 007-api --repo demo-api --local --pr"
+            "ssh fleet@example.test fleet run 007-api --repo demo-api --pr"
         );
         assert_eq!(
             action_spec(&profile(), &action(false)).unwrap().display,
