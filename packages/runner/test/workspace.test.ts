@@ -81,6 +81,49 @@ describe("prepareWorkspace with local_path", () => {
     expect(git(workspace, ["log", "--oneline"])).toContain("baseline");
   });
 
+  // The baseline commit is what the reconstituted verification tree is built
+  // from (ADR-0013), so anything tracked here is materialised there. A tracked
+  // `node_modules` symlink would point that tree at the source's dependencies —
+  // which the agent's workspace can write through — reintroducing the tier-3
+  // contamination reconstitution exists to end. A target's `.gitignore` cannot
+  // be relied on to stop it: the usual `node_modules/` pattern matches
+  // directories, and this is a symlink.
+  it("keeps the symlinked dependencies out of the baseline commit", () => {
+    const src = sourceRepo();
+    writeFileSync(path.join(src, ".gitignore"), "node_modules/\n");
+
+    const workspace = prepareWorkspace({
+      controlRepo: CONTROL_REPO,
+      repo: repo(src),
+      taskId: "t-symlink",
+      local: true,
+    });
+
+    expect(lstatSync(path.join(workspace, "node_modules")).isSymbolicLink()).toBe(true);
+    expect(git(workspace, ["ls-tree", "-r", "HEAD", "--name-only"])).not.toContain("node_modules");
+  });
+
+  // The other half of the same `.gitignore` blind spot: untracked and unignored,
+  // the symlink would be swept into the staged diff by `git add -A` — shipping a
+  // link to the operator's disk in the PR, and tripping `scope` on a run that
+  // never touched it.
+  it("keeps the symlinked dependencies out of the staged diff", () => {
+    const src = sourceRepo();
+    writeFileSync(path.join(src, ".gitignore"), "node_modules/\n");
+    const workspace = prepareWorkspace({
+      controlRepo: CONTROL_REPO,
+      repo: repo(src),
+      taskId: "t-symlink-diff",
+      local: true,
+    });
+    writeFileSync(path.join(workspace, "index.ts"), "export const x = 2;\n");
+
+    const diff = stagedDiff(workspace);
+
+    expect(diff).toContain("export const x = 2;");
+    expect(diff).not.toContain("node_modules");
+  });
+
   it("stages normal changes when the target ignores injected .claude config", () => {
     const src = sourceRepo();
     writeFileSync(path.join(src, ".gitignore"), ".claude/\n");

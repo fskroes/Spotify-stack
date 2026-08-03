@@ -14,10 +14,14 @@ Resolves #119 under map #115.
 
 ## Status
 
-**Accepted** (2026-08-02). **Not implemented, and not separately implementable.**
-Every rule below is a property of the reconstituted tree, so all of it ships as
-part of ADR-0013's build or not at all. Nothing here may go ahead of it — see
-*Why none of this ships early*.
+**Accepted** (2026-08-02). Section by section, because they did not ship together
+and the *not separately implementable* prediction below was half wrong:
+
+| | |
+|---|---|
+| §1 the gate-input rule blocks | **not implemented** — it is a property of a tree that holds gate inputs at the base, which needs `amends:` ([ADR-0014](0014-gate-inputs-are-carried-only-under-an-amendment.md)). Today's tree applies the whole diff. |
+| §2 an install is not a check | **implemented** 2026-08-03, ahead of the tree — [ADR-0017](0017-the-in-session-verify-is-the-retry-loop.md) §3 found the install needed an owner rather than a tree. |
+| §3 a failed install is attributed | **implemented** 2026-08-03 with the tree, as the two-cell table below. |
 
 ## 1. The gate-input rule already blocks, and `verify-failed` is how
 

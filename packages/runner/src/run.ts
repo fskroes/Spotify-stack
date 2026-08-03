@@ -18,6 +18,7 @@ import { defaultLedgerHtmlPath, writeLedgerHtml } from "./ledger-html.js";
 import { buildPrBody, type VerifyCheck } from "./pr.js";
 import { buildRunPreamble } from "@fleet/knowledge";
 import { loadTask, type Task } from "./task.js";
+import { constructVerificationTree, TreeConstructionError, type VerificationTree } from "./verification-tree.js";
 import { eligibleVerifiers, type VerifierCheck } from "./verifiers.js";
 import { git, injectAgentConfig, injectKnowledge, prepareWorkspace, RUN_KNOWLEDGE_FILE, stagedDiff, stagedFiles } from "./workspace.js";
 
@@ -622,13 +623,37 @@ export async function runPass(ctx: PassContext, prior?: VetoedPass): Promise<Pas
     return { outcome: "ended", status: "scope-violation", diff, resultText, scopeOffenders: offenders };
   }
 
-  // Belt-and-braces deterministic verification (the Stop hook already ran it
-  // inside the session for the real engine, but nothing green goes unproven).
-  ctx.log("· verifying…");
+  // The verdict of record, on the tree that will actually ship: a clean base,
+  // this diff applied, dependencies installed from the lockfile (ADR-0013). The
+  // agent's workspace is not verified and never was the subject — the in-session
+  // Stop hook that ran there is the retry loop, not this gate (ADR-0017 §1).
+  ctx.log("· reconstituting the verification tree…");
   ctx.inflight.enter("verify");
+  let tree: VerificationTree;
+  try {
+    tree = await ctx.timed("verifyMs", () => constructVerificationTree({ workspace: ctx.workspace, diff }));
+  } catch (error) {
+    if (!(error instanceof TreeConstructionError)) throw error;
+    ctx.artifact("diff.patch", diff);
+    // ADR-0016 §3. The two cells differ in what they say about the change, so
+    // they differ in status: an install that fails at the base leaves no
+    // verdict on the change to record, while one that fails only after the diff
+    // is applied is the change breaking its own dependency resolution.
+    if (error.attribution === "change") {
+      // The killing artefact for `diedAt: "verify"`, which is what the kill's
+      // retention copies (ADR-0015). Not a check result — an install is not a
+      // check (ADR-0016 §2) — but it is what the verify stage left behind.
+      ctx.artifact("verify.log", error.message);
+      ctx.log(`✖ verification tree failed to build: ${error.message.split("\n")[0]}`);
+      return { outcome: "ended", status: "verify-failed", diff, resultText: error.message };
+    }
+    ctx.log(`✖ ${error.message.split("\n")[0]}`);
+    return { outcome: "ended", status: "engine-failed", diff, resultText: error.message };
+  }
+  ctx.log(`· verifying ${tree.base.slice(0, 7)} + this diff…`);
   const { verify, unmetGates } = applyGates(
     ctx.task,
-    (await ctx.timed("verifyMs", () => runVerify(ctx.workspace, { registered: ctx.registered }))) as VerifyResult,
+    (await ctx.timed("verifyMs", () => runVerify(tree.path, { registered: ctx.registered }))) as VerifyResult,
   );
   ctx.artifact("verify.log", verify.summary);
   if (verify.state === "failed") {

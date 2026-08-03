@@ -38,18 +38,35 @@ afterEach(() => {
 
 const git = (cwd: string, args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 
-/** A real git repo with one commit, and deliberately no verifier to detect. */
-function tempWorkspace(): string {
+/**
+ * A real git repo with one commit, and deliberately no verifier to detect.
+ * `base` seeds extra files into that commit — the only way to give the
+ * reconstituted tree something to fail on, since it is built from the commit
+ * and never from the working directory.
+ */
+function tempWorkspace(base: Record<string, string> = {}): string {
   const dir = mkdtempSync(path.join(os.tmpdir(), "fleet-pass-"));
-  workspaces.push(dir);
+  // The tree this workspace reconstitutes for verification is its sibling.
+  workspaces.push(dir, `${dir}.verify`);
   git(dir, ["init", "-q"]);
   git(dir, ["config", "user.email", "fleet@example.test"]);
   git(dir, ["config", "user.name", "fleet"]);
   writeFileSync(path.join(dir, "README.md"), "base\n");
+  for (const [rel, body] of Object.entries(base)) writeFileSync(path.join(dir, rel), body);
   git(dir, ["add", "-A"]);
   git(dir, ["commit", "-qm", "base"]);
   return dir;
 }
+
+/** A lockfile npm refuses to read, so these cases fail locally and offline. */
+const BROKEN_LOCKFILE = "{ not json";
+const PACKAGE_JSON = JSON.stringify({ name: "target", scripts: { test: "node --test" } });
+const EMPTY_LOCKFILE = JSON.stringify({
+  name: "target",
+  lockfileVersion: 3,
+  requires: true,
+  packages: { "": { name: "target" } },
+});
 
 const taskFor = (scope?: string[]): Task => ({
   id: "unit-pass",
@@ -359,5 +376,97 @@ describe("a retry is seeded by the veto that caused it", () => {
     // @ts-expect-error — a pass that reached a fate of its own is not retried
     void ((ctx: PassContext) => runPass(ctx, ended));
     expect(VETO.verdict).toBe("veto");
+  });
+});
+
+/**
+ * ADR-0016 §3. Verification runs on a tree reconstituted from git objects
+ * (ADR-0013), and that tree can fail to build. Which side of the run owns the
+ * failure is decided by *when* it happens, and it is a two-cell table: an
+ * unattributed install failure is the one row from which nothing can be learned
+ * about either the agent or the environment.
+ */
+describe("a failed dependency install is attributed, not filed", () => {
+  it("files an install that fails at the base as infrastructure", async () => {
+    const workspace = tempWorkspace({
+      "package.json": PACKAGE_JSON,
+      "package-lock.json": BROKEN_LOCKFILE,
+    });
+    const h = harness({
+      workspace,
+      onRun: () => {
+        writeFileSync(path.join(workspace, "added.ts"), "export const a = 1;\n");
+        return engineResult("made the change");
+      },
+    });
+
+    const pass = (await runPass(h.ctx)) as EndedPass;
+
+    // The run itself broke: nothing here is evidence about the change, so no
+    // verdict on it exists.
+    expect(pass.status).toBe("engine-failed");
+    expect(pass.resultText).toMatch(/dependency install failed/);
+    expect(pass.verify).toBeUndefined();
+    // Still reviewable — the diff exists, it just never got verified.
+    expect(h.artifacts.get("diff.patch")).toContain("added.ts");
+  });
+
+  it("kills a change that broke its own dependency resolution", async () => {
+    const workspace = tempWorkspace({
+      "package.json": PACKAGE_JSON,
+      "package-lock.json": EMPTY_LOCKFILE,
+    });
+    const h = harness({
+      workspace,
+      onRun: () => {
+        writeFileSync(path.join(workspace, "package-lock.json"), BROKEN_LOCKFILE);
+        return engineResult("updated the lockfile");
+      },
+    });
+
+    const pass = (await runPass(h.ctx)) as EndedPass;
+
+    // The base installed, so the environment is sound. `verify-failed` carries
+    // `diedAt: "verify"` from the contract's one facts table (ADR-0008), which
+    // is what retains the kill's diff and its killing artefact (ADR-0015).
+    expect(pass.status).toBe("verify-failed");
+    expect(pass.resultText).toMatch(/dependency install failed/);
+    expect(h.artifacts.get("verify.log")).toMatch(/dependency install failed/);
+  });
+});
+
+/**
+ * ADR-0013's rule, at the pass: **verify the thing you are going to ship.** The
+ * check below fails in the presence of a file the agent left outside the index —
+ * an untracked, ignored gate input, which is tier 3 of the audit. It cannot
+ * reach a tree built from git objects, so the run goes green on the diff alone.
+ */
+describe("verification runs on the reconstituted tree, not the agent's workspace", () => {
+  it("does not let a file the agent kept out of the index reach a check", async () => {
+    const workspace = tempWorkspace({
+      ".gitignore": "scratch/\n",
+      "package.json": JSON.stringify({ name: "target", scripts: { test: "node check.js" } }),
+      "package-lock.json": EMPTY_LOCKFILE,
+      // Stands in for every gate input that executes out of the workspace: if
+      // the check can see the agent's scratch directory, it is running in the
+      // wrong tree.
+      "check.js": "if (require('node:fs').existsSync('scratch')) { console.error('verified the workspace'); process.exit(1); }\n",
+    });
+    const h = harness({
+      workspace,
+      onRun: () => {
+        writeFileSync(path.join(workspace, "shipped.ts"), "export const a = 1;\n");
+        mkdirSync(path.join(workspace, "scratch"), { recursive: true });
+        writeFileSync(path.join(workspace, "scratch", "notes.md"), "working files\n");
+        return engineResult("made the change");
+      },
+    });
+
+    const pass = (await runPass(h.ctx)) as ApprovedPass;
+
+    expect(pass.outcome).toBe("approved");
+    expect(pass.verify.state).toBe("passed");
+    expect(pass.diff).toContain("shipped.ts");
+    expect(pass.diff).not.toContain("scratch");
   });
 });

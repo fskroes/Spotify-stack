@@ -70,19 +70,32 @@ export function prepareWorkspace(opts: {
         );
       },
     });
+    git(workspace, ["init", "-b", "main"]);
+    git(workspace, ["add", "-A"]);
+    git(workspace, ["commit", "-m", "baseline", "--quiet"]);
     // Reuse the source's installed deps rather than installing per run — this
     // is what makes ensureDependencies a no-op below, and it keeps the hermetic
     // e2e suite off the network. Safe since ADR-0013: the verdict of record is
     // no longer produced in this workspace, so a write reaching the source
     // through this symlink cannot reach a verification result.
-    // The demo repo's .gitignore keeps this out of git.
+    //
+    // After the baseline commit, and a target's `.gitignore` is not what keeps
+    // it out: `node_modules/` matches a directory and this is a symlink, so it
+    // would be committed, and the verification tree — built from that commit —
+    // would materialise it and run the checks against the source's dependencies,
+    // which the agent can write through exactly this link. That is the tier-3
+    // contamination ADR-0013 exists to end, arriving through the base.
     const sourceModules = path.join(source, "node_modules");
     if (existsSync(sourceModules) && !existsSync(path.join(workspace, "node_modules"))) {
       symlinkSync(sourceModules, path.join(workspace, "node_modules"), "dir");
+      // The same blind spot, from the other side: untracked and unignored, the
+      // link would be swept into the staged diff by `git add -A`. Excluded in
+      // this clone's own git dir rather than by editing the target's
+      // `.gitignore` (which is the target's file and would land in the diff) or
+      // by another reset in `stagedDiff` (which states harness rules the runner
+      // enforces, and this link is one the runner only creates in local mode).
+      writeFileSync(path.join(workspace, ".git", "info", "exclude"), "/node_modules\n");
     }
-    git(workspace, ["init", "-b", "main"]);
-    git(workspace, ["add", "-A"]);
-    git(workspace, ["commit", "-m", "baseline", "--quiet"]);
   } else {
     git(path.dirname(workspace), [
       "clone",

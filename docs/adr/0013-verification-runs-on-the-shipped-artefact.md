@@ -14,15 +14,28 @@ alternatives.
 
 ## Status
 
-**Accepted** (2026-08-01). **Not implemented.** The runner still verifies in the
-agent's workspace; nothing in this record describes behaviour you can observe
-today. Implementation is a separate effort, per the #59 → #62/#63 precedent.
+**Accepted** (2026-08-01). **Implemented** (2026-08-03): `runPass` verifies the
+tree `constructVerificationTree` reconstitutes, never the workspace.
 
-One number is deliberately missing and should be measured before the build: the
-per-run dependency install cost on a real target. If it is large enough to change
-what the fleet can do in a night, the defensible retreat is restoring only the
-installed dependencies in place — strictly weaker, and only as good as the paths
-it names.
+The missing number was measured first and chose this build over the retreat —
+[`docs/experiments/2026-08-02-reconstituted-verification-tree-cost.md`](../experiments/2026-08-02-reconstituted-verification-tree-cost.md),
+which also records a limit this record does not: reconstitution relocates
+target-specific knowledge from a path list to a **build order**, and nothing
+knows one yet.
+
+What is built is the tree and its two-point install
+([ADR-0016](0016-the-tree-blocks-and-an-install-is-not-a-check.md) §3). What is
+not is [ADR-0014](0014-gate-inputs-are-carried-only-under-an-amendment.md): the
+tree applies the whole diff, so a gate input the diff edits is *carried*, not
+held at the base. Until `amends:` exists, this record's tier-1 case is unchanged
+from before the build.
+
+One consequence below did not hold for free. The `--local` symlink escape does
+not close by itself: `.gitignore`'s `node_modules/` matches directories and not
+symlinks, so the link was tracked in the baseline commit — and a tree built from
+that commit would have materialised it and verified against dependencies the
+agent can write through. Closing it took an explicit fix in `prepareWorkspace`,
+with a test.
 
 ## Why the workspace was the wrong tree
 
