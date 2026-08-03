@@ -122,7 +122,9 @@ export function cosign(input: CosignInput): CosignResult {
 
   if (action === "close") {
     try {
-      gh(["pr", "close", entry.prUrl, "--comment", input.reason!.trim()]);
+      // --delete-branch on both paths: a rejected run must not leave its branch
+      // on the target any more than an accepted one does.
+      gh(["pr", "close", entry.prUrl, "--comment", input.reason!.trim(), "--delete-branch"]);
     } catch (err) {
       return refuse(base, { code: "close-failed", detail: `gh pr close failed: ${(err as Error).message}` });
     }
@@ -177,5 +179,10 @@ export function formatCosignResult(result: CosignResult): string {
       `  branch: deleted`,
     ].join("\n");
   }
-  return `closed without merging: ${result.prUrl}\n  run: ${target}\n  (reason recorded as a PR comment)`;
+  return [
+    `closed without merging: ${result.prUrl}`,
+    `  run:    ${target}`,
+    `  branch: deleted`,
+    `  (reason recorded as a PR comment)`,
+  ].join("\n");
 }

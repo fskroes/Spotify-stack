@@ -200,7 +200,13 @@ describe("cosign close", () => {
     expect(result.ok).toBe(true);
     expect(result.state).toBe("closed");
     const close = calls.find((c) => c[1] === "close");
-    expect(close).toEqual(["pr", "close", PR_URL, "--comment", "touches prod code beyond the task"]);
+    expect(close).toEqual(["pr", "close", PR_URL, "--comment", "touches prod code beyond the task", "--delete-branch"]);
+  });
+
+  it("deletes the branch on close, like the merge path does — a rejected run leaves nothing behind", () => {
+    const { gh, calls } = ghStub();
+    cosign(input({ action: "close", reason: "superseded", gh }));
+    expect(calls.find((c) => c[1] === "close")).toContain("--delete-branch");
   });
 
   it("closes even when the PR is not cleanly mergeable — closing needs no merge gate", () => {
@@ -250,6 +256,7 @@ describe("formatCosignResult", () => {
   it("renders a close as recorded", () => {
     const text = formatCosignResult(cosign(input({ action: "close", reason: "nope" })));
     expect(text).toContain("closed without merging");
+    expect(text).toContain("branch: deleted");
     expect(text).toContain("reason recorded as a PR comment");
   });
 });
