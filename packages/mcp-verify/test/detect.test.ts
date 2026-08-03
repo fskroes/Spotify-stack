@@ -36,16 +36,28 @@ describe("detect", () => {
       path.join(dir, "package.json"),
       JSON.stringify({ scripts: { lint: "eslint .", typecheck: "tsc --noEmit", test: "node --test" } }),
     );
-    mkdirSync(path.join(dir, "node_modules"));
 
     expect(names(detect(dir))).toEqual(["eslint", "tsc", "test"]);
   });
 
-  it("adds the install check only when dependencies are not present", () => {
+  // ADR-0016: installing dependencies is tree construction, not a check. The
+  // detector used to emit `npm-install` whenever node_modules was missing, which
+  // made a scripts-less package.json repo pass on the install alone. The runner
+  // installs now (ensureDependencies), so detection emits verifiers only.
+  it("never emits an install step, even with no dependencies present", () => {
     writeFileSync(path.join(dir, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
     writeFileSync(path.join(dir, "package-lock.json"), "{}");
 
-    expect(names(detect(dir))).toEqual(["npm-install", "test"]);
+    expect(names(detect(dir))).toEqual(["test"]);
+  });
+
+  // The empty-list rule (runVerify → inconclusive) is only correct while every
+  // detected check is a real verifier. This is the case that used to break it.
+  it("detects nothing for a package.json with no verifier-shaped script", () => {
+    writeFileSync(path.join(dir, "package.json"), JSON.stringify({ scripts: { build: "tsc -b" } }));
+    writeFileSync(path.join(dir, "package-lock.json"), "{}");
+
+    expect(detect(dir)).toEqual([]);
   });
 
   it("gates an Xcode project with a unit-test target on macOS", () => {
@@ -113,15 +125,14 @@ describe("detect — independent nested workspaces", () => {
 
   it("gates an independent nested workspace as its own namespaced checks", () => {
     writeFileSync(path.join(dir, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
-    mkdirSync(path.join(dir, "node_modules"));
     const mobile = nested("mobile", {
       "package.json": JSON.stringify({ scripts: { test: "jest", typecheck: "tsc --noEmit" } }),
       "package-lock.json": "{}", // own closure → not a hoisted member
     });
 
     const checks = detect(dir);
-    // Root check first, then the nested workspace's install → tsc → test.
-    expect(names(checks)).toEqual(["test", "npm-install:mobile", "tsc:mobile", "test:mobile"]);
+    // Root check first, then the nested workspace's tsc → test.
+    expect(names(checks)).toEqual(["test", "tsc:mobile", "test:mobile"]);
     // Every nested check runs in the nested directory, not the repo root.
     for (const c of checks.filter((c) => c.name.endsWith(":mobile"))) {
       expect(c.cwd).toBe(mobile);
@@ -136,16 +147,15 @@ describe("detect — independent nested workspaces", () => {
       "package-lock.json": "{}",
     });
 
-    expect(names(detect(dir))).toEqual(["npm-install:app", "test:app"]);
+    expect(names(detect(dir))).toEqual(["test:app"]);
   });
 
   it("does not descend into a pnpm/yarn-locked nested app (npm-only for now)", () => {
-    // npmChecks installs via `npm ci` / `npm install`; running those against a
-    // pnpm/yarn closure would be unsound (npm install rewrites a lockfile the
-    // diff then vetoes). Detecting it now would only mis-handle it — deliberately
-    // left for a per-manager follow-up, not silently half-run.
+    // Falls out of the own-lockfile predicate rather than being a rule of its
+    // own: `package-lock.json` is what marks an independent closure, so a
+    // pnpm/yarn app reads as a hoisted member and is skipped. Deliberately left
+    // for a per-manager follow-up rather than silently half-run.
     writeFileSync(path.join(dir, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
-    mkdirSync(path.join(dir, "node_modules"));
     nested("web", {
       "package.json": JSON.stringify({ scripts: { test: "vitest run" } }),
       "pnpm-lock.yaml": "",
@@ -162,7 +172,6 @@ describe("detect — independent nested workspaces", () => {
     // Root vitest already covers its workspace members; they carry no own
     // lockfile (deps hoist to the root), so descending would double-run.
     writeFileSync(path.join(dir, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }));
-    mkdirSync(path.join(dir, "node_modules"));
     nested("pkg-a", { "package.json": JSON.stringify({ scripts: { test: "vitest run" } }) });
 
     expect(names(detect(dir))).toEqual(["test"]);
@@ -170,7 +179,6 @@ describe("detect — independent nested workspaces", () => {
 
   it("skips a nested workspace that has a lockfile but no verifier-shaped script", () => {
     writeFileSync(path.join(dir, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
-    mkdirSync(path.join(dir, "node_modules"));
     nested("tool", {
       "package.json": JSON.stringify({ scripts: { build: "tsc -b" } }), // no test/lint/typecheck
       "package-lock.json": "{}",
@@ -181,7 +189,6 @@ describe("detect — independent nested workspaces", () => {
 
   it("gates a nested workspace on tsc when it has a tsconfig but no test script", () => {
     writeFileSync(path.join(dir, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
-    mkdirSync(path.join(dir, "node_modules"));
     nested("web", {
       "package.json": JSON.stringify({ scripts: {} }),
       "package-lock.json": "{}",
@@ -191,7 +198,7 @@ describe("detect — independent nested workspaces", () => {
     // No test script, but a tsconfig → the same tsc-without-typecheck-script
     // fallback the root branch applies, namespaced to the nested dir.
     const checks = detect(dir);
-    expect(names(checks)).toEqual(["test", "npm-install:web", "tsc:web"]);
+    expect(names(checks)).toEqual(["test", "tsc:web"]);
     const tsc = checks.find((c) => c.name === "tsc:web");
     expect([tsc?.command, tsc?.args]).toEqual(["npx", ["tsc", "--noEmit"]]);
   });
@@ -212,15 +219,22 @@ describe("detect — independent nested workspaces", () => {
     expect(names(detect(dir))).toEqual(["test"]);
   });
 
-  it("omits the nested install check when the nested deps are already present", () => {
+  // The property that makes this module caller-blind, asserted rather than
+  // assumed: the same repo yields the same check list in the agent's workspace
+  // (dependencies present) and in the runner's reconstituted tree (a clean
+  // checkout). Detection used to branch on node_modules, so it did not.
+  it("yields the same checks whether or not dependencies are present", () => {
     writeFileSync(path.join(dir, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
-    mkdirSync(path.join(dir, "node_modules"));
     const mobile = nested("mobile", {
       "package.json": JSON.stringify({ scripts: { test: "jest" } }),
       "package-lock.json": "{}",
     });
+    const cold = names(detect(dir));
+
+    mkdirSync(path.join(dir, "node_modules"));
     mkdirSync(path.join(mobile, "node_modules"));
 
-    expect(names(detect(dir))).toEqual(["test", "test:mobile"]);
+    expect(cold).toEqual(["test", "test:mobile"]);
+    expect(names(detect(dir))).toEqual(cold);
   });
 });

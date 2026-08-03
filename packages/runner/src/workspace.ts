@@ -10,6 +10,7 @@ import {
   type KnowledgeDriftReport,
 } from "@fleet/knowledge";
 import { resolveLocalSource, type FleetRepo } from "./fleet.js";
+import { ensureDependencies } from "./install.js";
 import { type VerifierCheck } from "./verifiers.js";
 import { knowledgeArtifactPath } from "./knowledge.js";
 
@@ -39,7 +40,9 @@ export function git(cwd: string, args: string[], input?: string): string {
 /**
  * Prepare an isolated workspace for a run. Local mode copies the repo from
  * the repo's local_path (or demo-repos/<name> if unset) and creates a baseline
- * commit; remote mode shallow-clones.
+ * commit; remote mode shallow-clones. Either way the workspace leaves here with
+ * its dependencies present — see ensureDependencies for why that is the
+ * runner's job and not a verifier's.
  */
 export function prepareWorkspace(opts: {
   controlRepo: string;
@@ -67,7 +70,11 @@ export function prepareWorkspace(opts: {
         );
       },
     });
-    // Reuse the source's installed deps so verify doesn't re-install per run.
+    // Reuse the source's installed deps rather than installing per run — this
+    // is what makes ensureDependencies a no-op below, and it keeps the hermetic
+    // e2e suite off the network. Safe since ADR-0013: the verdict of record is
+    // no longer produced in this workspace, so a write reaching the source
+    // through this symlink cannot reach a verification result.
     // The demo repo's .gitignore keeps this out of git.
     const sourceModules = path.join(source, "node_modules");
     if (existsSync(sourceModules) && !existsSync(path.join(workspace, "node_modules"))) {
@@ -87,6 +94,14 @@ export function prepareWorkspace(opts: {
       workspace,
     ]);
   }
+
+  // After the baseline commit, never before: an install writes into
+  // `node_modules`, and a target that fails to gitignore it would otherwise
+  // bake 100+ packages into the baseline it is diffed against. Remote mode has
+  // no baseline commit of its own — the clone's HEAD is the base — so the same
+  // ordering just means the install lands untracked, exactly where the
+  // `npm-install` check used to put it.
+  ensureDependencies(workspace);
 
   return workspace;
 }

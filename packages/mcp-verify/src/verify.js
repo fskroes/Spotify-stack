@@ -51,7 +51,6 @@ const MAX_BUFFER = 32 * 1024 * 1024;
  * list that then drifts. `detected-names.test.js` locks it to the detector.
  */
 export const DETECTED_CHECK_NAMES = [
-  "npm-install",
   "eslint",
   "tsc",
   "test",
@@ -81,11 +80,7 @@ export function detect(cwd, { platform = process.platform } = {}) {
   // root `test` never runs, so a change there used to pass the gate vacuously (#95).
   checks.push(...npmChecks(cwd, ""));
   for (const dir of nestedWorkspaces(cwd)) {
-    const nested = npmChecks(path.join(cwd, dir), dir);
-    // Gate a nested workspace only when it has a real verifier, not merely an
-    // install. npmChecks is the single source of "what counts as a verifier",
-    // so this stays in lockstep with the root without re-deriving the predicate.
-    if (nested.some((c) => !c.name.startsWith("npm-install"))) checks.push(...nested);
+    checks.push(...npmChecks(path.join(cwd, dir), dir));
   }
 
   if (existsSync(path.join(cwd, "Package.swift"))) {
@@ -136,6 +131,13 @@ export function detect(cwd, { platform = process.platform } = {}) {
  * nested test becomes `test:mobile` — and, via each check's `cwd`, routes the
  * check to run inside `dir`.
  *
+ * Emits verifiers only. Installing dependencies is not a check (ADR-0016): it is
+ * how a tree is made runnable, so it belongs to whoever builds the tree — the
+ * runner, which owns every side effect (ADR-0003). Detection is therefore
+ * independent of whether `node_modules` happens to exist, which is what keeps
+ * this module caller-blind: the same repo yields the same check list in the
+ * agent's workspace and in the runner's reconstituted tree.
+ *
  * @param {string} dir     Absolute workspace directory (holds package.json)
  * @param {string} relDir  "" for the root, else the nested dir's name
  * @returns {Check[]}
@@ -148,18 +150,6 @@ function npmChecks(dir, relDir) {
   const where = relDir ? ` (${relDir}/)` : "";
   /** @type {Check[]} */
   const checks = [];
-  if (!existsSync(path.join(dir, "node_modules"))) {
-    // npm ci never rewrites the lockfile — plain `npm install` can, and any
-    // such write lands in the run diff and gets the change vetoed.
-    const hasLockfile = existsSync(path.join(dir, "package-lock.json"));
-    checks.push({
-      name: `npm-install${suffix}`,
-      label: `${hasLockfile ? "npm ci" : "npm install"}${where}`,
-      command: "npm",
-      args: hasLockfile ? ["ci", "--no-fund", "--no-audit"] : ["install", "--no-fund", "--no-audit"],
-      cwd: dir,
-    });
-  }
   if (scripts.lint) {
     checks.push({ name: `eslint${suffix}`, label: `npm run lint${where}`, command: "npm", args: ["run", "lint"], cwd: dir });
   }
@@ -180,10 +170,13 @@ function npmChecks(dir, relDir) {
 
 /**
  * Immediate child directories that are INDEPENDENT npm workspaces: each has its
- * own package.json and its own package-lock.json. The lockfile is the
- * discriminator — an independent app carries its own dependency closure, whereas
- * a hoisted workspace member has none (its deps live in the root lockfile), so
- * the root runner already covers it and descending would double-run.
+ * own package.json and its own package-lock.json.
+ *
+ * The lockfile discriminates against **double-running**, not against installing:
+ * a hoisted workspace member has no lockfile of its own (its deps live in the
+ * root's), and the root's own `test` script already runs it, so descending would
+ * run the same suite twice. An independent app carries its own closure and its
+ * own suite, which the root script deliberately excludes (#95).
  *
  * This is a robust proxy, not a proof. It assumes the app commits its lockfile
  * (the fleet's targets do; an uncommitted one would be silently skipped) and
@@ -191,18 +184,17 @@ function npmChecks(dir, relDir) {
  * it were, the suite would run twice — wasteful, but not a false green). Both
  * hold for the target shape: a nested `mobile/` app with its own lockfile.
  *
- * npm only: npmChecks installs via `npm ci` / `npm install`, so a pnpm- or
- * yarn-locked nested app is left for a deliberate per-manager follow-up rather
- * than installed unsoundly. Depth 1 only: covers the `mobile/` shape without
- * wandering into fixtures or `packages/*`-style nesting. node_modules and dot
- * directories are never the repo's own workspaces, so they are skipped. Whether
- * a dir actually carries a verifier is decided by npmChecks (the single source
- * of truth), not re-derived here.
+ * A pnpm- or yarn-locked nested app falls out as a side effect of the same
+ * predicate and stays a deliberate per-manager follow-up. Depth 1 only: covers
+ * the `mobile/` shape without wandering into fixtures or `packages/*`-style
+ * nesting. node_modules and dot directories are never the repo's own workspaces,
+ * so they are skipped. Whether a dir actually carries a verifier is decided by
+ * npmChecks (the single source of truth), not re-derived here.
  *
  * @param {string} cwd  The verify root
  * @returns {string[]}  Nested directory names, sorted for deterministic order
  */
-function nestedWorkspaces(cwd) {
+export function nestedWorkspaces(cwd) {
   /** @type {string[]} */
   const found = [];
   for (const entry of readdirSync(cwd, { withFileTypes: true })) {
@@ -317,11 +309,18 @@ export async function runVerify(cwd, { registered = [] } = {}) {
   if (checks.length === 0) {
     // A repo with no verifiers is legitimate; a pass for it is not. Nothing ran,
     // so there is nothing to assert about the change — say exactly that.
+    //
+    // The cause is named as a disjunction rather than asserted: since an install
+    // stopped counting as a verifier (ADR-0016), a repo CAN carry a package.json
+    // and still detect nothing, so the old parenthetical ("no package.json,
+    // Package.swift, or Xcode project") became false for the exact case this
+    // change made reachable.
     return {
       state: "inconclusive",
       checks: [],
       summary:
-        "VERIFY INCONCLUSIVE — no verifiers detected for this repository (no package.json, Package.swift, or Xcode project). " +
+        "VERIFY INCONCLUSIVE — no verifiers detected for this repository: it declares no lint, " +
+        "typecheck, or test script, and carries no Package.swift or Xcode project. " +
         "Nothing was executed, so this change is unverified. This is not a pass.",
     };
   }
