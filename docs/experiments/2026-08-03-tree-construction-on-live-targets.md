@@ -87,3 +87,31 @@ ADR-0013 rejects reconstitution's alternative for. The shape of a real fix is
 that the local workspace, like the verification tree, could come from git objects
 rather than from a filesystem copy — which would also decide what happens to a
 target's uncommitted local work, and that is a decision, not a patch.
+
+---
+
+## Addendum: that defect, closed and measured (same day, later)
+
+Nothing above this line has been edited. This is a second measurement, taken
+after [ADR-0018](../adr/0018-the-local-workspace-is-a-checkout.md) replaced the
+`--local` filesystem copy with a checkout of the source's `HEAD` out of git
+objects. Same probe discipline: **no spend**, no agent, no judge, no model calls
+— the two plumbing calls the runner now makes, run against the same two live
+targets, into a temp directory that was deleted afterwards.
+
+| | Source on disk | Workspace materialised | Files | Wall clock |
+|---|---|---|---|---|
+| A | 6.7 MB | 1.7 MB | 157 | < 1 s |
+| B | 10 GB | **59 MB** | 1361 | < 1 s |
+
+Target B's per-run copy was the finding above: 9.2 GB of build output that no
+exclusion named. It is now 59 MB, and the reason it is 59 MB is not that anyone
+named `target/` — it is that `target/` is not in a commit. The same two calls
+produced target A's workspace with no rule mentioning `.build`, and would produce
+a third target's with no rule at all.
+
+**What this does not measure.** Whether an operator's uncommitted work mattered
+to either target — the decision drops it, deliberately, and no run has yet been
+attempted against a dirty source. The flip trigger, if one is wanted, is an
+operator hitting the missing-file failure and finding it unreasonable rather than
+merely inconvenient.

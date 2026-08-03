@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   buildIndex,
@@ -38,11 +38,68 @@ export function git(cwd: string, args: string[], input?: string): string {
 }
 
 /**
- * Prepare an isolated workspace for a run. Local mode copies the repo from
- * the repo's local_path (or demo-repos/<name> if unset) and creates a baseline
- * commit; remote mode shallow-clones. Either way the workspace leaves here with
- * its dependencies present — see ensureDependencies for why that is the
- * runner's job and not a verifier's.
+ * Materialise a source repository's `HEAD` tree into an empty directory
+ * ([ADR-0018](../../../docs/adr/0018-the-local-workspace-is-a-checkout.md)).
+ *
+ * Two plumbing calls against a scratch index, so nothing but the object store is
+ * consulted: no exclusion list to keep current, no working-tree state, and no
+ * `.gitattributes` `export-ignore` quietly dropping a target's `test/` the way
+ * `git archive` would.
+ *
+ * `--show-prefix` is what makes one path cover both target shapes. It is empty
+ * when `local_path` is a repository root — a real target — and
+ * `demo-repos/<name>/` when it is a tracked directory inside the control repo,
+ * which is what every `demo-repos/*` target is and why cloning the source is not
+ * an option for them.
+ */
+function materialiseHead(source: string, into: string): void {
+  let toplevel: string;
+  let prefix: string;
+  try {
+    // stderr piped: the failure below is reported as a fleet error, and git's
+    // "not a git repository" would otherwise print over the top of it.
+    const revParse = (flag: string) =>
+      execFileSync("git", ["rev-parse", flag], {
+        cwd: source,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+    toplevel = revParse("--show-toplevel");
+    prefix = revParse("--show-prefix").replace(/\/$/, "");
+  } catch {
+    throw new Error(
+      `local repo is not inside a git repository: ${source}\n` +
+        "A run's base is a commit (ADR-0018); local mode reads git objects, not a directory.",
+    );
+  }
+
+  const indexFile = `${into}.index`;
+  // From the toplevel, never from `source` itself. `checkout-index --prefix` run
+  // in a subdirectory resolves against that subdirectory and writes nothing at
+  // all — silently, exit 0 — which for a demo target would produce an empty
+  // workspace and a baseline commit with nothing in it.
+  const plumbing = (args: string[]) =>
+    execFileSync("git", [...GIT_IDENTITY, ...args], {
+      cwd: toplevel,
+      encoding: "utf8",
+      env: { ...process.env, GIT_INDEX_FILE: indexFile },
+      maxBuffer: 64 * 1024 * 1024,
+    });
+
+  try {
+    plumbing(["read-tree", `HEAD:${prefix}`]);
+    plumbing(["checkout-index", "--all", `--prefix=${into}${path.sep}`]);
+  } finally {
+    rmSync(indexFile, { force: true });
+  }
+}
+
+/**
+ * Prepare an isolated workspace for a run. Local mode checks the repo's
+ * local_path (or demo-repos/<name> if unset) out of git at its HEAD and creates
+ * a baseline commit; remote mode shallow-clones. Either way the workspace leaves
+ * here with its dependencies present — see ensureDependencies for why that is
+ * the runner's job and not a verifier's.
  */
 export function prepareWorkspace(opts: {
   controlRepo: string;
@@ -59,19 +116,17 @@ export function prepareWorkspace(opts: {
     if (!existsSync(source)) {
       throw new Error(`local repo not found: ${source}`);
     }
-    cpSync(source, workspace, {
-      recursive: true,
-      filter: (src) => {
-        const base = path.basename(src);
-        // .DS_Store excluded so sourcing from a live macOS working tree
-        // (via local_path) doesn't leak it into the baseline/diff.
-        return (
-          base !== "node_modules" && base !== ".build" && base !== ".git" && base !== ".DS_Store"
-        );
-      },
-    });
+    materialiseHead(source, workspace);
     git(workspace, ["init", "-b", "main"]);
-    git(workspace, ["add", "-A"]);
+    // `-f` stages ignored paths, and here that is the correct reading rather
+    // than a loosening: the only thing on disk is what materialiseHead wrote
+    // out of the source's HEAD, so forcing can commit nothing the source does
+    // not already track. Without it the target's own `.gitignore` gets a second
+    // vote — a file it tracks *and* ignores (vendored output is the usual way)
+    // would be materialised and then dropped, leaving the verification tree
+    // short a file the target ships. The `node_modules` symlink is created
+    // after this commit and so is untouched by the force.
+    git(workspace, ["add", "-A", "-f"]);
     git(workspace, ["commit", "-m", "baseline", "--quiet"]);
     // Reuse the source's installed deps rather than installing per run — this
     // is what makes ensureDependencies a no-op below, and it keeps the hermetic

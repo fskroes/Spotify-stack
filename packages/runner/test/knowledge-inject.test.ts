@@ -10,7 +10,14 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FleetRepo } from "../src/fleet.js";
-import { injectKnowledge, prepareWorkspace, RUN_KNOWLEDGE_FILE, stagedDiff, stagedFiles } from "../src/workspace.js";
+import {
+  git,
+  injectKnowledge,
+  prepareWorkspace,
+  RUN_KNOWLEDGE_FILE,
+  stagedDiff,
+  stagedFiles,
+} from "../src/workspace.js";
 
 /** A control repo carrying a compiled artifact for `my-repo` at knowledge/my-repo.md. */
 function controlRepoWithArtifact(): string {
@@ -23,10 +30,17 @@ function controlRepoWithArtifact(): string {
   return controlRepo;
 }
 
-/** A source tree with one tracked file, so the workspace has a real index. */
+/**
+ * A source repo with one committed file. Committed, not merely written: local
+ * mode checks the source out at HEAD (ADR-0018), so an uncommitted file is not
+ * a source tree — it is nothing at all.
+ */
 function sourceRepo(): string {
   const dir = mkdtempSync(path.join(os.tmpdir(), "fleet-src-"));
   writeFileSync(path.join(dir, "index.ts"), "export function work() { return 1; }\n");
+  git(dir, ["init", "-b", "main"]);
+  git(dir, ["add", "-A"]);
+  git(dir, ["commit", "-m", "source", "--quiet"]);
   return dir;
 }
 

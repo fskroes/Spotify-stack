@@ -2,7 +2,15 @@
  * Unit tests for local-source resolution: resolveLocalPath's interpolation and
  * prepareWorkspace honoring a repo's local_path (instead of demo-repos/<name>).
  */
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import os from "node:os";
 import path from "node:path";
@@ -44,13 +52,46 @@ describe("resolveLocalPath", () => {
   });
 });
 
+/** Repo-relative paths held by a repo's HEAD commit, sorted. */
+function treePaths(repo: string): string[] {
+  return git(repo, ["ls-tree", "-r", "HEAD", "--name-only"]).split("\n").filter(Boolean).sort();
+}
+
+/**
+ * Repo-relative paths present on disk, sorted. `.git` is skipped as runner
+ * bookkeeping, and a symlink is recorded as one entry rather than descended
+ * into — the `node_modules` link is the runner's own, and following it would
+ * measure the source's dependency closure instead of the workspace.
+ */
+function diskPaths(dir: string, prefix = ""): string[] {
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => !(prefix === "" && entry.name === ".git"))
+    .flatMap((entry) => {
+      const rel = prefix + entry.name;
+      return entry.isDirectory() ? diskPaths(path.join(dir, entry.name), `${rel}/`) : [rel];
+    })
+    .sort();
+}
+
 describe("prepareWorkspace with local_path", () => {
+  /**
+   * A live working tree as an operator's disk actually holds one: a git repo
+   * with committed source, an ignored dependency dir, an ignored build output
+   * dir (target B's is 9.2 GB — see the 2026-08-03 tree-construction
+   * experiment), and an untracked .DS_Store on top.
+   */
   function sourceRepo(): string {
     const dir = mkdtempSync(path.join(os.tmpdir(), "fleet-src-"));
     writeFileSync(path.join(dir, "index.ts"), "export const x = 1;\n");
-    writeFileSync(path.join(dir, ".DS_Store"), "junk");
+    writeFileSync(path.join(dir, ".gitignore"), "node_modules/\ntarget/\n");
+    mkdirSync(path.join(dir, "target"), { recursive: true });
+    writeFileSync(path.join(dir, "target", "artifact.bin"), "0".repeat(4096));
     mkdirSync(path.join(dir, "node_modules", "left-pad"), { recursive: true });
     writeFileSync(path.join(dir, "node_modules", "left-pad", "index.js"), "module.exports = 1;\n");
+    git(dir, ["init", "-b", "main"]);
+    git(dir, ["add", "-A"]);
+    git(dir, ["commit", "-m", "source", "--quiet"]);
+    writeFileSync(path.join(dir, ".DS_Store"), "junk");
     return dir;
   }
 
@@ -63,7 +104,7 @@ describe("prepareWorkspace with local_path", () => {
     local_path,
   });
 
-  it("copies from local_path, excludes .DS_Store, and creates a baseline commit", () => {
+  it("checks out local_path at HEAD and creates a baseline commit", () => {
     const src = sourceRepo();
     const workspace = prepareWorkspace({
       controlRepo: CONTROL_REPO,
@@ -73,12 +114,148 @@ describe("prepareWorkspace with local_path", () => {
     });
 
     expect(existsSync(path.join(workspace, "index.ts"))).toBe(true);
-    // Hygiene: .DS_Store from a live macOS tree must not land in the workspace.
+    // .DS_Store is untracked, so it is not in HEAD, so it is not here. No rule
+    // names it any more — ADR-0018 retired the four-basename exclusion list.
     expect(existsSync(path.join(workspace, ".DS_Store"))).toBe(false);
-    // node_modules is symlinked (dep reuse), never copied as a real dir.
+    // node_modules is symlinked (dep reuse), never materialised as a real dir.
     expect(lstatSync(path.join(workspace, "node_modules")).isSymbolicLink()).toBe(true);
     // Baseline commit exists.
     expect(git(workspace, ["log", "--oneline"])).toContain("baseline");
+  });
+
+  // ADR-0018's behaviour change, asserted rather than described, and the reason
+  // it is a decision and not a patch. Copying a working tree made an operator's
+  // uncommitted edit the base the verification tree is built on — so a green was
+  // earned against a combination nobody can fetch — and `openPr`'s
+  // `reset --soft FETCH_HEAD` then shipped that edit inside the agent's PR
+  // commit, under the fleet's authorship. A run's base is a commit or there is
+  // no run; work the agent must build on has to be committed first.
+  it("does not carry the source's uncommitted or untracked work", () => {
+    const src = sourceRepo();
+    writeFileSync(path.join(src, "index.ts"), "export const x = 1;\nconst operatorWip = 2;\n");
+    writeFileSync(path.join(src, "scratch.ts"), "// not committed anywhere\n");
+
+    const workspace = prepareWorkspace({
+      controlRepo: CONTROL_REPO,
+      repo: repo(src),
+      taskId: "t-uncommitted",
+      local: true,
+    });
+
+    expect(readFileSync(path.join(workspace, "index.ts"), "utf8")).not.toContain("operatorWip");
+    expect(existsSync(path.join(workspace, "scratch.ts"))).toBe(false);
+  });
+
+  // The demo-target shape, and the reason cloning the source was never an
+  // option: `demo-repos/*` have no `.git` of their own — they are tracked
+  // directories inside the control repo, so `rev-parse --show-toplevel` returns
+  // the control repo. The whole hermetic e2e suite runs local mode against one.
+  //
+  // Kept as a unit test because this path fails *silently*: `checkout-index
+  // --prefix` run from the subdirectory rather than the toplevel writes nothing
+  // and exits 0, which yields an empty workspace and an empty baseline. e2e
+  // catches that too, but only as a `git commit` failure thirty frames away.
+  it("materialises a source that is a tracked subdirectory of a parent repo", () => {
+    const parent = mkdtempSync(path.join(os.tmpdir(), "fleet-parent-"));
+    writeFileSync(path.join(parent, "unrelated.md"), "# the parent's own file\n");
+    mkdirSync(path.join(parent, "demo-repos", "nested"), { recursive: true });
+    writeFileSync(path.join(parent, "demo-repos", "nested", "index.ts"), "export const y = 1;\n");
+    git(parent, ["init", "-b", "main"]);
+    git(parent, ["add", "-A"]);
+    git(parent, ["commit", "-m", "parent", "--quiet"]);
+
+    const workspace = prepareWorkspace({
+      controlRepo: CONTROL_REPO,
+      repo: repo(path.join(parent, "demo-repos", "nested")),
+      taskId: "t-nested",
+      local: true,
+    });
+
+    // The subtree, and only the subtree: not empty, and not the parent's tree.
+    expect(treePaths(workspace)).toEqual(["index.ts"]);
+  });
+
+  // The precondition the decision creates, surfaced with its reason rather than
+  // left to fail inside a plumbing command. Every fleet target is a git repo —
+  // it opens PRs — so this is a misconfiguration, not a supported shape.
+  it("throws a clear error when local_path is not inside a git repository", () => {
+    const bare = mkdtempSync(path.join(os.tmpdir(), "fleet-nongit-"));
+    writeFileSync(path.join(bare, "index.ts"), "export const x = 1;\n");
+
+    expect(() =>
+      prepareWorkspace({
+        controlRepo: CONTROL_REPO,
+        repo: repo(bare),
+        taskId: "t-nongit",
+        local: true,
+      }),
+    ).toThrow(/not inside a git repository/);
+  });
+
+  // ADR-0018's decision, as a property rather than a path list. The measured
+  // defect it closes is a `target/` directory — 9.2 GB of one live target's
+  // 10.4 GB — copied per run because no exclusion named it. Asserted over the
+  // filesystem and not the baseline commit, because the copy is where the cost
+  // lands: a gitignored directory is copied and then simply not committed, so a
+  // commit-level assertion watches this defect go by.
+  it("materialises the source's HEAD tree on disk and nothing else", () => {
+    const src = sourceRepo();
+
+    const workspace = prepareWorkspace({
+      controlRepo: CONTROL_REPO,
+      repo: repo(src),
+      taskId: "t-disk",
+      local: true,
+    });
+
+    // The one addition the runner makes on purpose, after the baseline commit.
+    expect(diskPaths(workspace)).toEqual([...treePaths(src), "node_modules"].sort());
+  });
+
+  // The invariant ADR-0018 buys, and the one that would have caught the symlink
+  // bug before it was found by hand: the baseline holds what the source's git
+  // names at HEAD, and nothing else. Every past and future leak into the base is
+  // an instance of this failing — the `node_modules` symlink `.gitignore`'s
+  // directory pattern did not match, and the `target/` directory no exclusion
+  // list named. Asserted as equality, not a subset: a filter that drops a
+  // committed file is the same defect pointing the other way.
+  it("commits a baseline holding exactly what the source's git names at HEAD", () => {
+    const src = sourceRepo();
+
+    const workspace = prepareWorkspace({
+      controlRepo: CONTROL_REPO,
+      repo: repo(src),
+      taskId: "t-baseline",
+      local: true,
+    });
+
+    expect(treePaths(workspace)).toEqual(treePaths(src));
+  });
+
+  // The same invariant from the side that loses a file rather than gaining one.
+  // Git keeps tracking what is already tracked, so a target can legitimately
+  // hold a committed file its own `.gitignore` also matches — vendored output is
+  // the usual way. Materialising it and then staging with a plain `git add -A`
+  // would consult that `.gitignore` and silently drop it, leaving the
+  // verification tree short a file the target ships and the checks may read.
+  it("commits a file the source tracks even when the source ignores it", () => {
+    const src = sourceRepo();
+    mkdirSync(path.join(src, "dist"), { recursive: true });
+    writeFileSync(path.join(src, "dist", "vendor.js"), "// vendored\n");
+    git(src, ["add", "-f", "dist/vendor.js"]);
+    writeFileSync(path.join(src, ".gitignore"), "node_modules/\ntarget/\ndist/\n");
+    git(src, ["add", ".gitignore"]);
+    git(src, ["commit", "-m", "vendored", "--quiet"]);
+
+    const workspace = prepareWorkspace({
+      controlRepo: CONTROL_REPO,
+      repo: repo(src),
+      taskId: "t-vendored",
+      local: true,
+    });
+
+    expect(treePaths(workspace)).toContain("dist/vendor.js");
+    expect(treePaths(workspace)).toEqual(treePaths(src));
   });
 
   // The baseline commit is what the reconstituted verification tree is built
@@ -89,8 +266,7 @@ describe("prepareWorkspace with local_path", () => {
   // be relied on to stop it: the usual `node_modules/` pattern matches
   // directories, and this is a symlink.
   it("keeps the symlinked dependencies out of the baseline commit", () => {
-    const src = sourceRepo();
-    writeFileSync(path.join(src, ".gitignore"), "node_modules/\n");
+    const src = sourceRepo(); // its committed .gitignore already holds node_modules/
 
     const workspace = prepareWorkspace({
       controlRepo: CONTROL_REPO,
@@ -108,8 +284,7 @@ describe("prepareWorkspace with local_path", () => {
   // link to the operator's disk in the PR, and tripping `scope` on a run that
   // never touched it.
   it("keeps the symlinked dependencies out of the staged diff", () => {
-    const src = sourceRepo();
-    writeFileSync(path.join(src, ".gitignore"), "node_modules/\n");
+    const src = sourceRepo(); // its committed .gitignore already holds node_modules/
     const workspace = prepareWorkspace({
       controlRepo: CONTROL_REPO,
       repo: repo(src),
@@ -126,7 +301,13 @@ describe("prepareWorkspace with local_path", () => {
 
   it("stages normal changes when the target ignores injected .claude config", () => {
     const src = sourceRepo();
-    writeFileSync(path.join(src, ".gitignore"), ".claude/\n");
+    // Committed, not just written: an uncommitted edit to the source no longer
+    // reaches the workspace (ADR-0018), so a bare write here would leave this
+    // test asserting nothing.
+    writeFileSync(path.join(src, ".gitignore"), "node_modules/\ntarget/\n.claude/\n");
+    git(src, ["add", ".gitignore"]);
+    git(src, ["commit", "-m", "ignore claude", "--quiet"]);
+
     const workspace = prepareWorkspace({
       controlRepo: CONTROL_REPO,
       repo: repo(src),

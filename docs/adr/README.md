@@ -23,6 +23,7 @@ record shows what was considered instead and why it lost.
 | [0015](0015-a-kill-is-retained-forever-and-blinded.md) | A kill is retained forever, blinded, with a slot for its verdict | evidence |
 | [0016](0016-the-tree-blocks-and-an-install-is-not-a-check.md) | The reconstituted tree blocks, and an install is not a check | verify↔run |
 | [0017](0017-the-in-session-verify-is-the-retry-loop.md) | The in-session verify is the retry loop, and the runner installs | verify↔run |
+| [0018](0018-the-local-workspace-is-a-checkout.md) | The local workspace is a checkout, not a copy | workspace |
 
 **0003–0008 were written retroactively** (2026-07-26), reconstructing the
 reasoning behind decisions already in the code. They are sound arguments, not
