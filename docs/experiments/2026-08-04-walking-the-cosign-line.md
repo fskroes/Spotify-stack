@@ -251,3 +251,191 @@ not know.
 - **The human timings.** The walk was designed to record where an operator's
   minutes actually go across several runs. It recorded one reader's path through
   one run. The stage shapes are reliable; the durations are not a measurement.
+
+---
+
+# Second walk, same day — the merge path
+
+**2026-08-04, later.** Appended rather than folded into the account above,
+which stands as written. The first walk stopped short of the merge because no
+open pull request existed; this one authored work against a target, ran it, and
+co-signed it. Two of the gaps named above are now closed by measurement rather
+than by argument.
+
+## What was walked
+
+A task authored for the occasion, dry-run, shipped with `--pr`, co-signed and
+squash-merged. Its diff is **one word** on one line. The run cost $0.35 — agent
+89s, verify 42s, judge 5s — and the merge closed a defect that had made the
+target's default branch unable to compile its own test target.
+
+Reaching it took a second run that died, and a third task written to repair what
+killed it. That sequence is the measurement, not an accident of the day.
+
+## Where the minutes went, with the readings the first walk lacked
+
+The first walk recorded the *shape* and said the durations were not a
+measurement. This one has two runs to compare, and they disagree in the
+direction that matters.
+
+| | run that was killed | run that merged |
+|---|---|---|
+| diff | 3 files, 165 lines | 1 file, +1 −1 |
+| reading the diff | ~2 min | seconds |
+| reading the verify readout | ~10 s | ~30 s |
+| reading the judge rationale | ~1 min | ~20 s |
+| **checking what no surface showed** | **longer than all three combined** | **~4 min, and it found finding 7** |
+
+**The cheapest surface to read decided the least.** On the larger diff the verify
+readout was two green lines: the change compiles, and nothing broke. The claim
+that actually decided the merge — *no bare credential string remains outside the
+declaration* — was asserted by the judge and by nothing else, and establishing it
+meant applying the patch in a throwaway worktree and grepping. That took longer
+than reading the diff, the readout and the rationale together.
+
+**The one case where the readout was the review** was the one-word change, and
+only because the change *repaired* a gate rather than passing one: the mandated
+check was red on that base before and green after, with nothing else different.
+The transition was the whole proof. That is the exception, and its shape says why
+it is rare — a readout is decisive exactly when the check's own state changes,
+and ordinary work does not change it.
+
+**The reader's minutes migrate to the surfaces.** On the change that merged, four
+of roughly six minutes went to auditing the page rather than the change. This is
+consistent with the first walk's finding that nothing maps changed files to the
+checks that govern them: when the diff is small the mapping is free, and the
+attention goes to whether the page is telling the truth.
+
+## A red on a gate input, and what it turned out to be
+
+The killed run died `verify-failed` on a check whose failure had nothing to do
+with its diff: a source file the target's default branch could not compile,
+committed red and never exercised until a fleet run read it. The task mandated
+the check that reads that file, so a
+[gate input](../../CONTEXT.md#gate-input) was red while the diff never touched it.
+
+**This is not the case [ADR-0014](../adr/0014-gate-inputs-are-carried-only-under-an-amendment.md)
+governs**, and the distinction is worth recording because the surface reading is
+the opposite. `amends:` decides what the verification tree does with *the agent's
+edit to* a gate input. Here the agent edited nothing; the input was already
+broken, by a human, upstream. An amendment would have changed no part of this
+outcome.
+
+The case that *would* have exercised it was one design decision away. The repair
+had two forms: annotate the calling tests, or remove the isolation from the pure
+function they call. The first edits a test file — a gate input — and under
+ADR-0014 that edit would not be carried into verification, leaving the check red
+until the task declared an amendment naming it. The second edits ordinary source
+and needs no licence. The second was chosen on its own merits, and the effect on
+`amends:` was not noticed until afterwards.
+
+**What this measures.** Not that the mechanism is needed, and not that it is not.
+It measures that *"a red on a gate input"* is two different events that look
+identical in the record, and that only one of them is about the agent. A trigger
+condition phrased on the red alone selects both.
+
+## Finding 6 — a checked-in generated project silences a file the run adds
+
+The target's build project is generated from a manifest and **checked into git**,
+and it enumerates every source file individually. The manifest globs a directory,
+so it needs no edit when a file is added; the generated project does. Nothing
+regenerates it on the runner's side of the cage — the agent may only edit files
+and call `verify` ([ADR-0003](../adr/0003-the-runner-owns-git.md)).
+
+So a run that adds a source file writes a file the build never compiles, and
+**both mandated checks go green over code that was never built.** Measured: six
+files in the tree already carried hand-written sequential ids rather than the
+generator's hashed ones — the shape left behind when something adds entries by
+hand to get a file compiled.
+
+Regenerating during verification cannot fix it, and the reason generalises: the
+shipped diff is captured from the workspace *before* verification, which then
+runs in a separately reconstituted tree
+([ADR-0013](../adr/0013-verification-runs-on-the-shipped-artefact.md)). Anything a
+check writes there is discarded — by design, since a check that edits the diff is
+a check that decides what ships. Ordering compounds it: registered checks run
+after every detected one, deliberately, so a cheap failure short-circuits a billed
+one ([ADR-0009](../adr/0009-registered-verifiers-live-in-the-control-repo.md)).
+
+What closed it was an inspection rather than a build: a registered check
+asserting every source file in the tree appears in a compile phase. It ran clean
+on the merged run in 0.0s. Because it inspects rather than executes, running last
+costs nothing, and the ordering constraint stops applying.
+
+**The decision this names.** Whether a target whose build membership is a
+checked-in artefact is a target the fleet may add files to at all. The check makes
+the failure loud; it does not make the agent able to produce a correct entry.
+
+## Finding 7 — the fleet record on every pull request counts dry runs as shipped
+
+The body of every pull request the fleet opens ends with a track record, which is
+the one place a co-signer learns what this fleet's output has actually been. It is
+computed as:
+
+```
+shipped: count("approved")
+```
+
+`approved` is a [run status](../../CONTEXT.md#run-status-vs-verification-state),
+not a shipping fact. A dry run the judge approves records `approved` and opens no
+pull request. Measured against the rows that banner had counted:
+
+```
+approved rows counted:  21
+ ...that opened a PR:   10
+ ...that opened none:   11
+```
+
+So the figure overstates the fleet's output by more than twofold, on the page
+where it is offered as evidence of the fleet's reliability.
+
+The vocabulary to see this already exists in the repo:
+[ADR-0019](../adr/0019-a-shipping-run-is-based-on-what-it-ships-against.md) turns
+on a run's shipping intent, and `CONTEXT.md` separates run status from
+verification state. This is the same distinction one step further — run status is
+not a shipping fact either.
+
+**The decision this names.** Whether the record line reports one number or two.
+Counting only rows that opened a pull request is a one-predicate change, but it
+silently renumbers a public claim; reporting both is louder and admits that a
+fleet's dry runs are part of its work.
+
+## Method note that cost a wrong reading
+
+The first dry run of the killed task came back **approved**. The identical task
+against upstream came back **verify-failed**. The difference was `--local`, which
+builds from the local checkout's current branch — 15 commits behind, predating the
+file that could not compile. `--pr` is based on upstream
+([ADR-0019](../adr/0019-a-shipping-run-is-based-on-what-it-ships-against.md)), so
+the green certified a base that would never ship. A dry run used as a go/no-go must
+omit the flag.
+
+## What the second walk established that the first could not
+
+- **The merge path works end to end.** Authored task → run → verify → judge → PR
+  → `cosign --merge` → squash-merged, branch deleted. The first walk's "nothing
+  about the merge path" is closed.
+- **A rejected run leaves nothing behind.** Two runs died at verify. Neither
+  pushed a branch nor opened a pull request, and both retained a kill with
+  `diff.patch` and the killing artefact under `why/`
+  ([ADR-0015](../adr/0015-a-kill-is-retained-forever-and-blinded.md)). The first
+  walk's "nothing about a kill" is closed for the `verify-failed` path; blind
+  re-adjudication still has not been walked.
+- **A judge that reads nothing can still be trusted, conditionally.** The merged
+  run's verdict recorded `readPaths: []` and said so in the pull-request body.
+  That is only distinguishable from a broken reader because the startup marker
+  proves the read server came up
+  ([ADR-0011](../adr/0011-the-runner-owns-the-judges-reads.md)) — the exact
+  distinction that mechanism exists for, observed in production rather than in a
+  test.
+
+## What the second walk still did not establish
+
+- **Nothing about a co-sign refusal.** The gate was exercised once, on a clean
+  mergeable pull request, and returned a merge. None of the structured refusals
+  ran.
+- **Nothing about a judge veto or a scope violation.** Both remain at zero in the
+  window; every kill observed was a verification failure.
+- **Still one reader.** The timings above are comparative between two runs by the
+  same reader on the same day. They establish that the ratio moves with diff size
+  and with whether a check changed state. They do not establish a rate.
