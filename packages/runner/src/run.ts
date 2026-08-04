@@ -21,7 +21,7 @@ import { buildRunPreamble } from "@fleet/knowledge";
 import { loadTask, type Task } from "./task.js";
 import { constructVerificationTree, TreeConstructionError, type VerificationTree } from "./verification-tree.js";
 import { eligibleVerifiers, type VerifierCheck } from "./verifiers.js";
-import { git, injectAgentConfig, injectKnowledge, prepareWorkspace, RUN_KNOWLEDGE_FILE, stagedDiff, stagedFiles, stagedPaths } from "./workspace.js";
+import { git, injectAgentConfig, injectKnowledge, pathsInBase, prepareWorkspace, RUN_KNOWLEDGE_FILE, stagedDiff, stagedFiles, stagedPaths } from "./workspace.js";
 
 interface VerifyResult {
   /** Tri-state: `inconclusive` means no verifier ran, which is not a pass.
@@ -690,10 +690,18 @@ export async function runPass(ctx: PassContext, prior?: VetoedPass): Promise<Pas
   // Both sides of a rename, unlike the scope check above: a test moved
   // elsewhere is a gate this diff took away, and only the path it came from
   // says so.
-  const gateInputs = decideGateInputs(stagedPaths(ctx.workspace), ctx.task.amends);
+  const paths = stagedPaths(ctx.workspace);
+  const inBase = pathsInBase(ctx.workspace, paths);
+  const gateInputs = decideGateInputs(paths, {
+    inBase: (file) => inBase.has(file),
+    amends: ctx.task.amends,
+  });
   if (!noGateInputs(gateInputs)) {
     const carried = gateInputs.carried.reduce((n, a) => n + a.files.length, 0);
-    ctx.log(`· gate inputs: ${gateInputs.held.length} held at the base, ${carried} carried under an amendment`);
+    ctx.log(
+      `· gate inputs: ${gateInputs.held.length} held at the base, ${carried} carried under an amendment, ` +
+        `${gateInputs.introduced.length} added by this change`,
+    );
   }
   ctx.log("· reconstituting the verification tree…");
   ctx.inflight.enter("verify");
@@ -732,9 +740,21 @@ export async function runPass(ctx: PassContext, prior?: VetoedPass): Promise<Pas
   // the reason the gate note above is: this text is the judge's whole view of
   // what verification did, and a file held at the base is something it did.
   const unmetGates = gated.unmetGates;
-  const verify = noGateInputs(gateInputs)
+  const noted = noGateInputs(gateInputs)
     ? gated.verify
     : { ...gated.verify, summary: `${gated.verify.summary}\n\n${gateInputNote(gateInputs)}` };
+  // Every path was held, so the checks ran on the base commit itself and passed
+  // on code containing no part of this change. That is ADR-0004's `inconclusive`
+  // arriving by a third road — nothing proved anything — and calling it `passed`
+  // would be the one output this system may not produce (ADR-0021).
+  //
+  // Only a pass is rewritten. A red on a tree that equals the base is a red
+  // about the base, and reporting it as `failed` kills the run, which is the
+  // direction that cannot manufacture a green.
+  const verify =
+    noted.state === "passed" && gateInputs.treeIsBase
+      ? { ...noted, state: "inconclusive" as const }
+      : noted;
   ctx.artifact("verify.log", verify.summary);
   if (verify.state === "failed") {
     ctx.artifact("diff.patch", diff);

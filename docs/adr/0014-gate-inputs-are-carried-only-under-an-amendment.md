@@ -53,6 +53,16 @@ Still unbuilt, and still deliberately: the four-cell differential, the red-first
 predicate, and both halves of the holdout gate. Their sections are unchanged, and
 [run status](../../CONTEXT.md#run-status-vs-verification-state) remains #119's.
 
+**Partly superseded by
+[ADR-0021](0021-a-gate-input-the-base-never-had-is-carried.md)** (2026-08-04),
+recorded here as a pointer and nowhere else in this file. A second question this
+record never answered — what the tree does with a gate input **the base does not
+have** — was answered by the build, as *delete it*. A live run showed that answer
+deletes the whole of a diff that only adds a test file, leaving a tree identical
+to the base and a green that proves nothing. ADR-0021 carries such a file
+instead, and makes a tree that equals the base `inconclusive`. The decision
+below, on a gate input the base **does** carry, is untouched by it.
+
 ## What an amendment is, and why it can be trusted
 
 ```yaml

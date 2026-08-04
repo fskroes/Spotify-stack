@@ -72,27 +72,17 @@ function install(root: string): void {
  * built from git objects: `HEAD` in this worktree *is* the base commit, so the
  * base version of a file is one checkout away and never a re-parsed diff.
  *
- * The two cases are both the rule working. A file the base carries is restored,
- * which is what makes a weakened or deleted test run in its original form
- * against the shipped source. A file only the diff has — a *new* test — is
- * removed, because a gate the change brought with it is not a gate it inherited.
+ * One case, and it is the rule working: a file the base carries is restored to
+ * what the base said, which is what makes a weakened or deleted test run in its
+ * original form against the shipped source. Every path here is in the base by
+ * construction — `decideGateInputs` asks before it decides, and a gate input the
+ * base never had is carried instead of held
+ * ([ADR-0021](../../../docs/adr/0021-a-gate-input-the-base-never-had-is-carried.md)).
+ * So a pathspec that fails to match is a caller bug, and git says so loudly.
  */
 function holdAtBase(tree: string, files: string[]): void {
   if (files.length === 0) return;
-  // `-z`, because the alternative is git's quoted output: a path with a
-  // non-ASCII byte in it comes back quoted, would not match the name the diff
-  // used, and would be read as "not in the base" — which deletes a file the
-  // base carries instead of restoring it.
-  const inBase = new Set(
-    git(tree, ["ls-tree", "-z", "-r", "--name-only", "HEAD", "--", ...files])
-      .split("\0")
-      .filter(Boolean),
-  );
-  const restore = files.filter((file) => inBase.has(file));
-  if (restore.length > 0) git(tree, ["checkout", "HEAD", "--", ...restore]);
-  for (const file of files) {
-    if (!inBase.has(file)) rmSync(path.join(tree, file), { force: true });
-  }
+  git(tree, ["checkout", "HEAD", "--", ...files]);
 }
 
 export interface VerificationTree {
@@ -118,9 +108,10 @@ export function constructVerificationTree(opts: {
   diff: string;
   /**
    * Repo-relative paths taken from the base instead of from the diff — the
-   * un-amended gate inputs (ADR-0014). Empty on an ordinary run, which is all
-   * of them: the caller decides what is a gate input, and this function only
-   * builds the tree that answer implies.
+   * un-amended gate inputs the base already carries (ADR-0014, ADR-0021). Empty
+   * on an ordinary run, which is all of them: the caller decides what is a gate
+   * input and which of them the base has, and this function only builds the tree
+   * that answer implies.
    */
   hold?: string[];
 }): VerificationTree {

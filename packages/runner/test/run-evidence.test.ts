@@ -134,7 +134,7 @@ describe("evidenceFor — unmet gates", () => {
       resultText: "",
       verify: { state: "passed", checks: [check("test", "passed")], summary: "VERIFY PASSED" },
       unmetGates: [],
-      gateInputs: { held: ["test/http.test.ts"], carried: [] },
+      gateInputs: { held: ["test/http.test.ts"], carried: [], introduced: [], treeIsBase: false },
     });
 
     // Every check passed, and the recorded state stays `passed` — what changes

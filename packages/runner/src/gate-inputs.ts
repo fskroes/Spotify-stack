@@ -26,10 +26,13 @@
  * Being wrong in either direction is survivable, which is what licenses a
  * convention instead of a configuration:
  *
- *  - **False positive** (a path here that no check reads). If the check really
- *    was indifferent, verification is unchanged and the PR still names the hold.
- *    If it was not, the base version disagrees with the shipped source, the run
- *    dies as an ordinary `verify-failed`, and one `amends:` line fixes it.
+ *  - **False positive** (a path here that no check reads). On a path the base
+ *    does not have, it costs one reported line and nothing else — the file is
+ *    carried either way ([ADR-0021](../../../docs/adr/0021-a-gate-input-the-base-never-had-is-carried.md)).
+ *    On one the base has: if the check really was indifferent, verification is
+ *    unchanged and the PR still names the hold; if it was not, the base version
+ *    disagrees with the shipped source, the run dies as an ordinary
+ *    `verify-failed`, and one `amends:` line fixes it.
  *  - **False negative** (a real gate input this list misses). It is carried —
  *    which is precisely the behaviour of every run before this existed.
  *
@@ -114,35 +117,75 @@ export interface CarriedAmendment {
  * nothing anywhere renders an amendment affordance.
  */
 export interface GateInputDecision {
-  /** Gate inputs no amendment named: taken from the base, not from the diff. */
+  /**
+   * Gate inputs the base already carries and no amendment named: taken from the
+   * base, not from the diff. The edit ships and is not part of what proves it.
+   */
   held: string[];
   /** Amendments this diff exercised — the licence, its reason, and its files. */
   carried: CarriedAmendment[];
+  /**
+   * Gate inputs **the base does not have** — files this diff adds. There is
+   * nothing to take them from, and a gate that never existed cannot have been
+   * weakened, so they are carried and they run
+   * ([ADR-0021](../../../docs/adr/0021-a-gate-input-the-base-never-had-is-carried.md)).
+   * Reported rather than silent: what they prove is only as good as what they
+   * assert, and that reading is the judge's.
+   */
+  introduced: string[];
+  /**
+   * Every path in this diff is held, so the tree the checks run on **is** the
+   * base commit and contains no part of the change.
+   *
+   * A statement about the tree rather than about gate inputs, and it lives here
+   * because this decision is the only thing that can make it true: nothing else
+   * subtracts from the tree. What it costs is the verification state — checks
+   * that ran on the base proved nothing about the change, which is ADR-0004's
+   * `inconclusive`.
+   */
+  treeIsBase: boolean;
 }
 
-/** Nothing to hold and no licence exercised — the shape of an ordinary diff. */
+/** Nothing held, introduced, or licensed — the shape of an ordinary diff. */
 export function noGateInputs(decision: GateInputDecision | undefined): boolean {
-  return !decision || (decision.held.length === 0 && decision.carried.length === 0);
+  return (
+    !decision ||
+    (decision.held.length === 0 && decision.carried.length === 0 && decision.introduced.length === 0)
+  );
 }
 
 /**
- * Split a diff's paths into the gate inputs the tree holds at the base and the
- * ones a task's `amends:` carries into it.
+ * Split a diff's paths into the gate inputs the tree holds at the base, the ones
+ * a task's `amends:` carries into it, and the ones the base never had.
+ *
+ * The base-membership question is answered by the caller and passed in, so this
+ * stays pure path reasoning and the verification tree is handed a decision
+ * rather than making one (ADR-0021).
  *
  * Declaration order decides a file matched by two globs: the first amendment
  * that names it is the one whose reason travels, so a task's own ordering reads
- * top-to-bottom the way its author wrote it.
+ * top-to-bottom the way its author wrote it. An amendment naming a file the base
+ * does not have is not an error and is simply not exercised — there was no hold
+ * for it to lift.
  */
-export function decideGateInputs(files: string[], amends?: Amendment[]): GateInputDecision {
-  const licences = (amends ?? []).map((amendment) => ({
+export function decideGateInputs(
+  files: string[],
+  opts: { inBase: (file: string) => boolean; amends?: Amendment[] },
+): GateInputDecision {
+  const licences = (opts.amends ?? []).map((amendment) => ({
     amendment,
     match: picomatch(amendment.glob, { dot: true }),
   }));
   const held: string[] = [];
+  const introduced: string[] = [];
   const carried = new Map<string, CarriedAmendment>();
 
   for (const file of files) {
     if (!isGateInput(file)) continue;
+    if (!opts.inBase(file)) {
+      introduced.push(file);
+      continue;
+    }
     const licence = licences.find((candidate) => candidate.match(file));
     if (!licence) {
       held.push(file);
@@ -154,7 +197,14 @@ export function decideGateInputs(files: string[], amends?: Amendment[]): GateInp
     carried.set(glob, entry);
   }
 
-  return { held, carried: [...carried.values()] };
+  // `files` is every path the diff changes, so "all of them are held" is exactly
+  // "the tree keeps none of the change". An empty diff never reaches here.
+  return {
+    held,
+    carried: [...carried.values()],
+    introduced,
+    treeIsBase: files.length > 0 && held.length === files.length,
+  };
 }
 
 /**
@@ -185,6 +235,27 @@ export function gateInputNote(decision: GateInputDecision): string {
       "GATE INPUTS HELD AT THE BASE — this diff edits files the checks read when they run, and " +
         "the task did not amend them. Verification used the BASE version of each, so the edits " +
         `below ship in this diff and are not part of what proves it:\n${decision.held.map((f) => `- ${f}`).join("\n")}`,
+    );
+  }
+
+  // Not a warning, and deliberately not written as one: these files ran. What
+  // the judge is being handed is that part of the evidence arrived with the
+  // change, so a check that only passes because a new test asserts nothing is a
+  // reading only review can make — path rules cannot reach it (ADR-0021).
+  if (decision.introduced.length > 0) {
+    sections.push(
+      "GATE INPUTS THIS CHANGE ADDS — the base does not have these files, so there was no earlier " +
+        "version to verify against and they ran as part of this change. Judge what they assert:\n" +
+        decision.introduced.map((f) => `- ${f}`).join("\n"),
+    );
+  }
+
+  if (decision.treeIsBase) {
+    sections.push(
+      "NOTHING OF THIS CHANGE WAS VERIFIED — every path in this diff is a gate input held at the " +
+        "base, so the tree the checks ran on is the base commit itself. They passed on code that " +
+        "contains no part of this change, which proves nothing about it. The verification state " +
+        "is INCONCLUSIVE, not passed.",
     );
   }
 

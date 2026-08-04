@@ -332,14 +332,40 @@ export function stagedFiles(workspace: string): string[] {
  * detection is why: a moved file is one entry at its destination. That is the
  * right answer for scope and the wrong one for [gate
  * inputs](../../../CONTEXT.md#gate-input), where the source path is a gate the
- * diff *removed*. Holding only the destination would delete the new copy and
- * leave the rename's deletion standing, so a suite renamed away would vanish
- * from the verification tree entirely — a green earned by having nothing left
- * to run.
+ * diff *removed*. Seeing only the destination would leave the rename's deletion
+ * standing, so a suite renamed away would vanish from the verification tree
+ * entirely — a green earned by having nothing left to run. Named on both sides,
+ * the source is in the base and is restored there, and the destination is a gate
+ * the diff introduced and runs alongside it.
  */
 export function stagedPaths(workspace: string): string[] {
   return git(workspace, ["diff", "--cached", "--name-only", "--no-renames"])
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
+}
+
+/**
+ * Which of the named paths the base commit already carries.
+ *
+ * Asked here rather than inside the verification tree, so the tree is handed a
+ * decision instead of making one: a path present in the base can be taken from
+ * it, a path absent from it never existed to be taken
+ * ([ADR-0021](../../../docs/adr/0021-a-gate-input-the-base-never-had-is-carried.md)).
+ * `HEAD` here and `HEAD` in the tree are the same commit — the worktree is added
+ * detached at exactly this revision — so asking on this side costs nothing and
+ * keeps the answer beside the diff it is about.
+ *
+ * `-z`, because the alternative is git's quoted output: a path with a non-ASCII
+ * byte comes back quoted, would not match the name the diff used, and would be
+ * read as absent from the base — which carries a file the base has instead of
+ * holding it.
+ */
+export function pathsInBase(workspace: string, files: string[]): Set<string> {
+  if (files.length === 0) return new Set();
+  return new Set(
+    git(workspace, ["ls-tree", "-z", "-r", "--name-only", "HEAD", "--", ...files])
+      .split("\0")
+      .filter(Boolean),
+  );
 }

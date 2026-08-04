@@ -178,6 +178,8 @@ describe("buildPrBody", () => {
           carried: [
             { glob: "tests/**", reason: "the asserted bound is off by one", files: ["tests/other.test.js"] },
           ],
+          introduced: [],
+          treeIsBase: false,
         },
       }),
     );
@@ -192,7 +194,7 @@ describe("buildPrBody", () => {
   // part of this diff is not part of what proved it.
   it("says which edits shipped without being verified", () => {
     const body = buildPrBody(
-      input({ gateInputs: { held: ["tests/other.test.js"], carried: [] } }),
+      input({ gateInputs: { held: ["tests/other.test.js"], carried: [], introduced: [], treeIsBase: false } }),
     );
 
     expect(body).toContain("**Gate input held at the base**");
@@ -206,7 +208,7 @@ describe("buildPrBody", () => {
   });
 
   it("shows no gate-input affordance on an ordinary diff", () => {
-    for (const gateInputs of [undefined, { held: [], carried: [] }]) {
+    for (const gateInputs of [undefined, { held: [], carried: [], introduced: [], treeIsBase: false }]) {
       const body = buildPrBody(input({ gateInputs }));
       expect(body).not.toContain("Gate input");
     }

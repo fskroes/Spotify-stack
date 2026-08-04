@@ -159,19 +159,19 @@ describe("constructVerificationTree", () => {
     expect(readFileSync(path.join(tree.path, "test/a.test.js"), "utf8")).toBe("assert(a === 1);\n");
   });
 
-  // A gate the change brought with it is not a gate it inherited, so an
-  // un-amended new test is removed rather than restored — there is nothing at
-  // the base to restore it to. The rest of the diff is untouched by that.
-  it("removes a held file the base never had", () => {
+  // The tree's half of ADR-0021's contract: it removes nothing. A gate input the
+  // base never had is never named in `hold` — the caller asked git before it
+  // decided — so a new test arrives with the rest of the diff and runs.
+  it("carries a gate input the base never had", () => {
     const workspace = tempWorkspace({ "src/a.js": "export const a = 1;\n" });
     const diff = stagedDiff(workspace, {
       "src/a.js": "export const a = 2;\n",
       "test/new.test.js": "assert(true);\n",
     });
 
-    const tree = constructVerificationTree({ workspace, diff, hold: ["test/new.test.js"] });
+    const tree = constructVerificationTree({ workspace, diff, hold: [] });
 
-    expect(existsSync(path.join(tree.path, "test/new.test.js"))).toBe(false);
+    expect(readFileSync(path.join(tree.path, "test/new.test.js"), "utf8")).toBe("assert(true);\n");
     expect(readFileSync(path.join(tree.path, "src/a.js"), "utf8")).toBe("export const a = 2;\n");
   });
 

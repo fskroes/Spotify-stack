@@ -24,10 +24,12 @@ const GATES_UNMET_TASK = path.join(__dirname, "fixtures", "gates-unmet-task.md")
 const GATES_MET_TASK = path.join(__dirname, "fixtures", "gates-met-task.md");
 const AMENDS_TASK = path.join(__dirname, "fixtures", "amends-task.md");
 const UNAMENDED_TASK = path.join(__dirname, "fixtures", "unamended-task.md");
+const ADDED_GATE_INPUT_TASK = path.join(__dirname, "fixtures", "added-gate-input-task.md");
 const GOOD_PATCH = path.join(__dirname, "fixtures", "001-good.patch");
 /** Moves the scoreboard: it removes a behaviour from the source and rewrites
  *  the assertion that would have caught the removal, in one diff. */
 const SCOREBOARD_PATCH = path.join(__dirname, "fixtures", "001-scoreboard.patch");
+const NEW_TEST_PATCH = path.join(__dirname, "fixtures", "002-new-test.patch");
 const BAD_PATCH = path.join(__dirname, "fixtures", "001-bad.patch");
 /** A copy of the good patch whose `.retry.patch` reverses it, so a resume
  *  reverts the workspace instead of correcting it. Kept separate from
@@ -449,6 +451,59 @@ describe("runner e2e (mock engine, hermetic)", () => {
 
     // And the judge, whose whole view of verification is this summary, is told.
     expect(result.verify?.summary).toContain("GATE INPUTS HELD AT THE BASE");
+  });
+
+  // ADR-0021, end to end, on the case ADR-0014 got wrong: the diff is one new
+  // test file and nothing else. Held, it would have been deleted from the tree,
+  // the base suite would have gone green over none of the change, and the run
+  // would have shipped a `passed` that proved nothing. Carried, the new test
+  // actually runs.
+  it("added gate input: a test the base never had is carried, and it runs", async () => {
+    const ledgerPath = tmpLedger();
+    vi.stubEnv("GITHUB_ACTIONS", "");
+    const result = await run({
+      controlRepo: CONTROL_REPO,
+      taskPath: ADDED_GATE_INPUT_TASK,
+      repoName: "demo-ts-service",
+      local: true,
+      dryRun: true,
+      engine: "mock",
+      mockPatch: NEW_TEST_PATCH,
+      judgeMode: "approve",
+      ledgerPath,
+      artifactsRoot: tmpArtifacts(),
+      log: quiet,
+    });
+
+    expect(result.status).toBe("approved");
+    // A real pass, not the vacuous one: the tree contains the change, so this
+    // green is about the diff in front of the reviewer.
+    expect(result.verify?.state).toBe("passed");
+    expect(result.gateInputs?.introduced).toEqual(["test/timeout.test.ts"]);
+    expect(result.gateInputs?.held).toEqual([]);
+    expect(result.gateInputs?.treeIsBase).toBe(false);
+    // No licence was needed and none was recorded — the ledger's gate-input
+    // fields carry what went unproven and what was licensed, and this is
+    // neither.
+    const entries = readLedger(ledgerPath);
+    expect(entries[0].heldGateInputs).toBeUndefined();
+    expect(entries[0].amendments).toBeUndefined();
+
+    // All three of the target's checks ran, over a tree that has the new file
+    // in it. That the file is physically there is proved one level down, where
+    // the tree can be read — `verification-tree.test.ts` opens it. The summary
+    // names checks, not tests, so it cannot carry that claim and is not asked to.
+    expect(result.verify?.summary).toContain("npm run test passed");
+
+    // Reported to the judge and to the reviewer as a fact about the evidence,
+    // not as a warning: the files ran, and what they prove is what they assert.
+    expect(result.verify?.summary).toContain("GATE INPUTS THIS CHANGE ADDS");
+    const preview = readFileSync(path.join(result.artifactsDir, "pr-preview.md"), "utf8");
+    expect(preview).toContain("Gate input added by this change");
+    expect(preview).toContain("`test/timeout.test.ts`");
+    // The banner is the ordinary one: nothing here was left unverified.
+    expect(preview).toContain("co-signing a verified change");
+    expect(preview).not.toContain("held at the base");
   });
 
   it("amended gate input: the licence carries it, and the reason reaches every surface", async () => {

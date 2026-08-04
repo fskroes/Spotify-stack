@@ -191,11 +191,19 @@ pass for it is an assertion the fleet has not earned.
 The state a *run records* is a composition, not a passthrough of what
 verification returned. Verification answers only "what does this repo offer, and
 did it pass"; the runner folds in whether the task's [mandated
-gates](#mandated-gate) actually ran. So `inconclusive` now arrives by two roads —
-nothing was detectable to run, or something the task demanded did not — and
-`passed` means both that every check that ran was green *and* that every
-mandated gate was among them. Only the runner holds both halves, which is why
-the composition lives there and verification stays task-blind.
+gates](#mandated-gate) actually ran, and whether the tree the checks ran on held
+any of the change at all. So `inconclusive` arrives by three roads — nothing was
+detectable to run, something the task demanded did not run, or everything that
+ran did so on a tree with none of this change in it — and `passed` means every
+check that ran was green, every mandated gate was among them, *and* what they ran
+on was the change. Only the runner holds those halves, which is why the
+composition lives there and verification stays task-blind.
+
+The third road is narrow and is the one that looks most like a pass. It needs
+every path in the diff to be a [gate input](#gate-input) the base already carries
+and no [amendment](#amendment) names, so the verification tree is the base commit
+itself: the checks are green about code the change never touched
+([ADR-0021](docs/adr/0021-a-gate-input-the-base-never-had-is-carried.md)).
 
 What `passed` does **not** mean is that every language in the diff was checked.
 Detection is path-shaped — it asks whether a `package.json` or a `Package.swift`
@@ -327,6 +335,14 @@ gate](#mandated-gate), which asserts that evidence exists and never grants
 anything. Absent an amendment, an edit to a gate input stays in the diff and is
 simply not part of what proves itself — the verification tree holds that file at
 the base while carrying the rest of the change.
+
+It governs an **edit**, and only an edit. A gate input the base does not have is
+carried into the tree and runs, with no licence and none available: there is
+nothing to hold it at, and a gate that never existed cannot have been weakened
+([ADR-0021](docs/adr/0021-a-gate-input-the-base-never-had-is-carried.md)). What
+such a file proves is worth what it asserts, which is a reading the judge and the
+co-signer make — the [scoreboard it could be played to](#playing-to-the-scoreboard)
+is a different defect, and no path rule reaches it.
 
 "Stays in the diff" is a claim about the *diff*, never a promise about the run.
 Holding a gate at the base means verification asks whether the **shipped source

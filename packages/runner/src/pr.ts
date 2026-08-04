@@ -101,10 +101,15 @@ function gateInputHeader(decision: GateInputDecision): string[] {
       ? [`held at the base, so the edit ships here unverified: ${code(decision.held)}`]
       : []),
   ];
+  // A diff that only *adds* gate inputs has nothing for this clause to say. The
+  // files ran, the banner is the ordinary one, and the fact keeps its place in
+  // "what actually ran" below — putting it here would train a reader to skim the
+  // line that exists to stop them (ADR-0021).
+  if (clauses.length === 0) return [];
   return [`>`, `> **Gate inputs** · ${clauses.join(" · ")}`];
 }
 
-/** The same two facts at the length a reviewer deciding on them needs. */
+/** The same facts at the length a reviewer deciding on them needs. */
 function gateInputLines(decision: GateInputDecision): string[] {
   return [
     ``,
@@ -118,6 +123,17 @@ function gateInputLines(decision: GateInputDecision): string[] {
           `- ⚠ **Gate input held at the base**: ${code(decision.held)} — this diff edits ${decision.held.length === 1 ? "a file" : "files"} ` +
             `the checks read when they run, and this task does not amend ${decision.held.length === 1 ? "it" : "them"}. ` +
             `Verification used the base version, so ${decision.held.length === 1 ? "that edit is" : "those edits are"} **not** part of what proves this change.`,
+        ]
+      : []),
+    // Beside the checks and not marked as a warning, because nothing here is
+    // outstanding: these files ran. What the line buys the reviewer is that part
+    // of the green above arrived with the diff, so its strength is whatever the
+    // new assertions are worth (ADR-0021).
+    ...(decision.introduced.length > 0
+      ? [
+          `- ✔ **Gate ${decision.introduced.length === 1 ? "input" : "inputs"} added by this change**: ${code(decision.introduced)} — the base ` +
+            `does not have ${decision.introduced.length === 1 ? "this file" : "these files"}, so ${decision.introduced.length === 1 ? "it was" : "they were"} ` +
+            `verified as part of the change rather than taken from the base. Read what ${decision.introduced.length === 1 ? "it asserts" : "they assert"}.`,
         ]
       : []),
   ];
@@ -220,9 +236,16 @@ export function buildPrBody(input: PrBodyInput): string {
     ? held.length > 0
       ? `> **Risk: ${task.risk}** · Proposed by the fleet runner, and every check that ran was green — but ${held.length === 1 ? "one file in this diff was" : `${held.length} files in this diff were`} **not part of what proved it**: ${code(held)} ${held.length === 1 ? "is a gate input" : "are gate inputs"} this task did not amend, so verification used the base version. Read ${held.length === 1 ? "that edit" : "those edits"}.`
       : `> **Risk: ${task.risk}** · Proposed and pre-vetted by the fleet runner. You are co-signing a verified change, not reviewing raw agent output.`
-    : unmet.length > 0
-      ? `> **Risk: ${task.risk}** · Proposed by the fleet runner and reviewed by the judge, but **the fleet could not fully verify it** — this task mandated ${unmet.map((g) => `\`${g}\``).join(", ")}, which did not run. Read the diff.`
-      : `> **Risk: ${task.risk}** · Proposed by the fleet runner and reviewed by the judge, but **the fleet could not verify it** — this repository has no verifiers, so no check ran. Read the diff.`;
+    : // Ahead of the unmet-gate clause and of the no-verifiers one, because it is
+      // the strongest of the three claims and the only one where checks ran and
+      // still proved nothing: the tree they ran on was the base commit (ADR-0021).
+      // Without this branch a run here would read as "this repository has no
+      // verifiers", which is false — they ran, on the wrong tree.
+      gateInputs?.treeIsBase
+      ? `> **Risk: ${task.risk}** · Proposed by the fleet runner and reviewed by the judge, but **nothing of this change was verified** — every file in this diff is a gate input this task did not amend, so the checks ran against the base commit and none of this change was in what they ran. A green above says nothing about the diff below. Read all of it.`
+      : unmet.length > 0
+        ? `> **Risk: ${task.risk}** · Proposed by the fleet runner and reviewed by the judge, but **the fleet could not fully verify it** — this task mandated ${unmet.map((g) => `\`${g}\``).join(", ")}, which did not run. Read the diff.`
+        : `> **Risk: ${task.risk}** · Proposed by the fleet runner and reviewed by the judge, but **the fleet could not verify it** — this repository has no verifiers, so no check ran. Read the diff.`;
 
   return [
     banner,

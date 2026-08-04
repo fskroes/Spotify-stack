@@ -26,6 +26,7 @@ record shows what was considered instead and why it lost.
 | [0018](0018-the-local-workspace-is-a-checkout.md) | The local workspace is a checkout, not a copy | workspace |
 | [0019](0019-a-shipping-run-is-based-on-what-it-ships-against.md) | A run that opens a PR is based on what it opens the PR against | workspace |
 | [0020](0020-the-gate-input-set-is-a-convention.md) | The gate-input set is a convention in the runner, not per-target configuration | verify↔run |
+| [0021](0021-a-gate-input-the-base-never-had-is-carried.md) | A gate input the base never had is carried, and a tree that equals the base is inconclusive | verify↔run |
 
 **0003–0008 were written retroactively** (2026-07-26), reconstructing the
 reasoning behind decisions already in the code. They are sound arguments, not

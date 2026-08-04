@@ -465,14 +465,56 @@ describe("a failed dependency install is attributed, not filed", () => {
 });
 
 /**
+ * ADR-0021's surviving degenerate case, and the only one left after a gate input
+ * the base never had stopped being deleted: a diff of nothing but *edits* to
+ * gate inputs the base already had, with no licence. Every path is held, so the
+ * tree the checks run on is the base commit — they pass on code that contains no
+ * part of the change.
+ *
+ * This is the one test in this file that needs a real check to run, because the
+ * whole claim is about a `passed` the runner refuses to record as one.
+ */
+describe("a diff whose every path is held", () => {
+  it("records inconclusive, not the pass the checks reported", async () => {
+    const suite = 'const test = require("node:test");\ntest("ok", () => {});\n';
+    const workspace = tempWorkspace({
+      "package.json": PACKAGE_JSON,
+      "package-lock.json": EMPTY_LOCKFILE,
+      "a.test.js": suite,
+    });
+    const h = harness({
+      workspace,
+      onRun: () => {
+        writeFileSync(path.join(workspace, "a.test.js"), `${suite}test("also ok", () => {});\n`);
+        return engineResult("added a case to the suite");
+      },
+    });
+
+    const pass = (await runPass(h.ctx)) as ApprovedPass;
+
+    expect(pass.gateInputs.held).toEqual(["a.test.js"]);
+    expect(pass.gateInputs.treeIsBase).toBe(true);
+    // The check itself passed — on the base. The recorded state is the runner's
+    // composition, and it may not repeat a green that proved nothing.
+    expect(pass.verify.summary).toContain("VERIFY PASSED");
+    expect(pass.verify.state).toBe("inconclusive");
+    // Said in words as well as in the field, because the judge reads the words.
+    expect(pass.verify.summary).toContain("NOTHING OF THIS CHANGE WAS VERIFIED");
+    // And the diff still ships: this is a claim about what proved it, never a
+    // kill (ADR-0014's consequence, undisturbed).
+    expect(pass.diff).toContain("a.test.js");
+  });
+});
+
+/**
  * ADR-0014 at the pass, on the case a path list read off the diff would miss.
  * Git reports a rename as one entry at its destination, so a suite *moved* out
  * of the tree looks like a file that only ever existed at the new path — and
- * holding just that path would delete the copy and leave the deletion standing,
- * verifying a tree with no suite in it at all.
+ * seeing only that path would leave the deletion standing, verifying a tree with
+ * no suite in it at all.
  */
 describe("a gate input the diff renamed away", () => {
-  it("is held at the path the base knew it by", async () => {
+  it("is held at the path the base knew it by, and the new path runs beside it", async () => {
     const workspace = tempWorkspace({ "a.test.js": "assert(true);\n" });
     const h = harness({
       workspace,
@@ -485,12 +527,19 @@ describe("a gate input the diff renamed away", () => {
 
     const pass = (await runPass(h.ctx)) as ApprovedPass;
 
-    // Both sides of the move are gate inputs, and neither was amended.
-    expect(pass.gateInputs.held).toEqual(["a.test.js", "b.test.js"]);
-    // So the tree still holds the suite the agent inherited, at its own path.
+    // The two sides of a move are two different facts (ADR-0021). The source is
+    // a gate the base had and this diff took away, so it is held and restored.
+    // The destination is a gate the change brought, so it runs.
+    expect(pass.gateInputs.held).toEqual(["a.test.js"]);
+    expect(pass.gateInputs.introduced).toEqual(["b.test.js"]);
+    // The suite the agent inherited survives the move, at its own path — which
+    // is the property the hold exists for, and the one a deletion would break.
     const tree = `${workspace}.verify`;
     expect(readFileSync(path.join(tree, "a.test.js"), "utf8")).toBe("assert(true);\n");
-    expect(existsSync(path.join(tree, "b.test.js"))).toBe(false);
+    expect(readFileSync(path.join(tree, "b.test.js"), "utf8")).toBe("assert(true);\n");
+    // Part of the diff was still held, so this run proved less than all of it
+    // and may not claim otherwise — but the tree is not the base.
+    expect(pass.gateInputs.treeIsBase).toBe(false);
     // And the move itself still ships — this is a claim about the tree, never
     // about the diff.
     expect(pass.diff).toContain("b.test.js");
