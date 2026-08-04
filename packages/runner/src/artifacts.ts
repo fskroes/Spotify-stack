@@ -31,12 +31,23 @@ export const REVIEW_ARTIFACTS = new Map<string, string>([
  *  under artifacts/runs (e.g. a task that happens to be named "runs"). */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export function runArtifactsRoot(controlRepo: string): string {
-  return path.join(controlRepo, "artifacts", "runs");
+/**
+ * Where a control repo keeps its artifacts. Every path below is derived from an
+ * artifacts root rather than from the control repo, so a caller can point a run
+ * somewhere else — which is what keeps a test run from evicting a real run's
+ * archive out of the working checkout. The parallel of `defaultLedgerPath`, and
+ * the same meaning `OperatorApiOptions.artifactsRoot` already carries.
+ */
+export function defaultArtifactsRoot(controlRepo: string): string {
+  return path.join(controlRepo, "artifacts");
 }
 
-export function runArtifactsDir(controlRepo: string, runId: string): string {
-  return path.join(runArtifactsRoot(controlRepo), runId);
+export function runArtifactsRoot(artifactsRoot: string): string {
+  return path.join(artifactsRoot, "runs");
+}
+
+export function runArtifactsDir(artifactsRoot: string, runId: string): string {
+  return path.join(runArtifactsRoot(artifactsRoot), runId);
 }
 
 /**
@@ -44,9 +55,9 @@ export function runArtifactsDir(controlRepo: string, runId: string): string {
  * is evidence, not the record (that is the ledger + GitHub), so a prune
  * failure must never fail a run.
  */
-export function pruneRunArtifacts(controlRepo: string, keep = 20): void {
+export function pruneRunArtifacts(artifactsRoot: string, keep = 20): void {
   try {
-    const root = runArtifactsRoot(controlRepo);
+    const root = runArtifactsRoot(artifactsRoot);
     const dirs = readdirSync(root)
       .filter((name) => UUID.test(name))
       .map((name) => {
@@ -63,9 +74,9 @@ export function pruneRunArtifacts(controlRepo: string, keep = 20): void {
 }
 
 /** Create this run's archive directory (and prune old ones while here). */
-export function prepareRunArtifactsDir(controlRepo: string, runId: string, keep = 20): string {
-  const dir = runArtifactsDir(controlRepo, runId);
+export function prepareRunArtifactsDir(artifactsRoot: string, runId: string, keep = 20): string {
+  const dir = runArtifactsDir(artifactsRoot, runId);
   mkdirSync(dir, { recursive: true });
-  pruneRunArtifacts(controlRepo, keep);
+  pruneRunArtifacts(artifactsRoot, keep);
   return dir;
 }

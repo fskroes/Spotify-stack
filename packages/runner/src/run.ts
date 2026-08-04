@@ -6,7 +6,7 @@ import picomatch from "picomatch";
 import { knownJudgeCapability, type JudgeIdentity, type RunStatus, type VerdictEvidence, type VerifyState } from "@fleet/contract";
 import { runVerify } from "@fleet/mcp-verify";
 import { createCliJudgeClient, createJudgeClient, judgeWithEvidence, type JudgeClient, type JudgeInput, type JudgeResult, type Verdict } from "@fleet/judge";
-import { prepareRunArtifactsDir, REVIEW_ARTIFACTS } from "./artifacts.js";
+import { defaultArtifactsRoot, prepareRunArtifactsDir, REVIEW_ARTIFACTS } from "./artifacts.js";
 import { assertJudgeReadStartupMarker, preflightJudgeRead } from "./judge-read-check.js";
 import { killRetentionLog, retainKill } from "./kill-retention.js";
 import { claudeEngine, mockEngine, type Engine, type EngineResult } from "./engine.js";
@@ -54,6 +54,11 @@ export interface RunOptions {
   maxJudgeRetries?: number;
   /** Override the committed ledger location (tests point this at a temp file). */
   ledgerPath?: string;
+  /** Override where artifacts are written (tests point this at a temp dir).
+   *  Without it a test run writes into the working checkout's `artifacts/`, and
+   *  the per-run archive's keep-20 prune then evicts real runs' evidence in
+   *  mtime order — measured on 2026-08-04 to have removed every one of them. */
+  artifactsRoot?: string;
   log?: (line: string) => void;
 }
 
@@ -723,6 +728,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
   const dryRun = opts.dryRun ?? true;
   const maxRetries = opts.maxJudgeRetries ?? 2;
   const ledgerPath = opts.ledgerPath ?? defaultLedgerPath(opts.controlRepo);
+  const artifactsRoot = opts.artifactsRoot ?? defaultArtifactsRoot(opts.controlRepo);
   const vetoes: Verdict[] = [];
   const runId = randomUUID();
   const usage = createUsageCollector();
@@ -741,13 +747,13 @@ export async function run(opts: RunOptions): Promise<RunResult> {
   };
 
   // Latest-run semantics: each run replaces this (task, repo) artifact set.
-  const artifactsDir = path.join(opts.controlRepo, "artifacts", task.id, repo.name);
+  const artifactsDir = path.join(artifactsRoot, task.id, repo.name);
   rmSync(artifactsDir, { recursive: true, force: true });
   mkdirSync(artifactsDir, { recursive: true });
   // Reviewable artifacts are additionally archived per run: a same-task rerun
   // replaces the flat set above, but must never destroy the evidence of a run
   // still awaiting review.
-  const runDir = prepareRunArtifactsDir(opts.controlRepo, runId);
+  const runDir = prepareRunArtifactsDir(artifactsRoot, runId);
   const artifact = (name: string, content: string) => {
     writeFileSync(path.join(artifactsDir, name), content);
     if (REVIEW_ARTIFACTS.has(name)) writeFileSync(path.join(runDir, name), content);

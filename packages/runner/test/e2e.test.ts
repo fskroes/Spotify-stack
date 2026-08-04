@@ -36,6 +36,12 @@ const quiet = () => {};
 const tmpLedger = () =>
   path.join(mkdtempSync(path.join(os.tmpdir(), "fleet-e2e-ledger-")), "ledger.jsonl");
 
+/** …and a throwaway artifacts root, for the same reason. Without it a test run
+ *  writes its per-run archive into the control repo's `artifacts/runs/`, where
+ *  the keep-20 prune then evicts real runs' evidence in mtime order — measured
+ *  on 2026-08-04 to have removed every real run's archive from the checkout. */
+const tmpArtifacts = () => mkdtempSync(path.join(os.tmpdir(), "fleet-e2e-artifacts-"));
+
 /** Where this run's retained kill landed (ADR-0015). A custom ledger moves the
  *  whole evidence store beside it, so hermetic runs never write into the
  *  control repo's `fleet/evidence/`. */
@@ -59,6 +65,7 @@ afterEach(() => {
 describe("runner e2e (mock engine, hermetic)", () => {
   it("happy path: migration applied → verify green → approved → dry-run artifacts", async () => {
     const ledgerPath = tmpLedger();
+    const artifactsRoot = tmpArtifacts();
     // This hermetic run simulates a local dispatch; keep the recorded mode
     // deterministic even when the suite itself runs inside GitHub Actions CI.
     vi.stubEnv("GITHUB_ACTIONS", "");
@@ -72,6 +79,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
       mockPatch: GOOD_PATCH,
       judgeMode: "approve",
       ledgerPath,
+      artifactsRoot,
       log: quiet,
     });
 
@@ -102,7 +110,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
     // The reviewable set is also archived per run — byte-identical to the flat
     // copy — so a same-task rerun can't destroy this run's evidence. The bulky
     // transcript stays out of the archive.
-    const runDir = path.join(CONTROL_REPO, "artifacts", "runs", result.runId);
+    const runDir = path.join(artifactsRoot, "runs", result.runId);
     for (const f of ["diff.patch", "verdict.json", "verify.log", "result.json", "pr-preview.md"]) {
       expect(readFileSync(path.join(runDir, f), "utf8"), f).toBe(
         readFileSync(path.join(result.artifactsDir, f), "utf8"),
@@ -166,6 +174,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
       artifactPath,
       ["---", "sha: " + "c".repeat(40), "grounding_ratio: 1", "---", "", "The service centers on src/userService.ts.", ""].join("\n"),
     );
+    const artifactsRoot = tmpArtifacts();
     try {
       const result = await run({
         controlRepo: CONTROL_REPO,
@@ -177,6 +186,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
         mockPatch: GOOD_PATCH,
         judgeMode: "approve",
         ledgerPath: tmpLedger(),
+        artifactsRoot,
         log: quiet,
       });
 
@@ -188,7 +198,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
       expect(injected).toContain("The service centers on src/userService.ts.");
 
       // ...archived per run as its own evidence, byte-identical to what shipped...
-      const runDir = path.join(CONTROL_REPO, "artifacts", "runs", result.runId);
+      const runDir = path.join(artifactsRoot, "runs", result.runId);
       expect(readFileSync(path.join(runDir, ".fleet-knowledge.md"), "utf8")).toBe(injected);
 
       // ...and never reaches the reviewable diff, so a scoped run can't trip on it.
@@ -218,6 +228,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
       mockPatch: GOOD_PATCH,
       judgeMode: "approve",
       ledgerPath,
+      artifactsRoot: tmpArtifacts(),
       log: quiet,
     });
 
@@ -261,6 +272,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
       judgeMode: "claude", // stubbed client: no network, no API key
       judgeClient,
       ledgerPath,
+      artifactsRoot: tmpArtifacts(),
       log: quiet,
     });
 
@@ -302,6 +314,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
       mockPatch: GOOD_PATCH,
       judgeMode: "veto", // must never be consulted
       ledgerPath,
+      artifactsRoot: tmpArtifacts(),
       log: quiet,
     });
 
@@ -353,6 +366,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
       mockPatch: GOOD_PATCH,
       judgeMode: "approve",
       ledgerPath,
+      artifactsRoot: tmpArtifacts(),
       log: quiet,
     });
 
@@ -399,6 +413,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
       mockPatch: GOOD_PATCH,
       judgeMode: "approve",
       ledgerPath,
+      artifactsRoot: tmpArtifacts(),
       log: quiet,
     });
 
@@ -429,6 +444,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
       mockPatch: BAD_PATCH,
       judgeMode: "approve",
       ledgerPath,
+      artifactsRoot: tmpArtifacts(),
       log: quiet,
     });
 
@@ -460,6 +476,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
       mockPatch: GOOD_PATCH,
       judgeMode: "veto-once",
       ledgerPath: tmpLedger(),
+      artifactsRoot: tmpArtifacts(),
       log: quiet,
     });
 
@@ -490,6 +507,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
       mockPatch: REVERT_PATCH,
       judgeMode: "veto-once",
       ledgerPath,
+      artifactsRoot: tmpArtifacts(),
       log: quiet,
     });
 
@@ -543,6 +561,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
       judgeMode: "claude",
       judgeClient,
       ledgerPath,
+      artifactsRoot: tmpArtifacts(),
       log: quiet,
     });
 
@@ -570,6 +589,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
       judgeMode: "veto",
       maxJudgeRetries: 1,
       ledgerPath: vetoLedger,
+      artifactsRoot: tmpArtifacts(),
       log: quiet,
     });
 
@@ -602,6 +622,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
       mockPatch: "NONE",
       judgeMode: "approve",
       ledgerPath: tmpLedger(),
+      artifactsRoot: tmpArtifacts(),
       log: quiet,
     });
 
@@ -624,6 +645,7 @@ describe("stop hook (unit-level, real verify)", () => {
       mockPatch: GOOD_PATCH,
       judgeMode: "approve",
       ledgerPath: tmpLedger(),
+      artifactsRoot: tmpArtifacts(),
       log: quiet,
     });
     const hookPath = path.join(result.workspace, ".claude/hooks/stop-verify.mjs");

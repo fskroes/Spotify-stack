@@ -96,6 +96,10 @@ const judgedRun = () =>
     mockPatch: GOOD_PATCH,
     judgeMode: "cli",
     ledgerPath: path.join(tmp, "ledger.jsonl"),
+    // Beside the ledger, and for the same reason: without it this run archives
+    // into the control repo's `artifacts/runs/`, whose keep-20 prune then
+    // evicts real runs' evidence in mtime order.
+    artifactsRoot: path.join(tmp, "artifacts"),
     log: () => {},
   });
 

@@ -21,6 +21,32 @@ artefact into `kill/`. An `agent-failed` kill retains nothing, and that is not a
 omission — the status exists because the agent produced no diff, so there is no
 change to re-adjudicate.
 
+**One measurement below is corrected** (2026-08-04), in this marker rather than
+in place: this record has been readable since 2026-08-01, so editing its prose
+would be the retconning [the supersede rule](README.md) exists to prevent, and
+the licence [ADR-0019](0019-a-shipping-run-is-based-on-what-it-ships-against.md)
+took applies only to a draft nobody could yet have read. No superseding record
+either — the decision here is untouched, and a record that decides nothing is not
+an ADR. *Why this was urgent* is left exactly as written.
+
+What was corrected is the **driver**, not the mechanism. The eviction is still
+`pruneRunArtifacts(keep = 20)`, still mtime-ordered and still indiscriminate. But
+the pressure filling those twenty slots is not the *"routine approved run"* named
+below: the end-to-end suite ran with its control repo set to the real checkout
+and no way to redirect artifacts, so `pnpm test` wrote fixture archives into the
+live `artifacts/runs/` and evicted every genuine run. Measured on 2026-08-04:
+fifteen real run ids in the ledger, **zero** surviving archives, all twenty
+survivors fixtures. The 2026-08-01 observation that *"the twenty survivors all
+[came] from one later burst"* was correct; only its implied cause was not, and
+whether *that* burst was also the suite is no longer measurable. Full method in
+[`../experiments/2026-08-04-walking-the-cosign-line.md`](../experiments/2026-08-04-walking-the-cosign-line.md).
+
+This strengthens rather than weakens the decision two sections down. If the
+prune's pressure is fixture noise, teaching it about run status would have been a
+patch over a test-isolation defect — a worse trade than the one that section
+already rejected. `run()` now takes an artifacts root, and the suite passes a
+temporary one.
+
 Two things are deliberately still unbuilt:
 
 - Nothing writes `outcome.json`. The slot is defined here and filled by whatever

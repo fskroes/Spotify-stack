@@ -23,7 +23,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, r
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { ModelUsageEvidenceSchema, type LedgerEntry, type SyncState } from "@fleet/contract";
-import { REVIEW_ARTIFACTS, runArtifactsDir, runArtifactsRoot } from "./artifacts.js";
+import { defaultArtifactsRoot, REVIEW_ARTIFACTS, runArtifactsDir, runArtifactsRoot } from "./artifacts.js";
 import { runEvidenceDir } from "./evidence.js";
 
 /** Runs `gh` asynchronously (spawn-based, so a slow download never blocks the
@@ -64,6 +64,9 @@ function findDownloadedFile(root: string, name: string): string | undefined {
 
 export class CloudArtifactSync {
   private readonly controlRepo: string;
+  /** The server always syncs into the control repo's own artifacts; the run
+   *  seam's override exists for tests, and this consumer has no use for it. */
+  private readonly artifactsRoot: string;
   private readonly gh: AsyncGhRunner;
   private readonly retryAfterMs: number;
   private readonly onSettled?: () => void;
@@ -79,6 +82,7 @@ export class CloudArtifactSync {
 
   constructor(opts: CloudArtifactSyncOptions) {
     this.controlRepo = opts.controlRepo;
+    this.artifactsRoot = defaultArtifactsRoot(opts.controlRepo);
     this.gh = opts.gh;
     this.retryAfterMs = opts.retryAfterMs ?? 30_000;
     this.onSettled = opts.onSettled;
@@ -123,7 +127,7 @@ export class CloudArtifactSync {
 
   private async download(entry: LedgerEntry): Promise<void> {
     const runId = entry.runId as string;
-    const root = runArtifactsRoot(this.controlRepo);
+    const root = runArtifactsRoot(this.artifactsRoot);
     mkdirSync(root, { recursive: true });
     // Download into a sibling temp dir so the rename into the archive stays on
     // one filesystem. The leading dot keeps it out of UUID-only prune scans.
@@ -166,7 +170,7 @@ export class CloudArtifactSync {
    *  many landed. The archive dir is created only once there is something to put
    *  in it, so a fruitless download leaves no phantom archive. */
   private promoteReviewFiles(tmp: string, runId: string): number {
-    const dest = runArtifactsDir(this.controlRepo, runId);
+    const dest = runArtifactsDir(this.artifactsRoot, runId);
     let moved = 0;
     for (const name of REVIEW_ARTIFACTS.keys()) {
       const from = findDownloadedFile(tmp, name);

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CloudArtifactSync, type AsyncGhRunner } from "../src/cloud-sync.js";
-import { runArtifactsDir } from "../src/artifacts.js";
+import { defaultArtifactsRoot, runArtifactsDir } from "../src/artifacts.js";
 import type { LedgerEntry } from "@fleet/contract";
 
 const tmpDirs: string[] = [];
@@ -62,7 +62,7 @@ describe("CloudArtifactSync", () => {
     expect(state).toEqual({ kind: "syncing" });
     await sync.drain();
 
-    const archive = runArtifactsDir(repo, "cloud-run-1");
+    const archive = runArtifactsDir(defaultArtifactsRoot(repo), "cloud-run-1");
     expect(readFileSync(path.join(archive, "diff.patch"), "utf8")).toBe("the cloud diff\n");
     expect(existsSync(path.join(archive, "verdict.json"))).toBe(true);
   });
