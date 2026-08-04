@@ -16,6 +16,15 @@ demo-repos/*/.build/
 # private fleet overlay (targets kept local, not committed)
 fleet/repos.local.yaml
 
+# machine-drafted task proposals and their drafted-scope sidecars: a draft for a
+# private target is private prose. Approved drafts an operator wants to keep are
+# moved into tasks/ (or tasks/private/) by hand.
+tasks/drafts/
+
+# the correction log: drafted scope vs approved scope, one row per draft. Rows
+# name targets and their path globs, so the file never lands in the public repo.
+fleet/correction-log.jsonl
+
 # Locally compiled prose for private fleet targets. Public knowledge/*.md stays trackable.
 knowledge/private/
 

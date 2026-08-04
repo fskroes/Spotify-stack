@@ -1,0 +1,13 @@
+{
+  "name": "@fleet/intake",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The front door: drafts a task file from an intent, and records what the operator changed about it",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run --root ../.. packages/intake/test"
+  }
+}

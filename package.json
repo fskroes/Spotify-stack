@@ -17,6 +17,7 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
+    "@fleet/intake": "workspace:*",
     "@fleet/runner": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.13.0",
     "@types/node": "^22.15.0",

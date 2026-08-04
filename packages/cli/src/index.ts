@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Command } from "commander";
 import { run } from "@fleet/runner";
@@ -23,6 +23,15 @@ import { resolveOwner, targetRepos } from "@fleet/runner/fleet";
 import { knowledgeArtifactPath, resolveKnowledgeRepo } from "@fleet/runner/knowledge";
 import { extractCliEnvelope, sanitizeCliEnvelopeUsage, type LedgerEntry, type PrLiveState } from "@fleet/contract";
 import { invokeClaudeCli } from "./knowledge-cli.js";
+import {
+  buildCorrectionRow,
+  buildDraftPrompt,
+  isRefusal,
+  parseDraftReply,
+  renderDraft,
+  REVIEW_MARKER,
+  type DraftRecord,
+} from "@fleet/intake";
 import { defaultLedgerPath, fleetRecord, formatRecordLine, readLedger } from "@fleet/runner/ledger";
 import { readUnionLedger } from "@fleet/runner/ledger-union";
 import { writeLedgerHtml } from "@fleet/runner/ledger-html";
@@ -241,6 +250,90 @@ program
     process.stdout.write(`\n${formatAskReport(elapsedMs, grounding, envelope)}\n`);
   });
 
+program
+  .command("draft")
+  .description("Draft a task file for a target from an intent — the front door; writes tasks/drafts/, runs nothing")
+  .argument("<target>", "repo name from fleet/repos.yaml")
+  .argument("<intent>", "what someone asked for (quote it)")
+  .action(async (target: string, intent: string) => {
+    const { repoDir, visibility } = resolveKnowledgeRepo(controlRepo, target);
+
+    // Grounded on the deterministic map every target has for free; compiled
+    // prose joins only when it already exists — a draft never triggers a
+    // compile, matching `ask`'s never-spend-on-their-behalf stance.
+    const index = await buildIndex(repoDir);
+    const renderedMap = renderMap(buildRepoMapFromIndex(index));
+    const artifactPath = knowledgeArtifactPath(controlRepo, target, visibility);
+    const prose = existsSync(artifactPath)
+      ? parseKnowledgeArtifact(readFileSync(artifactPath, "utf8")).prose
+      : null;
+
+    const envelope = extractCliEnvelope(
+      invokeClaudeCli(repoDir, buildDraftPrompt({ target, renderedMap, prose, intent })),
+    );
+    const result = parseDraftReply((envelope.result as string).trim(), target);
+
+    if (isRefusal(result)) {
+      console.log(`draft refused: ${result.reason}`);
+      console.log("(a refusal costs one message; a guessed scope costs the cage — author the task by hand)");
+      process.exitCode = 1;
+      return;
+    }
+
+    // tasks/drafts/ is git-ignored: a draft for a private target is private prose.
+    const draftsDir = path.join(controlRepo, "tasks", "drafts");
+    mkdirSync(draftsDir, { recursive: true });
+    const taskFile = path.join(draftsDir, `${result.id}.md`);
+    writeFileSync(taskFile, renderDraft(result));
+
+    // The sidecar holds what was drafted, so the correction row at run time can
+    // compare it against what the operator approved. Consumed by the first run.
+    const record: DraftRecord = {
+      id: result.id,
+      target,
+      draftedScope: result.scope,
+      draftedAt: new Date().toISOString(),
+    };
+    writeFileSync(draftSidecarPath(taskFile), `${JSON.stringify(record, null, 2)}\n`);
+
+    console.log(`draft written: ${path.relative(controlRepo, taskFile)}`);
+    console.log(`scope as drafted: [${result.scope.join(", ")}]`);
+    console.log("\nRead it. Narrow the scope if it is loose; delete the review comment if it is right.");
+    console.log(`then: pnpm fleet run ${path.relative(controlRepo, taskFile)} --repo ${target}`);
+  });
+
+function draftSidecarPath(taskPath: string): string {
+  return taskPath.replace(/\.md$/, ".draft.json");
+}
+
+/** Where drafted-vs-approved rows land. Git-ignored: rows name targets and scope globs. */
+function correctionLogPath(): string {
+  return path.join(controlRepo, "fleet", "correction-log.jsonl");
+}
+
+/**
+ * The correction row, appended when a drafted task is handed to `fleet run`.
+ * Lives here in the CLI seam, deliberately: the runner pipeline is untouched
+ * and nothing downstream knows a task was drafted (ADR-0012). One row per
+ * draft — the sidecar is consumed — so a rerun measures nothing twice.
+ */
+function recordDraftCorrection(taskPath: string): void {
+  const sidecar = draftSidecarPath(taskPath);
+  if (!existsSync(sidecar)) return;
+  const record = JSON.parse(readFileSync(sidecar, "utf8")) as DraftRecord;
+  const raw = readFileSync(taskPath, "utf8");
+  const task = loadTask(taskPath);
+  const row = buildCorrectionRow({
+    ts: new Date().toISOString(),
+    record,
+    approvedScope: task.scope ?? [],
+    markerPresent: raw.includes(REVIEW_MARKER),
+  });
+  appendFileSync(correctionLogPath(), `${JSON.stringify(row)}\n`);
+  rmSync(sidecar);
+  console.log(`correction log: ${row.outcome} — drafted [${row.draftedScope.join(", ")}] → approved [${row.approvedScope.join(", ")}]`);
+}
+
 /**
  * The opt-in recompile pre-step for `fleet run --recompile-knowledge`. Reuses
  * the exact Stage-3 flow `fleet knowledge compile` runs — the only path that
@@ -294,9 +387,11 @@ program
   .option("--recompile-knowledge", "recompile drifted knowledge before the run (opt-in real agent spend, ~$0.79)", false)
   .action(async (taskArg: string, options) => {
     if (options.recompileKnowledge) await recompileKnowledgeIfStale(options.repo);
+    const taskPath = resolveTaskPath(taskArg);
+    recordDraftCorrection(taskPath);
     const result = await run({
       controlRepo,
-      taskPath: resolveTaskPath(taskArg),
+      taskPath,
       repoName: options.repo,
       local: options.local,
       dryRun: !options.pr,
