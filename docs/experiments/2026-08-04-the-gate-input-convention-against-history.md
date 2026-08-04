@@ -200,6 +200,25 @@ with the run that demonstrated it attached, and no run has demonstrated anything
 convention is ever written, history points at the dependency manifests of
 registered checks and not at lint config.
 
+### Disposition — added later the same day, after four live runs this measurement did not include
+
+**The gap is deliberately not being decided.** Not deferred and not parked behind
+a trigger — closed. This line exists so it is not re-opened later as an oversight.
+
+It is the **false-negative** direction, so by ADR-0020's own asymmetry it cannot
+produce a false green; it is the pre-ADR-0014 behaviour, unchanged, costing
+nothing new. ADR-0020's rule is that an override arrives with the run that
+demonstrated it, and none has — a second convention written without one would be
+a tenth record about the ninth, which is process rather than correctness.
+
+Run `f88879ba` was built to exercise exactly this shape and confirmed the reading
+rather than defeating it: on target B it shipped `approved` over a diff of six
+dependency manifests and nothing else, and `cargo test --workspace --locked` then
+resolved the closure from the manifests the agent had just written. No hold, no
+note, no ledger key, and the PR does not contain the words *gate input* anywhere.
+That is this section's finding arriving as an observation instead of as history.
+It is what the disposition is about, not a reason to revisit it.
+
 ## What this does not measure
 
 - **Human commits are not agent diffs.** A fleet task produces one scoped change;
