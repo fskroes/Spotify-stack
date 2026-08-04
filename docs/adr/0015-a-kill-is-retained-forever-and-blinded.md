@@ -58,6 +58,15 @@ Two things are deliberately still unbuilt:
   not in the set that channel carries. Until then the promise below holds for
   `mode: local` and not for `mode: cloud`.
 
+**The trigger for the second bullet, written here because this is where it will
+be read** (2026-08-04): it is not waiting on a date. It is waiting on **the next
+cloud dispatch**, and that dispatch is where it has to be decided — #123 carries
+the four questions, of which the first is whether kill evidence travels through a
+publicly downloadable artifact at all. Two cloud runs exist, both approved, none
+since 24 July, so nothing has been lost yet. The loss is irreversible the first
+time it is not. **A cloud run dispatched without deciding this throws a kill away
+on purpose.**
+
 ## Why this was urgent, and it is not the reason the map gave
 
 The map said the kill destroys the diff. That is right in outcome and wrong in
