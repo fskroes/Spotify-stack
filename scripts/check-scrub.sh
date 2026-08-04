@@ -16,12 +16,34 @@
 
 set -uo pipefail
 
-# Banned terms, matched case-insensitively as regexes. Split into two groups only
-# so a failure reads clearly; both are equally fatal.
+# Banned terms, matched case-insensitively as regexes. Split into groups only so
+# a failure reads clearly; all are equally fatal.
 # `better-?mail` catches both the repo name and the app's `BetterMail` symbols.
 IDENTIFIERS='fskroes|bike-route-creator|freshminds|better-?mail|hotmail\.com'
 DOMAIN='\bgpx\b|openrouteservice|\bORS\b|strava|topografix|trkpt|\bcycling\b|\bbike\b|geocodeAddress|snapPointsToRoad'
+
+# The private registry is the source of truth for which targets are private, so
+# derive their names from it instead of mirroring them by hand above. A mirror is
+# one human step away from being wrong, and it was: a target registered on
+# 2026-08-03 was still missing from IDENTIFIERS on 2026-08-04, while the ledger
+# already carried two rows naming it. The names above stay as a floor — a target
+# that leaves the registry must not lose its protection.
+#
+# Anchored to the two-space indent of a top-level `repos:` entry. A registered
+# verifier carries its own `- name:` four spaces deeper, and banning a check name
+# would fail every document that legitimately discusses verification.
+#
+# Absent (a fresh clone, CI) this contributes nothing and the floor stands alone,
+# which is correct: there are no private targets there to protect.
+REGISTRY='fleet/repos.local.yaml'
+registry_targets() {
+  [ -f "$REGISTRY" ] || return 0
+  sed -nE 's/^  - name:[[:space:]]*([^[:space:]#]+).*/\1/p' "$REGISTRY"
+}
+
 PATTERN="${IDENTIFIERS}|${DOMAIN}"
+TARGETS=$(registry_targets | paste -sd '|' -)
+[ -n "$TARGETS" ] && PATTERN="${PATTERN}|${TARGETS}"
 
 # This script necessarily contains every banned term, so it can never scan
 # itself. Nothing else is exempt.
