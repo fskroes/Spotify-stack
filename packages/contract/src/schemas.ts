@@ -452,6 +452,20 @@ export const LedgerEntrySchema = z.object({
    *  as unknown rather than as an empty set — the latter would assert that
    *  nothing was outstanding, which no historical line ever established. */
   unmetGates: z.array(z.string()).optional(),
+  /** Gate inputs the verification tree took from the base instead of from the
+   *  diff, because the task did not amend them (ADR-0014). Their edits are in
+   *  the diff and in the PR; they are not part of what verified it. Present
+   *  only when this run actually held one — absent means *not recorded*, never
+   *  an assertion that the whole diff was verified. */
+  heldGateInputs: z.array(z.string()).optional(),
+  /** Amendments this run exercised: the glob a task licensed and the reason it
+   *  gave. A licence, the mirror of `unmetGates`' mandate — and, like it,
+   *  present only when the diff actually matched one. The reason travels with
+   *  the glob deliberately: it is the half a reflexive operator cannot supply
+   *  without thinking, so a reader who sees the licence sees the argument. */
+  amendments: z
+    .array(z.object({ glob: z.string(), reason: z.string() }))
+    .optional(),
   /** Compact projection of the sanitized per-run usage artifact. Absent on
    * historical lines means "not recorded"; a present `unavailable` rail means
    * a current producer could not expose its evidence, and is never a zero. */

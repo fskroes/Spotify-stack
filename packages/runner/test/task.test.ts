@@ -61,6 +61,46 @@ describe("loadTask scope/gates/risk/why", () => {
     expect(task.gates).toEqual(["live-contract-check"]);
   });
 
+  it("parses amends as an ordered glob → reason mapping", () => {
+    const task = loadTask(
+      taskFile(
+        'id: t-9\ntitle: T\ntargets: [demo-ts-service]\namends:\n  "test/http.test.ts": the asserted status code was wrong\n  "test/**": the suite moved with the API',
+      ),
+    );
+    expect(task.amends).toEqual([
+      { glob: "test/http.test.ts", reason: "the asserted status code was wrong" },
+      { glob: "test/**", reason: "the suite moved with the API" },
+    ]);
+  });
+
+  it("defaults to no amendment — the ordinary case, and every task written before this", () => {
+    const task = loadTask(taskFile('id: t-10\ntitle: T\ntargets: [demo-ts-service]'));
+    expect(task.amends).toBeUndefined();
+  });
+
+  // The reason is the one part of this licence a reflexive operator cannot
+  // supply without thinking, which is the failure ADR-0014 cannot mechanically
+  // prevent. A blank one is a load error naming the glob, not a licence with an
+  // empty justification beside it.
+  it("rejects an amendment with no reason, naming the glob", () => {
+    for (const value of ['"test/**": ""', '"test/**": "   "', '"test/**": true']) {
+      expect(() =>
+        loadTask(taskFile(`id: t-11\ntitle: T\ntargets: [demo-ts-service]\namends:\n  ${value}`)),
+      ).toThrow(/amends\["test\/\*\*"\] needs a non-empty reason/);
+    }
+  });
+
+  // `amends: [test/**]` is exactly the bare glob this design refuses. Reading a
+  // list as "reason omitted" would make the required half optional in practice.
+  it("rejects a bare list of globs", () => {
+    expect(() =>
+      loadTask(taskFile('id: t-12\ntitle: T\ntargets: [demo-ts-service]\namends: ["test/**"]')),
+    ).toThrow(/amends must be a mapping of path glob to the reason/);
+    expect(() =>
+      loadTask(taskFile('id: t-13\ntitle: T\ntargets: [demo-ts-service]\namends: {}')),
+    ).toThrow(/amends must name at least one path glob/);
+  });
+
   it("rejects a malformed gates value at load, naming the task file", () => {
     // Found at dispatch, not by a run that silently ignored the field.
     const file = taskFile('id: t-7\ntitle: T\ntargets: [demo-ts-service]\ngates: []');

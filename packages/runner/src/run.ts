@@ -11,6 +11,7 @@ import { assertJudgeReadStartupMarker, preflightJudgeRead } from "./judge-read-c
 import { killRetentionLog, retainKill } from "./kill-retention.js";
 import { claudeEngine, mockEngine, type Engine, type EngineResult } from "./engine.js";
 import { createUsageCollector, unavailableProducerUsage, writeModelUsageEvidence, type ProducerUsage, type UsageCollector } from "./model-usage.js";
+import { decideGateInputs, gateInputNote, noGateInputs, type GateInputDecision } from "./gate-inputs.js";
 import { findRepo, type FleetRepo } from "./fleet.js";
 import { beginInflight, sweepInflight, type InflightHandle } from "./inflight.js";
 import { appendLedger, defaultLedgerPath, fleetRecord, readLedger } from "./ledger.js";
@@ -20,7 +21,7 @@ import { buildRunPreamble } from "@fleet/knowledge";
 import { loadTask, type Task } from "./task.js";
 import { constructVerificationTree, TreeConstructionError, type VerificationTree } from "./verification-tree.js";
 import { eligibleVerifiers, type VerifierCheck } from "./verifiers.js";
-import { git, injectAgentConfig, injectKnowledge, prepareWorkspace, RUN_KNOWLEDGE_FILE, stagedDiff, stagedFiles } from "./workspace.js";
+import { git, injectAgentConfig, injectKnowledge, prepareWorkspace, RUN_KNOWLEDGE_FILE, stagedDiff, stagedFiles, stagedPaths } from "./workspace.js";
 
 interface VerifyResult {
   /** Tri-state: `inconclusive` means no verifier ran, which is not a pass.
@@ -75,6 +76,10 @@ export interface RunResult {
    *  declared none or all were met; those two cases are deliberately
    *  indistinguishable downstream, since neither leaves anything outstanding. */
   unmetGates?: string[];
+  /** What the verification tree did with this diff's gate inputs (ADR-0014).
+   *  Absent when the run never built a tree — nothing was held or carried,
+   *  because nothing was reconstituted. */
+  gateInputs?: GateInputDecision;
   verdict?: Verdict;
   /** Veto verdicts absorbed along the way (includes a final fatal one). */
   vetoes: Verdict[];
@@ -374,7 +379,7 @@ export function judgeLine(judge: JudgeIdentity | undefined): string {
  * it must not carry multi-KB diffs or full logs (those stay in artifacts/).
  */
 export function evidenceFor(
-  result: Pick<RunResult, "status" | "verify" | "verdict" | "resultText" | "unmetGates">,
+  result: Pick<RunResult, "status" | "verify" | "verdict" | "resultText" | "unmetGates" | "gateInputs">,
   scopeOffenders?: string[],
 ): string[] | undefined {
   const cap = (lines: string[]): string[] =>
@@ -409,12 +414,19 @@ export function evidenceFor(
       // approved run whose verifiers never ran — or whose task demanded a check
       // that did not — is not "all green".
       const unmet = result.unmetGates ?? [];
+      // A run that held a gate input at the base is green about *less than the
+      // whole diff*, and "all green" would say otherwise. Not a change to the
+      // verification state (ADR-0014 changes neither that nor the status) — a
+      // change to what this line is allowed to claim about it.
+      const held = result.gateInputs?.held ?? [];
       const headline =
         unmet.length > 0
           ? `⚠ scope · judge green — verify INCONCLUSIVE (mandated gate never ran: ${unmet.join(", ")})`
           : result.verify?.state === "inconclusive"
             ? "⚠ scope · judge green — verify INCONCLUSIVE (no verifiers ran)"
-            : "✓ scope · verify · judge all green";
+            : held.length > 0
+              ? `⚠ scope · verify · judge green — but held at the base, so unverified: ${held.join(", ")}`
+              : "✓ scope · verify · judge all green";
       return cap([headline, ...(result.verify?.summary.split("\n") ?? [])]);
     }
     default:
@@ -503,6 +515,9 @@ export interface EndedPass {
   resultText: string;
   verify?: VerifyResult;
   unmetGates?: string[];
+  /** Present only once a tree was actually built holding them — a pass that
+   *  died at scope, or before the diff applied, held nothing. */
+  gateInputs?: GateInputDecision;
   scopeOffenders?: string[];
   /** Only ever the *prior* pass's, and only when this pass never reached the
    *  workspace — see the agent-failure path in `runPass`. */
@@ -523,6 +538,7 @@ export interface VetoedPass {
   resultText: string;
   verify: VerifyResult;
   unmetGates: string[];
+  gateInputs: GateInputDecision;
   judgeResult: JudgeResult;
 }
 
@@ -533,6 +549,7 @@ export interface ApprovedPass {
   resultText: string;
   verify: VerifyResult;
   unmetGates: string[];
+  gateInputs: GateInputDecision;
   judgeResult: JudgeResult;
 }
 
@@ -627,6 +644,7 @@ export async function runPass(ctx: PassContext, prior?: VetoedPass): Promise<Pas
       diff: prior?.diff ?? "",
       verify: prior?.verify,
       unmetGates: prior?.unmetGates,
+      gateInputs: prior?.gateInputs,
       verdict: prior?.judgeResult.verdict,
     };
   }
@@ -664,11 +682,26 @@ export async function runPass(ctx: PassContext, prior?: VetoedPass): Promise<Pas
   // this diff applied, dependencies installed from the lockfile (ADR-0013). The
   // agent's workspace is not verified and never was the subject — the in-session
   // Stop hook that ran there is the retry loop, not this gate (ADR-0017 §1).
+  //
+  // What the tree does with the files that judge it is decided here, from the
+  // diff's own paths and the task's `amends:` (ADR-0014). There is no detection
+  // step and no trigger condition: `hold` is computed on every run, and is
+  // simply empty on the ordinary one.
+  // Both sides of a rename, unlike the scope check above: a test moved
+  // elsewhere is a gate this diff took away, and only the path it came from
+  // says so.
+  const gateInputs = decideGateInputs(stagedPaths(ctx.workspace), ctx.task.amends);
+  if (!noGateInputs(gateInputs)) {
+    const carried = gateInputs.carried.reduce((n, a) => n + a.files.length, 0);
+    ctx.log(`· gate inputs: ${gateInputs.held.length} held at the base, ${carried} carried under an amendment`);
+  }
   ctx.log("· reconstituting the verification tree…");
   ctx.inflight.enter("verify");
   let tree: VerificationTree;
   try {
-    tree = await ctx.timed("verifyMs", () => constructVerificationTree({ workspace: ctx.workspace, diff }));
+    tree = await ctx.timed("verifyMs", () =>
+      constructVerificationTree({ workspace: ctx.workspace, diff, hold: gateInputs.held }),
+    );
   } catch (error) {
     if (!(error instanceof TreeConstructionError)) throw error;
     ctx.artifact("diff.patch", diff);
@@ -682,20 +715,30 @@ export async function runPass(ctx: PassContext, prior?: VetoedPass): Promise<Pas
       // check (ADR-0016 §2) — but it is what the verify stage left behind.
       ctx.artifact("verify.log", error.message);
       ctx.log(`✖ verification tree failed to build: ${error.message.split("\n")[0]}`);
-      return { outcome: "ended", status: "verify-failed", diff, resultText: error.message };
+      // The hold ran before this install did, so it is part of what produced
+      // this failure and belongs on the record. The infrastructure branch below
+      // reports none: an install or an apply that failed never reached it.
+      return { outcome: "ended", status: "verify-failed", diff, resultText: error.message, gateInputs };
     }
     ctx.log(`✖ ${error.message.split("\n")[0]}`);
     return { outcome: "ended", status: "engine-failed", diff, resultText: error.message };
   }
   ctx.log(`· verifying ${tree.base.slice(0, 7)} + this diff…`);
-  const { verify, unmetGates } = applyGates(
+  const gated = applyGates(
     ctx.task,
     (await ctx.timed("verifyMs", () => runVerify(tree.path, { registered: ctx.registered }))) as VerifyResult,
   );
+  // Folded into the summary the judge reads and the log the artifact keeps, for
+  // the reason the gate note above is: this text is the judge's whole view of
+  // what verification did, and a file held at the base is something it did.
+  const unmetGates = gated.unmetGates;
+  const verify = noGateInputs(gateInputs)
+    ? gated.verify
+    : { ...gated.verify, summary: `${gated.verify.summary}\n\n${gateInputNote(gateInputs)}` };
   ctx.artifact("verify.log", verify.summary);
   if (verify.state === "failed") {
     ctx.artifact("diff.patch", diff);
-    return { outcome: "ended", status: "verify-failed", diff, resultText, verify, unmetGates };
+    return { outcome: "ended", status: "verify-failed", diff, resultText, verify, unmetGates, gateInputs };
   }
 
   ctx.inflight.enter("judge");
@@ -711,11 +754,11 @@ export async function runPass(ctx: PassContext, prior?: VetoedPass): Promise<Pas
     // No verdict, deliberately: this pass never got one. An earlier pass's veto
     // judged a *different* diff, and recording it beside this one would pair a
     // verdict with a change its judge never saw.
-    return { outcome: "ended", status: "engine-failed", diff, resultText: errorText(error), verify, unmetGates };
+    return { outcome: "ended", status: "engine-failed", diff, resultText: errorText(error), verify, unmetGates, gateInputs };
   }
 
   ctx.artifact("diff.patch", diff);
-  const facts = { diff, resultText, verify, unmetGates, judgeResult };
+  const facts = { diff, resultText, verify, unmetGates, gateInputs, judgeResult };
   return judgeResult.verdict.verdict === "veto"
     ? { outcome: "vetoed", ordinal, sessionId: engineResult.sessionId, ...facts }
     : { outcome: "approved", ...facts };
@@ -855,6 +898,16 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         // gates and for one whose gates were all met — neither has anything to
         // report, and an empty array would read as a positive all-clear.
         ...((full.unmetGates?.length ?? 0) > 0 ? { unmetGates: full.unmetGates } : {}),
+        // The amendment and the hold, on the same terms as unmetGates: present
+        // only when this run actually had one. A task that declared `amends:`
+        // and produced a diff that touched nothing it names records neither —
+        // the licence was never exercised, so there is nothing to report
+        // (ADR-0014). The reason travels with the glob, because a licence
+        // without its justification is the bare glob this design refuses.
+        ...((full.gateInputs?.carried.length ?? 0) > 0
+          ? { amendments: full.gateInputs?.carried.map(({ glob, reason }) => ({ glob, reason })) }
+          : {}),
+        ...((full.gateInputs?.held.length ?? 0) > 0 ? { heldGateInputs: full.gateInputs?.held } : {}),
         // Cloud provenance: only in Actions, where the review set is uploaded as
         // an artifact named `<task>-<repo>` (the exact expression agent-task.yml
         // uses). Lets the operator pull this run's evidence on demand later.
@@ -949,6 +1002,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
           resultText: pass.resultText,
           verify: pass.verify,
           unmetGates: pass.unmetGates,
+          gateInputs: pass.gateInputs,
           verdict: pass.verdict,
           status: pass.status,
         },
@@ -972,7 +1026,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
 
     if (pass.outcome === "ended") return settle(pass);
 
-    const { diff, resultText, verify, unmetGates, judgeResult } = pass;
+    const { diff, resultText, verify, unmetGates, gateInputs, judgeResult } = pass;
     const verdict = judgeResult.verdict;
     artifact("verdict.json", verdictRecord(verdict, judgeResult));
 
@@ -987,6 +1041,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         resultText,
         verify,
         unmetGates,
+        gateInputs,
         verdict,
         status: "vetoed",
       });
@@ -1004,6 +1059,10 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       // with the ledger rather than with verification's own narrower answer.
       verifyState: composedVerifyState({ verify, unmetGates }) ?? verify.state,
       unmetGates,
+      // What the tree held and what the task licensed, with the reason. A
+      // co-signer is being asked to merge a diff part of which may not have
+      // been verified, and that is not a fact the body may leave to the log.
+      gateInputs,
       verifySummary: verify.summary,
       verdict,
       vetoes,
@@ -1043,6 +1102,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       resultText,
       verify,
       unmetGates,
+      gateInputs,
       verdict,
       prUrl,
       sha,

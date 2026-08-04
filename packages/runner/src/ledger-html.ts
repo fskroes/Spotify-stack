@@ -541,8 +541,15 @@ function renderTimeline(e: LedgerEntry, cosign?: PrLiveState): string {
   // unmet gates is the difference between "unproven" and "unproven, and here is
   // exactly what is missing" — the latter is what a co-signer can act on.
   const unmet = e.unmetGates ?? [];
+  // A green that covered only part of the diff says so. The tree held these
+  // files at the base (ADR-0014), so their edits shipped without being part of
+  // what proved the change — the same class of qualification as an unmet gate,
+  // and the same reason to make it: an unqualified "passed" here would claim
+  // more than the run earned.
+  const held = e.heldGateInputs ?? [];
+  const heldNote = held.length > 0 ? ` — ${held.length} gate input${held.length === 1 ? "" : "s"} held at the base` : "";
   const VERIFY_ROW = {
-    passed: { status: "passed", color: C.green },
+    passed: { status: `passed${heldNote}`, color: C.green },
     failed: { status: "KILLED", color: C.red },
     inconclusive: {
       status: unmet.length > 0 ? `INCONCLUSIVE — ${unmet.join(", ")} never ran` : "INCONCLUSIVE — nothing ran",

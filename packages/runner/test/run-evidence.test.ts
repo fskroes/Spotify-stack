@@ -127,6 +127,22 @@ describe("evidenceFor — unmet gates", () => {
     // And not the other cause of inconclusive — verifiers did run here.
     expect(lines?.[0]).not.toContain("no verifiers ran");
   });
+
+  it("declines to call a run all green when part of its diff was held at the base", () => {
+    const lines = evidenceFor({
+      status: "approved",
+      resultText: "",
+      verify: { state: "passed", checks: [check("test", "passed")], summary: "VERIFY PASSED" },
+      unmetGates: [],
+      gateInputs: { held: ["test/http.test.ts"], carried: [] },
+    });
+
+    // Every check passed, and the recorded state stays `passed` — what changes
+    // is the claim, not the state (ADR-0014).
+    expect(lines?.[0]).not.toContain("all green");
+    expect(lines?.[0]).toContain("test/http.test.ts");
+    expect(lines?.[0]).not.toContain("INCONCLUSIVE");
+  });
 });
 
 /** What a verdict records about the reviewer that produced it (ADR-0011). */

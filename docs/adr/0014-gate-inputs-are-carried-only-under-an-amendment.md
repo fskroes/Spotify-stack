@@ -26,6 +26,33 @@ also unbuilt: without a reconstituted tree there is nothing to carry a gate inpu
 The four-cell differential below is recorded as design, not as a commitment to
 build it.
 
+**This rule is built, and the paragraph above was stale before it was**
+(2026-08-04), corrected in this marker rather than in place: this record has been
+readable since 2026-08-01, so editing its prose would be the retconning [the
+supersede rule](README.md) exists to prevent. There is no superseding record
+either — the decision here is untouched, and a record that decides nothing is not
+an ADR. Everything above stays exactly as written.
+
+Two claims above are no longer true, and neither is the **decision**.
+[ADR-0013](0013-verification-runs-on-the-shipped-artefact.md) shipped on
+2026-08-03, so the reconstituted tree this rule had nothing to carry a gate
+input *into* has existed since. As of 2026-08-04 `amends:` is task frontmatter
+whose reason is required and must be non-empty; `constructVerificationTree`
+holds an un-amended gate input at the base while carrying the rest of the diff;
+and the reason travels to the PR header, to the verification summary the judge
+reads, and to the ledger line (`amendments`, beside `heldGateInputs`).
+
+What this record did *not* decide, the build had to: **which** files are gate
+inputs. That set is a constant in the runner — what detection already reads, plus
+one test-and-fixture convention — and
+[ADR-0020](0020-the-gate-input-set-is-a-convention.md) carries the argument for a
+convention over configuration, including why being wrong in either direction is
+survivable and why the set is partial by construction. It disturbs nothing below.
+
+Still unbuilt, and still deliberately: the four-cell differential, the red-first
+predicate, and both halves of the holdout gate. Their sections are unchanged, and
+[run status](../../CONTEXT.md#run-status-vs-verification-state) remains #119's.
+
 ## What an amendment is, and why it can be trusted
 
 ```yaml

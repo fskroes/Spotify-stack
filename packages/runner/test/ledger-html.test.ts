@@ -78,6 +78,22 @@ describe("renderLedgerHtml · the static report", () => {
     const legacy = renderLedgerHtml([entry({ verifyState: "inconclusive" })], opts);
     expect(legacy).toContain("INCONCLUSIVE — nothing ran");
   });
+
+  it("qualifies a green that only covered part of the diff", () => {
+    // The run passed, and part of what it ships was held at the base rather
+    // than verified (ADR-0014). Both halves are true, and a row saying only the
+    // first claims more than the run earned.
+    const html = renderLedgerHtml(
+      [entry({ verifyState: "passed", heldGateInputs: ["test/http.test.ts"] })],
+      opts,
+    );
+
+    expect(html).toContain("passed — 1 gate input held at the base");
+
+    // A run that held none reads as the plain green it earned, and so does
+    // every historical line, which carries no such field.
+    expect(renderLedgerHtml([entry({ verifyState: "passed" })], opts)).not.toContain("held at the base");
+  });
 });
 
 describe("renderLedgerHtml · the Live lane", () => {

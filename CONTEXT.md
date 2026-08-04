@@ -303,6 +303,19 @@ record can always answer, which is why verification is built to be indifferent t
 it ([ADR-0013](docs/adr/0013-verification-runs-on-the-shipped-artefact.md)) rather
 than to detect it.
 
+The set the [amendment](#amendment) rule acts on is narrower still, and narrower
+**by construction rather than by shortcut**: it is the paths in a run's diff that
+match a convention held in the runner — the files detection already reads, plus
+one universal test-and-fixture list
+([ADR-0020](docs/adr/0020-the-gate-input-set-is-a-convention.md)). Since the
+definition above is about execution-time reading, and since some gate inputs are
+never in a diff at all, no path convention could be complete. The invisible tiers
+are not left to it: ADR-0013 leaves them behind by building the tree from git
+objects. What licenses an approximate list is that it cannot be wrong in a costly
+direction — a path it claims wrongly is a loud kill and one `amends:` line, and a
+gate input it misses is carried, which is what every run did before the rule
+existed.
+
 ## Amendment
 
 A task's `amends:` frontmatter — a mapping of path glob to reason — declaring

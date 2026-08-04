@@ -166,6 +166,27 @@ describe("verification state", () => {
     expect(LedgerEntrySchema.parse(entry()).unmetGates).toBeUndefined();
     expect(LedgerEntrySchema.safeParse({ ...entry(), unmetGates: "test" }).success).toBe(false);
   });
+
+  it("carries an amendment with its reason, and the files held at the base", () => {
+    // The licence and its justification travel together (ADR-0014): a glob
+    // alone on the ledger would record that the fleet let something through
+    // without recording the argument anyone made for it.
+    const parsed = LedgerEntrySchema.parse(
+      entry({
+        amendments: [{ glob: "test/**", reason: "the asserted bound is off by one" }],
+        heldGateInputs: ["test/userService.test.ts"],
+      }),
+    );
+    expect(parsed.amendments).toEqual([{ glob: "test/**", reason: "the asserted bound is off by one" }]);
+    expect(parsed.heldGateInputs).toEqual(["test/userService.test.ts"]);
+
+    // Absent means *not recorded*, as everywhere else here — and it is the
+    // ordinary case, since a diff that touched no gate input records neither.
+    expect(LedgerEntrySchema.parse(entry()).amendments).toBeUndefined();
+    expect(LedgerEntrySchema.parse(entry()).heldGateInputs).toBeUndefined();
+    // A licence with no reason is not a licence this contract will carry.
+    expect(LedgerEntrySchema.safeParse({ ...entry(), amendments: [{ glob: "test/**" }] }).success).toBe(false);
+  });
 });
 
 describe("verdict evidence", () => {

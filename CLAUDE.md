@@ -39,6 +39,11 @@ Check whether an ADR already decided it. Notably:
   ([ADR-0004](docs/adr/0004-verification-tri-state-and-mandated-gates.md)).
 - Every runner↔operator wire shape is declared once in `@fleet/contract` and read
   tolerantly ([ADR-0001](docs/adr/0001-tolerant-reader-wire-contract.md)).
+- The verification tree holds a gate input the task did not `amends:` at the
+  base, and *which* files are gate inputs is a convention in the runner — never
+  per-target configuration
+  ([ADR-0014](docs/adr/0014-gate-inputs-are-carried-only-under-an-amendment.md),
+  [ADR-0020](docs/adr/0020-the-gate-input-set-is-a-convention.md)).
 - `fleet cosign` has no `--force`, deliberately
   ([ADR-0005](docs/adr/0005-operator-drives-the-cli-over-ssh.md)).
 

@@ -26,6 +26,32 @@ scope: [test/**]
 # do not need to know which kind it is; the registry supplies the capability,
 # `gates:` still only demands the evidence.
 gates: [test]
+# Gate inputs this task's diff may change — a mapping of path glob to the REASON
+# it may. A gate input is anything a check reads when it runs: test files and
+# fixtures, the helpers a suite loads, package.json scripts, tsconfig.json,
+# Package.swift, the Xcode project. Omit this key unless your task's job is to
+# change one; omitting it is the ordinary case.
+#
+# What it does: an amended file is carried into the verification tree with the
+# rest of the diff, so the change is verified as a whole. A gate input you do
+# NOT amend is held at the BASE version — your edit to it still ships in the PR,
+# it is simply not part of what proves the change. If source and gate
+# legitimately moved together and you forgot to amend, the base gate goes red
+# against the new source and the run is killed as an ordinary verify-failed.
+# That kill is the rule working, and it is the whole cost of forgetting.
+#
+# This is a LICENCE, the mirror of `gates:` above — that one asserts evidence
+# exists and grants nothing; this one grants and asserts nothing. The reason is
+# required and may not be empty: a glob can be added without thought, and a
+# justification cannot. It travels to the PR header, to the judge, and to the
+# ledger line, so write it for the human who will co-sign.
+#
+# Left commented out on purpose: every other key here is a constraint you should
+# start from, and this is the only one that hands something out. Uncomment it
+# when your task genuinely needs it, never as part of copying the template.
+#
+# amends:
+#   "test/rate-limit.test.ts": the asserted bound is off by one
 # Blast radius shown in the PR header: drudgery | low | medium. Default: low.
 risk: low
 # One human sentence for the PR's "Why" section. Falls back to the title.

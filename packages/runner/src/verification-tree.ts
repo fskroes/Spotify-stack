@@ -64,6 +64,37 @@ function install(root: string): void {
   }
 }
 
+/**
+ * Take the named paths from the base rather than from the diff
+ * ([ADR-0014](../../../docs/adr/0014-gate-inputs-are-carried-only-under-an-amendment.md)).
+ *
+ * Run after `git apply` rather than by filtering the patch, so the tree stays
+ * built from git objects: `HEAD` in this worktree *is* the base commit, so the
+ * base version of a file is one checkout away and never a re-parsed diff.
+ *
+ * The two cases are both the rule working. A file the base carries is restored,
+ * which is what makes a weakened or deleted test run in its original form
+ * against the shipped source. A file only the diff has — a *new* test — is
+ * removed, because a gate the change brought with it is not a gate it inherited.
+ */
+function holdAtBase(tree: string, files: string[]): void {
+  if (files.length === 0) return;
+  // `-z`, because the alternative is git's quoted output: a path with a
+  // non-ASCII byte in it comes back quoted, would not match the name the diff
+  // used, and would be read as "not in the base" — which deletes a file the
+  // base carries instead of restoring it.
+  const inBase = new Set(
+    git(tree, ["ls-tree", "-z", "-r", "--name-only", "HEAD", "--", ...files])
+      .split("\0")
+      .filter(Boolean),
+  );
+  const restore = files.filter((file) => inBase.has(file));
+  if (restore.length > 0) git(tree, ["checkout", "HEAD", "--", ...restore]);
+  for (const file of files) {
+    if (!inBase.has(file)) rmSync(path.join(tree, file), { force: true });
+  }
+}
+
 export interface VerificationTree {
   /** Absolute path of the tree. This is what `runVerify` is pointed at. */
   path: string;
@@ -82,7 +113,17 @@ export interface VerificationTree {
  * and not in the diff, so nothing has to remember to exclude them, and no
  * "restore the harness" step may be added back out of caution.
  */
-export function constructVerificationTree(opts: { workspace: string; diff: string }): VerificationTree {
+export function constructVerificationTree(opts: {
+  workspace: string;
+  diff: string;
+  /**
+   * Repo-relative paths taken from the base instead of from the diff — the
+   * un-amended gate inputs (ADR-0014). Empty on an ordinary run, which is all
+   * of them: the caller decides what is a gate input, and this function only
+   * builds the tree that answer implies.
+   */
+  hold?: string[];
+}): VerificationTree {
   // Beside the workspace it belongs to, and kept after the run for the same
   // reason the workspace is: it is the tree the verdict was actually produced
   // on, and a red verify is re-runnable there. It does not accumulate within a
@@ -120,6 +161,10 @@ export function constructVerificationTree(opts: { workspace: string; diff: strin
   // tree alone, which would end the property that the reviewed bytes and the
   // verified bytes are one artefact.
   attributed("infrastructure", () => git(treePath, ["apply", "-"], opts.diff));
+  // Between the diff and the install, which is the only order that works: a
+  // held `package.json` must be back at its base contents before the closure
+  // this tree runs the checks with is resolved from it.
+  attributed("infrastructure", () => holdAtBase(treePath, opts.hold ?? []));
   // Unconditional, with no list of dependency files that would trigger it: a
   // missing entry mis-attributes a diff-caused failure as infrastructure, and
   // an install of an already-installed closure measures ~1 s.

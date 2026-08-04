@@ -167,6 +167,51 @@ describe("buildPrBody", () => {
     }
   });
 
+  // ADR-0014: an amended gate input is a loud fact, named with its reason in
+  // the PR header. The reason is the half a reflexive operator cannot produce
+  // without thinking, so it is quoted rather than summarised.
+  it("names an amended gate input and its reason in the header", () => {
+    const body = buildPrBody(
+      input({
+        gateInputs: {
+          held: [],
+          carried: [
+            { glob: "tests/**", reason: "the asserted bound is off by one", files: ["tests/other.test.js"] },
+          ],
+        },
+      }),
+    );
+
+    expect(body).toContain("**Gate inputs**");
+    expect(body).toContain("the asserted bound is off by one");
+    expect(body).toContain("`tests/other.test.js`");
+    expect(body).toContain("verified along with the rest of the diff");
+  });
+
+  // The other half, and the one that changes what a co-signer is agreeing to:
+  // part of this diff is not part of what proved it.
+  it("says which edits shipped without being verified", () => {
+    const body = buildPrBody(
+      input({ gateInputs: { held: ["tests/other.test.js"], carried: [] } }),
+    );
+
+    expect(body).toContain("**Gate input held at the base**");
+    expect(body).toContain("the edit ships here unverified");
+    expect(body).toContain("**not** part of what proves this change");
+    // Every check that ran was green, and the recorded state is still `passed`
+    // — but the banner may not call this a verified change, because part of the
+    // diff under the reviewer's eyes is not what verification saw.
+    expect(body).not.toContain("co-signing a verified change");
+    expect(body).toContain("every check that ran was green");
+  });
+
+  it("shows no gate-input affordance on an ordinary diff", () => {
+    for (const gateInputs of [undefined, { held: [], carried: [] }]) {
+      const body = buildPrBody(input({ gateInputs }));
+      expect(body).not.toContain("Gate input");
+    }
+  });
+
   it("marks a check that never ran as skipped, not passed", () => {
     const body = buildPrBody(
       input({

@@ -126,6 +126,83 @@ describe("constructVerificationTree", () => {
     expect(existsSync(path.join(tree.path, "node_modules"))).toBe(false);
   });
 
+  // ADR-0014, the whole rule in one assertion: the change ships, and the file
+  // that judges it is the one the agent inherited.
+  it("holds a named file at the base while carrying the rest of the diff", () => {
+    const workspace = tempWorkspace({
+      "src/a.js": "export const a = 1;\n",
+      "test/a.test.js": "assert(a === 1);\n",
+    });
+    const diff = stagedDiff(workspace, {
+      "src/a.js": "export const a = 2;\n",
+      "test/a.test.js": "assert(true);\n",
+    });
+
+    const tree = constructVerificationTree({ workspace, diff, hold: ["test/a.test.js"] });
+
+    expect(readFileSync(path.join(tree.path, "src/a.js"), "utf8")).toBe("export const a = 2;\n");
+    expect(readFileSync(path.join(tree.path, "test/a.test.js"), "utf8")).toBe("assert(a === 1);\n");
+  });
+
+  // The deletion case, which is the sharpest form of moving the scoreboard: a
+  // suite that is not there cannot fail. Restoring it is the same one checkout.
+  it("restores a held file the diff deleted", () => {
+    const workspace = tempWorkspace({
+      "src/a.js": "export const a = 1;\n",
+      "test/a.test.js": "assert(a === 1);\n",
+    });
+    rmSync(path.join(workspace, "test/a.test.js"));
+    const diff = stagedDiff(workspace, { "src/a.js": "export const a = 2;\n" });
+
+    const tree = constructVerificationTree({ workspace, diff, hold: ["test/a.test.js"] });
+
+    expect(readFileSync(path.join(tree.path, "test/a.test.js"), "utf8")).toBe("assert(a === 1);\n");
+  });
+
+  // A gate the change brought with it is not a gate it inherited, so an
+  // un-amended new test is removed rather than restored — there is nothing at
+  // the base to restore it to. The rest of the diff is untouched by that.
+  it("removes a held file the base never had", () => {
+    const workspace = tempWorkspace({ "src/a.js": "export const a = 1;\n" });
+    const diff = stagedDiff(workspace, {
+      "src/a.js": "export const a = 2;\n",
+      "test/new.test.js": "assert(true);\n",
+    });
+
+    const tree = constructVerificationTree({ workspace, diff, hold: ["test/new.test.js"] });
+
+    expect(existsSync(path.join(tree.path, "test/new.test.js"))).toBe(false);
+    expect(readFileSync(path.join(tree.path, "src/a.js"), "utf8")).toBe("export const a = 2;\n");
+  });
+
+  // Order is load-bearing: the closure this tree runs the checks with is
+  // resolved from the manifest *after* the hold, so a held `package.json`
+  // cannot install what the diff asked for. A `npm ci` against the base
+  // lockfile is what proves it ran on the base manifest.
+  it("holds a manifest before the dependencies are resolved from it", () => {
+    const workspace = tempWorkspace({
+      "package.json": PACKAGE_JSON,
+      "package-lock.json": EMPTY_LOCKFILE,
+      "src/a.js": "export const a = 1;\n",
+    });
+    const diff = stagedDiff(workspace, {
+      "package.json": JSON.stringify({ name: "target", scripts: { test: "true" } }),
+      "package-lock.json": BROKEN_LOCKFILE,
+      "src/a.js": "export const a = 2;\n",
+    });
+
+    const tree = constructVerificationTree({
+      workspace,
+      diff,
+      hold: ["package.json", "package-lock.json"],
+    });
+
+    expect(JSON.parse(readFileSync(path.join(tree.path, "package.json"), "utf8")).scripts.test).toBe(
+      "node --test",
+    );
+    expect(readFileSync(path.join(tree.path, "package-lock.json"), "utf8")).toBe(EMPTY_LOCKFILE);
+  });
+
   // The cloud shape. `prepareWorkspace` shallow-clones when it is not `--local`,
   // and a worktree of a repository with no history is the one construction that
   // could plausibly behave differently there than on a developer's machine —

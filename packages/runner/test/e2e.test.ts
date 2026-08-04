@@ -22,7 +22,12 @@ const TASK_001 = path.join(CONTROL_REPO, "tasks", "examples", "001-ts-migrate-ht
 const SCOPE_TASK = path.join(__dirname, "fixtures", "scope-task.md");
 const GATES_UNMET_TASK = path.join(__dirname, "fixtures", "gates-unmet-task.md");
 const GATES_MET_TASK = path.join(__dirname, "fixtures", "gates-met-task.md");
+const AMENDS_TASK = path.join(__dirname, "fixtures", "amends-task.md");
+const UNAMENDED_TASK = path.join(__dirname, "fixtures", "unamended-task.md");
 const GOOD_PATCH = path.join(__dirname, "fixtures", "001-good.patch");
+/** Moves the scoreboard: it removes a behaviour from the source and rewrites
+ *  the assertion that would have caught the removal, in one diff. */
+const SCOREBOARD_PATCH = path.join(__dirname, "fixtures", "001-scoreboard.patch");
 const BAD_PATCH = path.join(__dirname, "fixtures", "001-bad.patch");
 /** A copy of the good patch whose `.retry.patch` reverses it, so a resume
  *  reverts the workspace instead of correcting it. Kept separate from
@@ -398,6 +403,99 @@ describe("runner e2e (mock engine, hermetic)", () => {
     // diff, and this summary.
     expect(result.verify?.summary).toContain("GATES UNMET");
     expect(result.verify?.summary).toContain("live-contract-check");
+  });
+
+  // ADR-0014, end to end and on both sides of the licence. One patch does the
+  // thing the rule exists for — it removes a behaviour from the source *and*
+  // rewrites the assertion that would have caught it — and the two tasks differ
+  // only in whether they amend the file that judges the change.
+  it("un-amended gate input: the base assertion runs against the shipped source, and kills it", async () => {
+    const ledgerPath = tmpLedger();
+    vi.stubEnv("GITHUB_ACTIONS", "");
+    const result = await run({
+      controlRepo: CONTROL_REPO,
+      taskPath: UNAMENDED_TASK,
+      repoName: "demo-ts-service",
+      local: true,
+      dryRun: true,
+      engine: "mock",
+      mockPatch: SCOREBOARD_PATCH,
+      judgeMode: "approve",
+      ledgerPath,
+      artifactsRoot: tmpArtifacts(),
+      log: quiet,
+    });
+
+    // The whole point: without the rule this run is green, because the weakened
+    // test is the one that would have run. The verification tree took that file
+    // from the base, so the question asked was whether the shipped source
+    // satisfies the gate the agent inherited — and it does not.
+    expect(result.status).toBe("verify-failed");
+    expect(result.verify?.state).toBe("failed");
+    // Named in the failure: the test that ran is the one this diff rewrote away.
+    expect(result.verify?.summary).toContain("rejects on non-2xx responses");
+    expect(result.gateInputs?.held).toEqual(["test/http.test.ts"]);
+    expect(result.gateInputs?.carried).toEqual([]);
+
+    // The edit still shipped in the diff. It simply was not part of what proved
+    // the change — "stays in the diff" is a claim about the diff, never a
+    // promise about the run.
+    expect(result.diff).toContain("test/http.test.ts");
+    expect(result.diff).toContain("returns the body whatever the status is");
+
+    const entries = readLedger(ledgerPath);
+    expect(entries[0].heldGateInputs).toEqual(["test/http.test.ts"]);
+    expect(entries[0].amendments).toBeUndefined();
+
+    // And the judge, whose whole view of verification is this summary, is told.
+    expect(result.verify?.summary).toContain("GATE INPUTS HELD AT THE BASE");
+  });
+
+  it("amended gate input: the licence carries it, and the reason reaches every surface", async () => {
+    const ledgerPath = tmpLedger();
+    vi.stubEnv("GITHUB_ACTIONS", "");
+    const result = await run({
+      controlRepo: CONTROL_REPO,
+      taskPath: AMENDS_TASK,
+      repoName: "demo-ts-service",
+      local: true,
+      dryRun: true,
+      engine: "mock",
+      mockPatch: SCOREBOARD_PATCH,
+      judgeMode: "approve",
+      ledgerPath,
+      artifactsRoot: tmpArtifacts(),
+      log: quiet,
+    });
+
+    // Same patch, same target, opposite fate — because the control repo, which
+    // the agent cannot write, licensed this one. A legitimate test-fixing task
+    // is not a task class this rule deletes.
+    expect(result.status).toBe("approved");
+    expect(result.verify?.state).toBe("passed");
+    expect(result.gateInputs?.held).toEqual([]);
+    expect(result.gateInputs?.carried).toEqual([
+      {
+        glob: "test/**",
+        reason: "the assertion pinned a behaviour this task deliberately removes",
+        files: ["test/http.test.ts"],
+      },
+    ]);
+
+    // The three surfaces ADR-0014 names, each carrying the reason rather than
+    // only the glob.
+    const entries = readLedger(ledgerPath);
+    expect(entries[0].amendments).toEqual([
+      { glob: "test/**", reason: "the assertion pinned a behaviour this task deliberately removes" },
+    ]);
+    expect(entries[0].heldGateInputs).toBeUndefined();
+
+    const preview = readFileSync(path.join(result.artifactsDir, "pr-preview.md"), "utf8");
+    expect(preview).toContain("**Gate inputs**");
+    expect(preview).toContain("the assertion pinned a behaviour this task deliberately removes");
+
+    expect(result.verify?.summary).toContain("GATE INPUTS CARRIED UNDER AN AMENDMENT");
+    expect(result.verify?.summary).not.toContain("HELD AT THE BASE");
   });
 
   it("gate mandate met: the run keeps the green it earned, with nothing outstanding", async () => {

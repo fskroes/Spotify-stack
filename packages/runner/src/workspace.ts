@@ -323,3 +323,23 @@ export function stagedFiles(workspace: string): string[] {
     .map((line) => line.trim())
     .filter(Boolean);
 }
+
+/**
+ * Every path the staged diff changes the content of, counting **both sides of a
+ * rename**. Call after stagedDiff.
+ *
+ * `stagedFiles` reports the diff the way a reviewer reads it, and git's rename
+ * detection is why: a moved file is one entry at its destination. That is the
+ * right answer for scope and the wrong one for [gate
+ * inputs](../../../CONTEXT.md#gate-input), where the source path is a gate the
+ * diff *removed*. Holding only the destination would delete the new copy and
+ * leave the rename's deletion standing, so a suite renamed away would vanish
+ * from the verification tree entirely — a green earned by having nothing left
+ * to run.
+ */
+export function stagedPaths(workspace: string): string[] {
+  return git(workspace, ["diff", "--cached", "--name-only", "--no-renames"])
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}

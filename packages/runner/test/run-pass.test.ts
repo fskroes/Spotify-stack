@@ -11,7 +11,7 @@
  * *does* is covered in e2e; what a pass does with its answer is covered here.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import picomatch from "picomatch";
@@ -68,11 +68,12 @@ const EMPTY_LOCKFILE = JSON.stringify({
   packages: { "": { name: "target" } },
 });
 
-const taskFor = (scope?: string[]): Task => ({
+const taskFor = (scope?: string[], amends?: Task["amends"]): Task => ({
   id: "unit-pass",
   title: "a pass under test",
   targets: ["demo"],
   scope,
+  amends,
   risk: "low",
   why: "unit",
   body: "do the thing",
@@ -418,6 +419,11 @@ describe("a failed dependency install is attributed, not filed", () => {
     });
     const h = harness({
       workspace,
+      // A lockfile is a gate input, so this cell is now reached only through a
+      // licence (ADR-0014). That is the honest reading of both records
+      // together: a change can break the dependency resolution the checks run
+      // on **only if the task let it near the manifest in the first place.**
+      task: taskFor(undefined, [{ glob: "package-lock.json", reason: "the pinned version is yanked" }]),
       onRun: () => {
         writeFileSync(path.join(workspace, "package-lock.json"), BROKEN_LOCKFILE);
         return engineResult("updated the lockfile");
@@ -432,6 +438,62 @@ describe("a failed dependency install is attributed, not filed", () => {
     expect(pass.status).toBe("verify-failed");
     expect(pass.resultText).toMatch(/dependency install failed/);
     expect(h.artifacts.get("verify.log")).toMatch(/dependency install failed/);
+  });
+
+  // The same edit without the licence, which is the ordinary shape: the tree
+  // installs from the manifest the agent inherited, so the closure the checks
+  // execute is one no diff can reach. The edit still ships.
+  it("installs from the base manifest when the diff's edit to it is unamended", async () => {
+    const workspace = tempWorkspace({
+      "package.json": PACKAGE_JSON,
+      "package-lock.json": EMPTY_LOCKFILE,
+    });
+    const h = harness({
+      workspace,
+      onRun: () => {
+        writeFileSync(path.join(workspace, "package-lock.json"), BROKEN_LOCKFILE);
+        return engineResult("updated the lockfile");
+      },
+    });
+
+    const pass = (await runPass(h.ctx)) as ApprovedPass;
+
+    expect(pass.outcome).toBe("approved");
+    expect(pass.gateInputs.held).toEqual(["package-lock.json"]);
+    expect(pass.diff).toContain("package-lock.json");
+  });
+});
+
+/**
+ * ADR-0014 at the pass, on the case a path list read off the diff would miss.
+ * Git reports a rename as one entry at its destination, so a suite *moved* out
+ * of the tree looks like a file that only ever existed at the new path — and
+ * holding just that path would delete the copy and leave the deletion standing,
+ * verifying a tree with no suite in it at all.
+ */
+describe("a gate input the diff renamed away", () => {
+  it("is held at the path the base knew it by", async () => {
+    const workspace = tempWorkspace({ "a.test.js": "assert(true);\n" });
+    const h = harness({
+      workspace,
+      onRun: () => {
+        rmSync(path.join(workspace, "a.test.js"));
+        writeFileSync(path.join(workspace, "b.test.js"), "assert(true);\n");
+        return engineResult("moved the suite");
+      },
+    });
+
+    const pass = (await runPass(h.ctx)) as ApprovedPass;
+
+    // Both sides of the move are gate inputs, and neither was amended.
+    expect(pass.gateInputs.held).toEqual(["a.test.js", "b.test.js"]);
+    // So the tree still holds the suite the agent inherited, at its own path.
+    const tree = `${workspace}.verify`;
+    expect(readFileSync(path.join(tree, "a.test.js"), "utf8")).toBe("assert(true);\n");
+    expect(existsSync(path.join(tree, "b.test.js"))).toBe(false);
+    // And the move itself still ships — this is a claim about the tree, never
+    // about the diff.
+    expect(pass.diff).toContain("b.test.js");
   });
 });
 
