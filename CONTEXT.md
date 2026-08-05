@@ -56,6 +56,30 @@ carries no [verification state](#verification-state) at all, because an earlier
 pass's green belongs to an earlier diff. Not an [attempt](#attempt) — an attempt
 is one model invocation on one [rail](#rail), so a single pass contains two.
 
+## Workspace
+
+The disposable directory one [run](#run) acts in: a tree materialised from the
+target's git objects at a single base commit, with dependencies present on top.
+It is the only place the agent may write, and the only place the [judge](#judge)
+may read ([ADR-0011](docs/adr/0011-the-runner-owns-the-judges-reads.md)).
+
+Its base is a **commit, or there is no run**. An operator's uncommitted edit, an
+untracked file, and ignored build output are not in it — so they are not in the
+baseline, not in the diff, and not in the pull request
+([ADR-0018](docs/adr/0018-the-local-workspace-is-a-checkout.md)). Local and cloud
+runs differ in where the objects come from and in nothing else. *Which* commit is
+the base is a separate question, answered by what the run ships against
+([ADR-0019](docs/adr/0019-a-shipping-run-is-based-on-what-it-ships-against.md)).
+
+Not the **verification tree**, and the two must not be collapsed. The workspace is
+where the change is written and is explicitly no longer the verdict of record; the
+verification tree is built fresh from the base commit plus the diff, and is what
+the checks of record run on
+([ADR-0013](docs/adr/0013-verification-runs-on-the-shipped-artefact.md)). They hold
+[gate inputs](#gate-input) differently, they install differently, and a run that
+goes green in one and red in the other is a finding rather than an artefact
+([ADR-0017](docs/adr/0017-the-in-session-verify-is-the-retry-loop.md)).
+
 ## Engine
 
 The thing that produces the diff — `claude` (headless Claude Code, the default)
