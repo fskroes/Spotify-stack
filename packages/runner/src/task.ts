@@ -38,6 +38,14 @@ export interface Task {
    * a typo and a deliberately unrunnable mandate are indistinguishable here.
    * Both come out as unmet gates and an `inconclusive` verification — loud,
    * never a false green. Flat and applied to every target, mirroring `scope`.
+   *
+   * The names verification can detect today: `eslint`, `tsc`, `test`,
+   * `swift-build`, `swift-test`, `xcodebuild-build`, `xcodebuild-test` — plus
+   * whatever extra checks a target registers in the fleet registry (ADR-0009).
+   * A check in an independent nested workspace carries that workspace's
+   * directory as a suffix (`test:packages/api`); the root workspace's checks
+   * are unsuffixed. Matching is exact, so bare `test` mandates the root suite
+   * only — mandate a nested check by its full suffixed name.
    */
   gates?: string[];
   /**

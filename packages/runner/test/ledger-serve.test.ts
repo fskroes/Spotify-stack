@@ -30,13 +30,13 @@ function tmpControlRepo(): { root: string; ledgerPath: string } {
   const root = mkdtempSync(path.join(os.tmpdir(), "fleet-operator-"));
   const ledgerPath = path.join(root, "fleet", "ledger.jsonl");
   mkdirSync(path.join(root, "fleet"), { recursive: true });
-  mkdirSync(path.join(root, "tasks"), { recursive: true });
+  mkdirSync(path.join(root, "tasks", "drafts"), { recursive: true });
   writeFileSync(
     path.join(root, "fleet", "repos.yaml"),
     "repos:\n  - name: demo-api\n    language: typescript\n    default_branch: main\n",
   );
   writeFileSync(
-    path.join(root, "tasks", "007-api.md"),
+    path.join(root, "tasks", "drafts", "007-api.md"),
     "---\nid: 007-api\ntitle: Add operator API\ntargets: [demo-api]\nrisk: low\n---\nBuild it.\n",
   );
   return { root, ledgerPath };
@@ -188,6 +188,25 @@ describe("serveLedger", () => {
       tasks: [{ id: "007-api", title: "Add operator API" }],
       repos: [{ name: "demo-api", language: "typescript", defaultBranch: "main" }],
     });
+  });
+
+  it("catalogs only authored tasks — tasks/drafts and tasks/private, never fixtures", async () => {
+    const { root, ledgerPath } = tmpControlRepo();
+    const put = (dir: string, id: string, title: string) => {
+      mkdirSync(path.join(root, "tasks", dir), { recursive: true });
+      writeFileSync(
+        path.join(root, "tasks", dir, `${id}.md`),
+        `---\nid: ${id}\ntitle: ${title}\ntargets: [demo-api]\nrisk: low\n---\nBody.\n`,
+      );
+    };
+    put("examples", "900-fixture", "A teaching fixture");
+    put("drafts", "tighten-retry-loop", "Cap the backoff");
+    put("private", "rotate-api-token", "Rotate the token");
+
+    handle = await serveLedger({ ledgerPath, controlRepo: root, port: 0 });
+    const catalog = (await (await fetch(`${handle.url}/api/catalog`)).json()) as { tasks: Array<{ id: string }> };
+
+    expect(catalog.tasks.map((t) => t.id)).toEqual(["007-api", "rotate-api-token", "tighten-retry-loop"]);
   });
 
   it("round-trip: every JSON endpoint parses against the wire contract", async () => {

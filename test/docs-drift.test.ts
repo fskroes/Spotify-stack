@@ -134,13 +134,19 @@ describe("docs reading list", () => {
   });
 });
 
-describe("task template gate vocabulary", () => {
+describe("task gate vocabulary", () => {
   /**
    * The check names verification can emit, read out of the detector itself.
    * Names are template literals carrying a nested-workspace suffix
    * (`test${suffix}` → `test:packages/api` in a nested workspace, `test` at the
-   * root); the base name is what the template documents.
+   * root); the base name is what the docs enumerate.
+   *
+   * Re-pointed (2026-08-05): the enumeration lived in tasks/TEMPLATE.md until
+   * `fleet draft` became the only authoring path and the template was deleted.
+   * Its new home is the `gates` field doc on the `Task` type — the place the
+   * repo docs now send a task author.
    */
+  const GATES_DOC = "packages/runner/src/task.ts";
   const detectedCheckNames = (): string[] => {
     const src = read("packages/mcp-verify/src/verify.js");
     const names = [...src.matchAll(/name:\s*[`"]([a-z-]+)(\$\{suffix\})?[`"]/g)].map((m) => m[1]);
@@ -149,18 +155,18 @@ describe("task template gate vocabulary", () => {
   };
 
   it("documents every check name a task may mandate as a gate", () => {
-    const template = read("tasks/TEMPLATE.md");
-    const missing = detectedCheckNames().filter((name) => !template.includes(name));
+    const doc = read(GATES_DOC);
+    const missing = detectedCheckNames().filter((name) => !doc.includes(name));
 
-    expect(missing, `tasks/TEMPLATE.md does not document gate name(s): ${missing.join(", ")}`).toEqual([]);
+    expect(missing, `${GATES_DOC} does not document gate name(s): ${missing.join(", ")}`).toEqual([]);
   });
 
   it("explains that a nested workspace's checks are suffixed", () => {
     // Matching is exact (`findUnmetGates` uses set membership), so a task
-    // mandating a nested check must name it in full. A template that documents
+    // mandating a nested check must name it in full. A doc that enumerates
     // only base names silently hides that.
-    const template = read("tasks/TEMPLATE.md");
-    expect(template).toMatch(/suffix/i);
-    expect(template).toMatch(/test:[\w./-]+/);
+    const doc = read(GATES_DOC);
+    expect(doc).toMatch(/suffix/i);
+    expect(doc).toMatch(/test:[\w./-]+/);
   });
 });

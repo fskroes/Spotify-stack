@@ -23,6 +23,7 @@ import { resolveOwner, targetRepos } from "@fleet/runner/fleet";
 import { knowledgeArtifactPath, resolveKnowledgeRepo } from "@fleet/runner/knowledge";
 import { extractCliEnvelope, sanitizeCliEnvelopeUsage, type LedgerEntry, type PrLiveState } from "@fleet/contract";
 import { invokeClaudeCli } from "./knowledge-cli.js";
+import { resolveTaskPath } from "./resolve-task.js";
 import {
   buildCorrectionRow,
   buildDraftPrompt,
@@ -40,18 +41,6 @@ import { cosign, formatCosignResult } from "@fleet/runner/cosign";
 import { compileKnowledgeProse } from "./knowledge-compile.js";
 
 const controlRepo = process.cwd();
-
-/** Accept a task id (looked up under tasks/) or a path to a task file. */
-function resolveTaskPath(taskArg: string): string {
-  if (existsSync(taskArg)) return path.resolve(taskArg);
-  // tasks/private holds git-ignored project tasks (see tasks/private/README.md);
-  // searched first so a local task can shadow a public one of the same id.
-  for (const dir of ["tasks/private", "tasks/examples", "tasks/onramp", "tasks"]) {
-    const candidate = path.join(controlRepo, dir, `${taskArg}.md`);
-    if (existsSync(candidate)) return candidate;
-  }
-  throw new Error(`task not found: ${taskArg} (looked for a file and under tasks/)`);
-}
 
 function gh(args: string[], opts: { cwd?: string } = {}): string {
   return execFileSync("gh", args, { encoding: "utf8", cwd: opts.cwd ?? controlRepo });
@@ -275,7 +264,7 @@ program
 
     if (isRefusal(result)) {
       console.log(`draft refused: ${result.reason}`);
-      console.log("(a refusal costs one message; a guessed scope costs the cage — author the task by hand)");
+      console.log("(a refusal costs one message; a guessed scope costs the cage — sharpen the intent and draft again)");
       process.exitCode = 1;
       return;
     }
@@ -387,7 +376,7 @@ program
   .option("--recompile-knowledge", "recompile drifted knowledge before the run (opt-in real agent spend, ~$0.79)", false)
   .action(async (taskArg: string, options) => {
     if (options.recompileKnowledge) await recompileKnowledgeIfStale(options.repo);
-    const taskPath = resolveTaskPath(taskArg);
+    const taskPath = resolveTaskPath(controlRepo, taskArg);
     recordDraftCorrection(taskPath);
     const result = await run({
       controlRepo,
@@ -417,7 +406,7 @@ program
   .argument("<task>", "task id or path to a task file")
   .option("--repo <name>", "dispatch to a single repo instead of the whole fleet")
   .action((taskArg: string, options) => {
-    const task = loadTask(resolveTaskPath(taskArg));
+    const task = loadTask(resolveTaskPath(controlRepo, taskArg));
     if (options.repo) {
       gh(["workflow", "run", "agent-task.yml", "-f", `task_id=${task.id}`, "-f", `target_repo=${options.repo}`]);
       console.log(`dispatched agent-task.yml: ${task.id} on ${options.repo}`);
@@ -434,7 +423,7 @@ program
   .description("Report Actions runs and PRs for a task as a markdown table")
   .argument("<task>", "task id or path to a task file")
   .action((taskArg: string) => {
-    const task = loadTask(resolveTaskPath(taskArg));
+    const task = loadTask(resolveTaskPath(controlRepo, taskArg));
     const repos = targetRepos(controlRepo, task.targets);
     const owner = resolveOwner();
 

@@ -171,8 +171,10 @@ export function listArtifacts(
 }
 
 function taskCatalog(controlRepo: string): OperatorTask[] {
+  // The same directories `fleet run` resolves a bare id from: authored tasks
+  // only. Fixture directories (tasks/examples, tasks/onramp) never dispatch.
   const root = path.join(controlRepo, "tasks");
-  const dirs = [root, path.join(root, "examples"), path.join(root, "onramp"), path.join(root, "private")];
+  const dirs = [path.join(root, "drafts"), path.join(root, "private")];
   const tasks = new Map<string, OperatorTask>();
   for (const dir of dirs) {
     let files: string[];
@@ -182,7 +184,7 @@ function taskCatalog(controlRepo: string): OperatorTask[] {
       continue;
     }
     for (const name of files.sort()) {
-      if (!name.endsWith(".md") || name === "README.md" || name === "TEMPLATE.md") continue;
+      if (!name.endsWith(".md") || name === "README.md") continue;
       try {
         const task = loadTask(path.join(dir, name));
         tasks.set(task.id, { id: task.id, title: task.title, targets: task.targets, risk: task.risk });

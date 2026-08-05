@@ -122,7 +122,7 @@ git config core.hooksPath .githooks   # enable the public-repo scrub hook
 
 pnpm test    # unit + hermetic e2e — real eslint, tsc and vitest in temp workspaces
 
-pnpm fleet run 001-ts-migrate-http-client --repo demo-ts-service --local \
+pnpm fleet run tasks/examples/001-ts-migrate-http-client.md --repo demo-ts-service --local \
   --engine mock --mock-patch packages/runner/test/fixtures/001-good.patch --judge approve
 
 cat artifacts/001-ts-migrate-http-client/demo-ts-service/diff.patch
@@ -131,7 +131,7 @@ cat artifacts/001-ts-migrate-http-client/demo-ts-service/diff.patch
 <div align="center"><sub>Then the real thing, on your Claude subscription:</sub></div>
 
 ```sh
-pnpm fleet run 001-ts-migrate-http-client --repo demo-ts-service --local
+pnpm fleet run tasks/examples/001-ts-migrate-http-client.md --repo demo-ts-service --local
 ```
 
 <div align="center">

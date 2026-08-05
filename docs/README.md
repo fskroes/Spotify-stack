@@ -39,7 +39,7 @@ One line per unit: **what it owns**, not how it works. Open the source for how.
 | [`packages/knowledge`](../packages/knowledge) | Structural maps, compiled [knowledge prose](../CONTEXT.md#knowledge-prose), [grounding](../CONTEXT.md#grounding-ratio) and [drift](../CONTEXT.md#drift) checks, and the `ask` seam. See [ADR-0006](adr/0006-pre-compiled-knowledge-layer.md). |
 | [`apps/operator-desktop`](../apps/operator-desktop) | The Tauri workbench. Reads the contract, drives the CLI over SSH, and owns **no** fleet logic of its own. See [ADR-0005](adr/0005-operator-drives-the-cli-over-ssh.md). |
 | [`agent-config/`](../agent-config) | The agent's cage: permission allowlist, MCP config, Stop hook. Injected into each workspace as `.claude/`. |
-| [`tasks/`](../tasks) | Version-controlled task prompts + the [`TEMPLATE.md`](../tasks/TEMPLATE.md) that documents every frontmatter field. |
+| [`tasks/`](../tasks) | Task prompts. Authored only by `fleet draft` (into git-ignored `tasks/drafts/`); `examples/` and `onramp/` are fixtures, run by explicit path. Frontmatter fields are documented on the `Task` type in [`packages/runner/src/task.ts`](../packages/runner/src/task.ts). |
 | [`fleet/`](../fleet) | `repos.yaml` (target registry), `ledger.jsonl` (every run, shipped or killed), `evidence/` (the canonical per-run record: model-usage documents, and the [retained kill](../CONTEXT.md#retained-kill) a killed run leaves behind). |
 | [`.github/workflows/`](../.github/workflows) | Thin wrappers around the same CLI — cloud is a dispatch mechanism, not a second implementation. |
 

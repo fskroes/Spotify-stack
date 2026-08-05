@@ -84,8 +84,10 @@ that carry the design weight. Read it before crossing one.
 ## Contributing a task prompt
 
 Task prompts are code here — they are version-controlled, reviewed, and
-validated. [`tasks/TEMPLATE.md`](tasks/TEMPLATE.md) documents every frontmatter
-field; [`tasks/examples/`](tasks/examples) are working examples. A prompt worth
+validated. `fleet draft` is the only path that authors one; the frontmatter
+fields are documented on the `Task` type in
+[`packages/runner/src/task.ts`](packages/runner/src/task.ts), and
+[`tasks/examples/`](tasks/examples) are working examples. A prompt worth
 merging carries an end state, preconditions (with the `NO_CHANGES_NEEDED`
 sentinel), before/after examples, a verifiable goal, and an atomic scope.
 

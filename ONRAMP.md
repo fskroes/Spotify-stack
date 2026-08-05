@@ -15,7 +15,7 @@ Run the first task as a dry run. Nothing leaves your machine — no branch, no
 PR, no network side effects:
 
 ```sh
-pnpm fleet run onramp-1-feed-tests --repo demo-feed-service
+pnpm fleet run tasks/onramp/onramp-1-feed-tests.md --repo demo-feed-service
 ```
 
 Then read what a reviewer would have been given:
@@ -36,7 +36,7 @@ contract every fleet PR has to meet.
 Run the second task for real:
 
 ```sh
-pnpm fleet run onramp-2-args-tests --repo demo-feed-service --pr
+pnpm fleet run tasks/onramp/onramp-2-args-tests.md --repo demo-feed-service --pr
 ```
 
 Read the PR as it's presented. Note what you are being asked to do: not
@@ -65,7 +65,7 @@ advertising; the kill log is why the successes mean something.
 Run a real task — a 004-class change on a real repo:
 
 ```sh
-pnpm fleet run 004-upstream-failure-mode-tests --repo demo-feed-service --pr
+pnpm fleet run tasks/004-upstream-failure-mode-tests.md --repo demo-feed-service --pr
 ```
 
 From here on you're using the fleet, not auditing it. If a wrong change ever
