@@ -184,6 +184,10 @@ automation: that question becomes decidable — not decided — at
 `GATE_2_DECIDABLE_AT` rows with zero `unreviewed`, and a single `unreviewed`
 row voids that form entirely. The arithmetic and its rulings are signed in
 [`docs/2026-08-05-step-1-requirements-named.md`](docs/2026-08-05-step-1-requirements-named.md).
+This "gate 2" is a panel gate — a decision threshold — not a
+[mandated gate](#mandated-gate); the panel's other numbered gates are answered
+or deleted
+([ADR-0022](docs/adr/0022-gate-3-is-deleted-absorbed-by-gate-2s-voiding-rule.md)).
 
 ## PR live state
 

@@ -100,3 +100,11 @@ before the process has been exercised (the algorithm's step 2). The count is
 read by hand until the ruling-3 ADR creates an ongoing need for a surface. The
 number itself lives once in code, as `GATE_2_DECIDABLE_AT` in
 `packages/intake/src/correction-log.ts`, beside the outcomes it counts.
+
+## Second addendum, same date — gate 3 deleted
+
+Gate 3's discipline sentence in Requirement A is superseded by
+[ADR-0022](adr/0022-gate-3-is-deleted-absorbed-by-gate-2s-voiding-rule.md):
+gate 3 is deleted as provably subsumed by ruling 1 above, phase two's price
+is restated as gates 1 and 2, and gate 2's enlarged scope is re-owned there.
+The sentence itself stands unrewritten, per this repo's supersession rule.
