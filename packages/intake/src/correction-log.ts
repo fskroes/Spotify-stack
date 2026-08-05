@@ -21,6 +21,18 @@ import { scopeKey } from "./draft.js";
 export const CORRECTION_OUTCOMES = ["narrowed", "reviewed-unchanged", "unreviewed"] as const;
 export type CorrectionOutcome = (typeof CORRECTION_OUTCOMES)[number];
 
+/**
+ * Gate 2's row count: class-level co-sign automation becomes *decidable* — not
+ * decided — once this many rows exist with zero `unreviewed`. 30 is the
+ * smallest N where zero failures bound the true unreviewed rate below 10% at
+ * 95% confidence (rule of three: 3/N). One `unreviewed` row voids the
+ * zero-failure form; the panel reconvenes on the number (≈47 at one failure)
+ * rather than waiting it out. Signed in
+ * `docs/2026-08-05-step-1-requirements-named.md`; recompute from the rule of
+ * three, never re-grow by comfort.
+ */
+export const GATE_2_DECIDABLE_AT = 30;
+
 /** The sidecar `fleet draft` writes next to the task file: what was drafted. */
 export interface DraftRecord {
   id: string;

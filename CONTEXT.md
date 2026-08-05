@@ -173,6 +173,18 @@ executed through the gate (`fleet cosign`). Distinct from [PR live
 state](#pr-live-state): the co-sign is the act; the PR's live state is the
 evidence of it.
 
+## Correction log
+
+The record of drafted scope versus approved scope — one row per draft, three
+outcomes, never two: `narrowed` (a human edited the scope, either direction),
+`reviewed-unchanged` (a human looked and changed nothing), `unreviewed` (nobody
+looked). The first labelled dataset the system holds about the operator's own
+judgement, and the evidence base for trusting class-level [co-sign](#co-sign)
+automation: that question becomes decidable — not decided — at
+`GATE_2_DECIDABLE_AT` rows with zero `unreviewed`, and a single `unreviewed`
+row voids that form entirely. The arithmetic and its rulings are signed in
+[`docs/2026-08-05-step-1-requirements-named.md`](docs/2026-08-05-step-1-requirements-named.md).
+
 ## PR live state
 
 GitHub's current answer about a shipped run's pull request — open, merged, or

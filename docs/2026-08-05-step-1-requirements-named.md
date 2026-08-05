@@ -76,3 +76,27 @@ Standing rules adopted from this session:
 
 1. A requirement with no name attached does not survive the next panel.
 2. No ADR 23 before the next shipped merge to a fleet target.
+
+## Addendum, same date — the threshold grilled
+
+A follow-up session walked requirement A's edges. Three rulings, same owner:
+
+1. **One `unreviewed` row voids the zero-failure form.** Nothing restarts and
+   no window slides — flushing a failure with more waiting is the comfort
+   arithmetic this doc forbids. A failure is data: the panel reconvenes on the
+   number (rule of three with one failure gives N ≈ 47), and the new N is a
+   signed choice again.
+2. **Every row the current three-outcome instrument produced counts.** The
+   instrument did not change on the signing date; only the requirement's
+   wording did. State at this addendum: 2 of 30 rows, both clean.
+3. **Thirty clean rows makes the automation decidable, not decided.** The
+   decision is taken separately, signed, as an ADR — and it queues behind the
+   next shipped merge per standing rule 2. It may still come out "no" for
+   reasons the row count cannot see.
+
+The session also considered, and deleted, a `fleet report` line showing the
+count: tooling for a two-row file consulted at panel cadence is process added
+before the process has been exercised (the algorithm's step 2). The count is
+read by hand until the ruling-3 ADR creates an ongoing need for a surface. The
+number itself lives once in code, as `GATE_2_DECIDABLE_AT` in
+`packages/intake/src/correction-log.ts`, beside the outcomes it counts.
