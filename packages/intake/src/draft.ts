@@ -191,7 +191,7 @@ export function renderDraft(draft: Draft): string {
 
 /** The scope as the runner will read it back, for comparing a draft to its edit. */
 export function scopeKey(scope: readonly string[]): string {
-  return [...scope].map((glob) => glob.trim()).sort().join(" ");
+  return [...scope].map((glob) => glob.trim()).sort().join("\u0000");
 }
 
 function slugify(raw: string): string {
