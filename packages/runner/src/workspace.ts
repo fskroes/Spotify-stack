@@ -12,6 +12,7 @@ import {
 import { resolveLocalSource, type FleetRepo } from "./fleet.js";
 import { ensureDependencies } from "./install.js";
 import { type VerifierCheck } from "./verifiers.js";
+import { ensureXcodeProject } from "./xcodegen.js";
 import { knowledgeArtifactPath } from "./knowledge.js";
 
 /**
@@ -194,6 +195,10 @@ export function prepareWorkspace(opts: {
   // ordering just means the install lands untracked, exactly where the
   // `npm-install` check used to put it.
   ensureDependencies(workspace);
+  // After the baseline commit for the same reason, and a sharper one: that
+  // commit stages ignored paths with `-f`, so a project generated before it
+  // would be baked into the base the change is diffed against (ADR-0023).
+  ensureXcodeProject(workspace);
 
   return workspace;
 }

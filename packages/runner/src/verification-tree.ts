@@ -3,6 +3,7 @@ import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { nestedWorkspaces } from "@fleet/mcp-verify";
 import { git } from "./workspace.js";
+import { generateXcodeProject } from "./xcodegen.js";
 
 const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_BUFFER = 32 * 1024 * 1024;
@@ -141,6 +142,10 @@ export function constructVerificationTree(opts: {
   // applied is what lets a broken environment be told apart from a change that
   // broke its own dependency resolution — with no machinery beyond the sequence.
   attributed("infrastructure", () => install(treePath));
+  // Same sequence, same attribution, one more materialisation: a project spec
+  // that cannot generate at the base is the target's own file being broken, and
+  // no verdict on the change exists (ADR-0023).
+  attributed("infrastructure", () => generateXcodeProject(treePath));
   // The patch applied is the same text the judge reviews and the PR ships, which
   // is the whole rule (ADR-0013): verify the thing you are going to ship.
   //
@@ -160,6 +165,14 @@ export function constructVerificationTree(opts: {
   // missing entry mis-attributes a diff-caused failure as infrastructure, and
   // an install of an already-installed closure measures ~1 s.
   attributed("change", () => install(treePath));
+  // After the hold, so the project is generated from the `project.yml` that
+  // judges this change — held at the base unless the task amended it. The spec
+  // is the gate input now; the project is what the spec says (ADR-0023).
+  //
+  // Unconditional like the install above, and for the same reason: this second
+  // point is the only thing that can tell a diff that broke its own project
+  // spec from a target whose spec was already broken.
+  attributed("change", () => generateXcodeProject(treePath));
 
   return { path: treePath, base };
 }

@@ -57,6 +57,19 @@ const EMPTY_LOCKFILE = JSON.stringify({
   packages: { "": { name: "target" } },
 });
 
+/** Is a real `xcodegen` on this host? Only the generation tests need one. */
+const HAS_XCODEGEN = (() => {
+  try {
+    execFileSync("xcodegen", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+/** Generating is darwin-only (see xcodegen.ts), and here the platform is real. */
+const CAN_GENERATE = HAS_XCODEGEN && process.platform === "darwin";
+const SPEC = "name: Foo\ntargets:\n  Foo:\n    type: application\n    platform: macOS\n    sources: [Sources]\n";
+
 function constructionError(fn: () => unknown): TreeConstructionError {
   try {
     fn();
@@ -201,6 +214,65 @@ describe("constructVerificationTree", () => {
       "node --test",
     );
     expect(readFileSync(path.join(tree.path, "package-lock.json"), "utf8")).toBe(EMPTY_LOCKFILE);
+  });
+
+  // ADR-0023, the whole of it in one assertion: the project is not in the base
+  // and not in the diff, and it is in the tree — so `detect()`, which runs after
+  // this function and lists the tree, finds `xcodebuild-*` exactly as it found
+  // them when the file was checked in.
+  it.skipIf(!CAN_GENERATE)("generates the Xcode project into a tree whose base has none", () => {
+    const workspace = tempWorkspace({ "project.yml": SPEC, "Sources/main.swift": 'print("a")\n' });
+    const diff = stagedDiff(workspace, { "Sources/main.swift": 'print("b")\n' });
+
+    const tree = constructVerificationTree({ workspace, diff });
+
+    expect(existsSync(path.join(tree.path, "Foo.xcodeproj", "project.pbxproj"))).toBe(true);
+    expect(readFileSync(path.join(tree.path, "Sources/main.swift"), "utf8")).toBe('print("b")\n');
+  });
+
+  // ADR-0016 §3 again, now for generation. The target's own `project.yml` is
+  // broken at the base, so no verdict on the change exists.
+  it.skipIf(!CAN_GENERATE)("attributes a spec that cannot generate at the base to infrastructure", () => {
+    const workspace = tempWorkspace({
+      "project.yml": "targets: [not a target map\n",
+      "Sources/main.swift": 'print("a")\n',
+    });
+    const diff = stagedDiff(workspace, { "Sources/main.swift": 'print("b")\n' });
+
+    const error = constructionError(() => constructVerificationTree({ workspace, diff }));
+
+    expect(error.attribution).toBe("infrastructure");
+    expect(error.message).toMatch(/xcodegen generate failed/);
+  });
+
+  // The second attribution point, and the coverage that is new rather than
+  // carried: today a diff that corrupts `project.yml` is caught only if someone
+  // happens to regenerate. Here the change broke its own project spec.
+  it.skipIf(!CAN_GENERATE)("attributes a spec only the diff broke to the change", () => {
+    const workspace = tempWorkspace({ "project.yml": SPEC, "Sources/main.swift": 'print("a")\n' });
+    const diff = stagedDiff(workspace, { "project.yml": "targets: [not a target map\n" });
+
+    const error = constructionError(() => constructVerificationTree({ workspace, diff }));
+
+    expect(error.attribution).toBe("change");
+    expect(error.message).toMatch(/xcodegen generate failed/);
+  });
+
+  // `project.yml` is the gate input now, and it is held like any other: the
+  // project the checks compile is what the *base* spec says, not what the diff
+  // asked for. Without the hold running first, a diff could add a target and
+  // then be judged by it.
+  it.skipIf(!CAN_GENERATE)("generates from a spec held at the base, not the one the diff wrote", () => {
+    const workspace = tempWorkspace({ "project.yml": SPEC, "Sources/main.swift": 'print("a")\n' });
+    const diff = stagedDiff(workspace, {
+      "project.yml": SPEC.replace("name: Foo", "name: Renamed"),
+      "Sources/main.swift": 'print("b")\n',
+    });
+
+    const tree = constructVerificationTree({ workspace, diff, hold: ["project.yml"] });
+
+    expect(existsSync(path.join(tree.path, "Foo.xcodeproj"))).toBe(true);
+    expect(existsSync(path.join(tree.path, "Renamed.xcodeproj"))).toBe(false);
   });
 
   // The cloud shape. `prepareWorkspace` shallow-clones when it is not `--local`,
