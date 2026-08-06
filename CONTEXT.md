@@ -113,11 +113,15 @@ with the failure mode it accepts, alongside
 [ADR-0003](docs/adr/0003-the-runner-owns-git.md) and
 [ADR-0011](docs/adr/0011-the-runner-owns-the-judges-reads.md).
 
-## Dispatch
+## Dispatch — historical
 
-Fanning a task out over targets on GitHub Actions (`fleet dispatch`), as opposed
-to `fleet run --local` on this machine. The workflows are a thin wrapper around
-the same CLI — cloud buys fan-out and autonomy, not different behaviour.
+Fanning a task out over targets on GitHub Actions, as opposed to `fleet run` on
+this machine. **Deleted 2026-08-06**
+([ADR-0024](docs/adr/0024-the-machine-is-frozen-and-the-triggers-thaw-it.md)):
+2 of 48 runs ever used it and none since 24 July. The term stays defined because
+`mode: "cloud"` survives in the contract and the ledger still holds those two
+rows — a reader that cannot parse its own past is worse than a dead code path.
+Nothing can produce a new one.
 
 ## Dry run
 

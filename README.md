@@ -14,9 +14,9 @@
 
 [![Quickstart](https://img.shields.io/badge/Quickstart-60_seconds-1f9e7f?style=for-the-badge&logoColor=white)](#start-in-60-seconds)
 [![Docs](https://img.shields.io/badge/Docs-11181d?style=for-the-badge)](docs/README.md)
-[![Decisions](https://img.shields.io/badge/23_Decisions-11181d?style=for-the-badge)](docs/adr)
+[![Decisions](https://img.shields.io/badge/24_Decisions-11181d?style=for-the-badge)](docs/adr)
 
-<sub>Runs anywhere Node ≥ 20 does &nbsp;·&nbsp; GitHub Actions optional &nbsp;·&nbsp; dry-run by default &nbsp;·&nbsp; MIT</sub>
+<sub>Runs anywhere Node ≥ 20 does &nbsp;·&nbsp; one repo per run &nbsp;·&nbsp; dry-run by default &nbsp;·&nbsp; MIT</sub>
 
 <br>
 
@@ -93,9 +93,8 @@ Write the task once, in plain English. It fans out across the fleet.
 <td width="33%" align="center"><img src="docs/brand/icon-ledger.svg" width="52" alt=""><br><b>Nothing goes unrecorded</b><br><br><sub>Shipped or killed, every run is appended with its reason. The kill log is what makes the successes mean something.</sub></td>
 </tr>
 <tr>
-<td width="33%" align="center"><img src="docs/brand/icon-cosign.svg" width="52" alt=""><br><b>A human always co-signs</b><br><br><sub>Every shipped run ends at a PR a person merges — or reverts in one click. <code>cosign</code> has no <code>--force</code>.</sub></td>
-<td width="33%" align="center"><img src="docs/brand/icon-local.svg" width="52" alt=""><br><b>Runs on your subscription</b><br><br><sub>The whole loop runs locally against your Claude session. No API key needed to start.</sub></td>
-<td width="33%" align="center"><img src="docs/brand/icon-fanout.svg" width="52" alt=""><br><b>Fans out when you're ready</b><br><br><sub>One task, matrixed over every target repo on Actions. Cloud is a dispatch mechanism, not a second implementation.</sub></td>
+<td width="50%" align="center"><img src="docs/brand/icon-cosign.svg" width="52" alt=""><br><b>A human always co-signs</b><br><br><sub>Every shipped run ends at a PR a person merges — or reverts in one click. <code>cosign</code> has no <code>--force</code>.</sub></td>
+<td width="50%" align="center"><img src="docs/brand/icon-local.svg" width="52" alt=""><br><b>Runs on your subscription</b><br><br><sub>The whole loop runs locally against your Claude session. No API key needed to start.</sub></td>
 </tr>
 </table>
 
@@ -193,7 +192,7 @@ Four boundaries carry the design weight.
 
 <div align="center">
 
-<sub><b>A new agent capability is a cage change, not a feature.</b> &nbsp;·&nbsp; <a href="docs/adr">All 23 decisions →</a></sub>
+<sub><b>A new agent capability is a cage change, not a feature.</b> &nbsp;·&nbsp; <a href="docs/adr">All 24 decisions →</a></sub>
 
 </div>
 

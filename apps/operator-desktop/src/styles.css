@@ -269,14 +269,14 @@ button svg { width: 15px; height: 15px; flex: 0 0 auto; }
 .diff-line.del > span { color: var(--red); }
 .diff-line.meta code { color: var(--muted); font-style: italic; }
 
-.dispatch-bar { display: grid; grid-template-columns: auto minmax(160px, 1.4fr) minmax(130px, .8fr) auto auto auto; align-items: center; gap: 7px; padding: 8px 10px 8px 14px; border-top: 1px solid var(--border); background: var(--panel); }
+.run-bar { display: grid; grid-template-columns: auto minmax(160px, 1.4fr) minmax(130px, .8fr) auto auto; align-items: center; gap: 7px; padding: 8px 10px 8px 14px; border-top: 1px solid var(--border); background: var(--panel); }
 .pr-toggle { display: inline-flex; align-items: center; gap: 5px; color: var(--text-secondary); font-size: 10.5px; font-weight: 620; white-space: nowrap; cursor: pointer; }
 .pr-toggle input[type="checkbox"] { width: 13px; height: 13px; margin: 0; padding: 0; accent-color: var(--accent); cursor: pointer; }
 .pr-toggle:has(input:disabled) { opacity: .4; cursor: not-allowed; }
 .pr-toggle input[type="checkbox"]:disabled { cursor: not-allowed; }
-.dispatch-bar { grid-row: 5; }
-.dispatch-context { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 10px; font-weight: 650; }
-.dispatch-context svg { width: 13px; height: 13px; color: var(--accent); }
+.run-bar { grid-row: 5; }
+.run-context { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 10px; font-weight: 650; }
+.run-context svg { width: 13px; height: 13px; color: var(--accent); }
 select, input { min-width: 0; height: 32px; padding: 0 9px; border: 1px solid var(--border); border-radius: 4px; color: var(--text); background: #1d1c1b; }
 select { font-size: 10.5px; }
 input { font-size: 12px; }
@@ -414,8 +414,8 @@ button.danger:hover { background: var(--red-soft); }
 @media (max-width: 1180px) {
   .workbench { grid-template-columns: 264px minmax(450px, 1fr) 290px; }
   .workbench.rail-collapsed { grid-template-columns: 264px minmax(450px, 1fr) 0; }
-  .dispatch-context span { display: none; }
-  .dispatch-bar { grid-template-columns: 20px minmax(120px, 1fr) minmax(105px, .7fr) auto 60px 80px; padding-left: 10px; }
+  .run-context span { display: none; }
+  .run-bar { grid-template-columns: 20px minmax(120px, 1fr) minmax(105px, .7fr) auto 80px; padding-left: 10px; }
   .inst-node-wrap { width: 50px; }
   .metadata-list > div { grid-template-columns: 70px minmax(0, 1fr); }
   /* The stacked bands already read at any width; tighten their gutters in a narrow pane. */

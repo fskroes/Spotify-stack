@@ -232,13 +232,12 @@ app.innerHTML = `
         <iframe id="ledger-frame" title="Remote Fleet Ledger" hidden></iframe>
       </section>
 
-      <footer class="dispatch-bar">
-        <div class="dispatch-context"><i data-lucide="rocket"></i><span>Dispatch</span></div>
+      <footer class="run-bar">
+        <div class="run-context"><i data-lucide="play"></i><span>Run</span></div>
         <select id="task-select" aria-label="Task" disabled><option>Connect to load tasks</option></select>
         <select id="repo-select" aria-label="Target repository" disabled><option value="">All matching repos</option></select>
         <label class="pr-toggle" title="Open a pull request on the target repo when the run is approved — untick for an artifacts-only dry run"><input id="local-run-pr" type="checkbox" checked disabled />PR</label>
-        <button id="local-run" class="secondary compact" disabled title="Run on the remote runner"><i data-lucide="play"></i>Run</button>
-        <button id="dispatch-action" class="primary compact" disabled><i data-lucide="rocket"></i>Dispatch<span class="commit-sweep"></span></button>
+        <button id="local-run" class="primary compact" disabled title="Run on the remote runner"><i data-lucide="play"></i>Run<span class="commit-sweep"></span></button>
       </footer>
     </main>
 
@@ -638,9 +637,8 @@ function renderCatalog(): void {
     repoSelect.disabled = status.state !== "connected" || busy;
   }
   const canRun = status.state === "connected" && Boolean(activeProfile());
-  const canDispatch = canRun && Boolean(catalog) && Boolean(taskSelect.value) && !busy;
-  const canLocalRun = canDispatch && Boolean(repoSelect.value);
-  $("#dispatch-action").toggleAttribute("disabled", !canDispatch);
+  const canLocalRun =
+    canRun && Boolean(catalog) && Boolean(taskSelect.value) && !busy && Boolean(repoSelect.value);
   $("#local-run").toggleAttribute("disabled", !canLocalRun);
   prToggle.disabled = !canLocalRun;
 }
@@ -1499,7 +1497,7 @@ function openMergeConfirm(key: string): void {
 let closeCandidate = "";
 
 /** The negative path's confirm: the required reason is typed here, cap visible,
- *  and the dialog refuses to dispatch without one. */
+ *  and the dialog refuses to send without one. */
 function openCloseConfirm(key: string): void {
   const run = runs.find((item) => item.key === key);
   if (!run || run.kind !== "completed" || !run.data.prUrl) return;
@@ -1907,8 +1905,8 @@ function setBusy(next: boolean): void {
 }
 
 /** Launching a run is the app's highest-intent act — give it weight: a shine
- *  sweeps across the button while it settles under the press (Dispatch carries the
- *  sweep; Run, a lighter settle). Zero-dep WAAPI, reduced-motion silent. */
+ *  sweeps across the button while it settles under the press. Zero-dep WAAPI,
+ *  reduced-motion silent. */
 function commitCeremony(button: HTMLElement): void {
   if (prefersReducedMotion()) return;
   button.querySelector<HTMLElement>(".commit-sweep")?.animate(
@@ -2100,17 +2098,17 @@ async function waitForCatalog(): Promise<CatalogResponse> {
   throw lastError;
 }
 
-async function runAction(kind: "dispatch" | "localRun"): Promise<void> {
+async function runAction(): Promise<void> {
   const profile = activeProfile();
   const task = taskSelect.value;
   const repo = repoSelect.value;
-  if (status.state !== "connected" || !profile || !task || (kind === "localRun" && !repo)) return;
+  if (status.state !== "connected" || !profile || !task || !repo) return;
   setBusy(true);
   try {
     const pr = prToggle.checked;
-    const action = kind === "dispatch" ? { kind, task, repo: repo || null } : { kind, task, repo, pr };
+    const action = { kind: "localRun", task, repo, pr };
     const result = previewMode
-      ? { command: `ssh ${profile.sshTarget} fleet ${kind === "dispatch" ? `dispatch ${task}` : `run ${task} --repo ${repo} --local${pr ? " --pr" : ""}`}`, exitStatus: 0, stdoutTail: kind === "dispatch" ? "workflow dispatch accepted" : `${pr ? "run" : "dry-run"} started on remote runner`, stderrTail: "", timestamp: Date.now() }
+      ? { command: `ssh ${profile.sshTarget} fleet run ${task} --repo ${repo} --local${pr ? " --pr" : ""}`, exitStatus: 0, stdoutTail: `${pr ? "run" : "dry-run"} started on remote runner`, stderrTail: "", timestamp: Date.now() }
       : await invoke<RemoteCommandResult>("execute_fleet_action", { profile, action });
     results.unshift(result);
     toast(result.exitStatus === 0 ? "Remote command completed" : `Remote command exited ${result.exitStatus}`, result.exitStatus !== 0);
@@ -2139,7 +2137,7 @@ function loadPreviewData(): void {
   // The default run's evidence is already "loaded" so opening Review renders its
   // diff immediately; selecting another run re-loads through loadArtifactsForSelected.
   artifactsLoadedFor = selectedKey;
-  results = [{ command: "ssh fleet@runner fleet dispatch 004-upstream-failure-mode-tests --repo demo-feed-service", exitStatus: 0, stdoutTail: "dispatched agent-task.yml", stderrTail: "", timestamp: now - 17 * 60_000 }];
+  results = [{ command: "ssh fleet@runner fleet run 004-upstream-failure-mode-tests --repo demo-feed-service --local --pr", exitStatus: 0, stdoutTail: "run started on remote runner", stderrTail: "", timestamp: now - 17 * 60_000 }];
   lastUpdated = new Date(now - 18_000);
 }
 
@@ -2187,8 +2185,7 @@ $("#disconnect").addEventListener("click", async () => {
     $("#ledger-empty").hidden = false;
   } finally { setBusy(false); renderAll(); }
 });
-$("#dispatch-action").addEventListener("click", () => { commitCeremony($("#dispatch-action")); void runAction("dispatch"); });
-$("#local-run").addEventListener("click", () => { commitCeremony($("#local-run")); void runAction("localRun"); });
+$("#local-run").addEventListener("click", () => { commitCeremony($("#local-run")); void runAction(); });
 $("#clear-activity").addEventListener("click", () => { results = []; renderActivity(); });
 $("#toggle-rail").addEventListener("click", () => {
   const collapsed = workbench.classList.toggle("rail-collapsed");

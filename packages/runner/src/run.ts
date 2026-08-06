@@ -898,7 +898,10 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         task: task.id,
         repo: repo.name,
         status: full.status,
-        mode: process.env.GITHUB_ACTIONS ? "cloud" : "local",
+        // Always local: the cloud entry point is deleted (ADR-0024), so no run
+        // this code path writes can be a cloud run. `"cloud"` survives in the
+        // contract and the readers because two archived ledger rows carry it.
+        mode: "local",
         vetoes: vetoes.length,
         reason: killReason(full, scopeOffenders),
         prUrl: full.prUrl,
@@ -928,12 +931,6 @@ export async function run(opts: RunOptions): Promise<RunResult> {
           ? { amendments: full.gateInputs?.carried.map(({ glob, reason }) => ({ glob, reason })) }
           : {}),
         ...((full.gateInputs?.held.length ?? 0) > 0 ? { heldGateInputs: full.gateInputs?.held } : {}),
-        // Cloud provenance: only in Actions, where the review set is uploaded as
-        // an artifact named `<task>-<repo>` (the exact expression agent-task.yml
-        // uses). Lets the operator pull this run's evidence on demand later.
-        ...(process.env.GITHUB_ACTIONS
-          ? { actionsRunId: process.env.GITHUB_RUN_ID, actionsArtifact: `${task.id}-${repo.name}` }
-          : {}),
       });
       // Strictly after the append: the run is now durable in the ledger, so
       // dropping the live claim can only ever lose a row that has a replacement.

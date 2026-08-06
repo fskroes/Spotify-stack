@@ -32,7 +32,6 @@ struct HostProfile {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
 enum FleetAction {
-    Dispatch { task: String, repo: Option<String> },
     LocalRun { task: String, repo: String, pr: bool },
     CosignMerge { run_id: String },
     CosignClose { run_id: String, reason: String },
@@ -171,18 +170,11 @@ fn fleet_command(profile: &HostProfile, action: &FleetAction) -> Result<String, 
         }
     };
     match action {
-        FleetAction::Dispatch { task, repo } => {
-            let mut command = format!("{prefix} dispatch {}", quoted(task, "task")?);
-            if let Some(repo) = repo {
-                command.push_str(&format!(" --repo {}", quoted(repo, "repo")?));
-            }
-            Ok(command)
-        }
-        // "Local" here means executed on the SSH host rather than dispatched to
-        // Actions — a different axis from where the workspace comes from. On a
-        // shipping run the two part company: the base is upstream's whatever the
-        // operator asked for (ADR-0019), so `--local` would be a flag in the
-        // command line doing nothing, which is how a UI teaches the wrong model.
+        // "Local" here means executed on the SSH host — a different axis from
+        // where the workspace comes from. On a shipping run the two part
+        // company: the base is upstream's whatever the operator asked for
+        // (ADR-0019), so `--local` would be a flag in the command line doing
+        // nothing, which is how a UI teaches the wrong model.
         FleetAction::LocalRun { task, repo, pr } => Ok(format!(
             "{prefix} run {} --repo {}{}",
             quoted(task, "task")?,
@@ -254,12 +246,6 @@ fn connect_spec(profile: &HostProfile, local_port: u16) -> Result<CommandSpec, S
 fn action_spec(profile: &HostProfile, action: &FleetAction) -> Result<CommandSpec, String> {
     let remote = fleet_command(profile, action)?;
     let action_display = match action {
-        FleetAction::Dispatch { task, repo } => format!(
-            "fleet dispatch {task}{}",
-            repo.as_ref()
-                .map(|repo| format!(" --repo {repo}"))
-                .unwrap_or_default()
-        ),
         FleetAction::LocalRun { task, repo, pr } => {
             format!(
                 "fleet run {task} --repo {repo}{}",
@@ -596,30 +582,6 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_command_is_allowlisted_and_quotes_values() {
-        let command = fleet_command(
-            &profile(),
-            &FleetAction::Dispatch {
-                task: "007-api".into(),
-                repo: Some("demo-api".into()),
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            command,
-            "cd -- '/srv/fleet control' && exec pnpm fleet dispatch '007-api' --repo 'demo-api'"
-        );
-        assert!(fleet_command(
-            &profile(),
-            &FleetAction::Dispatch {
-                task: "task; rm -rf /".into(),
-                repo: None
-            },
-        )
-        .is_err());
-    }
-
-    #[test]
     fn local_run_without_pr_has_only_the_fixed_local_flag() {
         assert_eq!(
             fleet_command(
@@ -899,7 +861,7 @@ mod tests {
             CommandSpec {
                 program: "ssh".into(),
                 args: vec![],
-                display: "ssh runner fleet dispatch task".into(),
+                display: "ssh runner fleet run task".into(),
             },
             output,
         );

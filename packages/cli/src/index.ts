@@ -401,24 +401,6 @@ program
   });
 
 program
-  .command("dispatch")
-  .description("Dispatch a task to GitHub Actions (fleet fan-out unless --repo)")
-  .argument("<task>", "task id or path to a task file")
-  .option("--repo <name>", "dispatch to a single repo instead of the whole fleet")
-  .action((taskArg: string, options) => {
-    const task = loadTask(resolveTaskPath(controlRepo, taskArg));
-    if (options.repo) {
-      gh(["workflow", "run", "agent-task.yml", "-f", `task_id=${task.id}`, "-f", `target_repo=${options.repo}`]);
-      console.log(`dispatched agent-task.yml: ${task.id} on ${options.repo}`);
-    } else {
-      gh(["workflow", "run", "fleet-run.yml", "-f", `task_id=${task.id}`]);
-      const repos = targetRepos(controlRepo, task.targets).map((r) => r.name);
-      console.log(`dispatched fleet-run.yml: ${task.id} → matrix over [${repos.join(", ")}]`);
-    }
-    console.log("watch with: gh run list --limit 5");
-  });
-
-program
   .command("status")
   .description("Report Actions runs and PRs for a task as a markdown table")
   .argument("<task>", "task id or path to a task file")

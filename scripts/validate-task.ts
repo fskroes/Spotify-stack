@@ -1,7 +1,6 @@
 /**
- * Mechanical gate on a task file — agent-plan.yml runs this on what the
- * planning agent wrote before any PR is opened, and it works just as well on
- * a hand-written task. Parses the frontmatter (loadTask throws on a bad one),
+ * Mechanical gate on a task file, run by hand (see CONTRIBUTING.md) before a
+ * task is used. Parses the frontmatter (loadTask throws on a bad one),
  * requires every target to resolve against fleet/repos.yaml, and requires the
  * NO_CHANGES_NEEDED sentinel every task prompt must carry.
  * Usage: tsx scripts/validate-task.ts <path/to/task.md>

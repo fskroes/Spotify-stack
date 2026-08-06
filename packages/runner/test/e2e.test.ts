@@ -219,10 +219,11 @@ describe("runner e2e (mock engine, hermetic)", () => {
     }
   });
 
-  it("records cloud provenance in the ledger when running under GitHub Actions", async () => {
+  it("records a run as local even under GitHub Actions — the cloud entry point is gone", async () => {
     const ledgerPath = tmpLedger();
-    // Pin the cloud signal: mode "cloud" plus the fields the operator later uses
-    // to pull this run's evidence — the artifact name matches agent-task.yml's.
+    // ADR-0024 deleted the only way to start a cloud run, so nothing this code
+    // path writes may claim cloud provenance. Actions still runs the test
+    // suite, so the env var is present and must no longer mean anything.
     vi.stubEnv("GITHUB_ACTIONS", "true");
     vi.stubEnv("GITHUB_RUN_ID", "1234567890");
     const result = await run({
@@ -241,9 +242,9 @@ describe("runner e2e (mock engine, hermetic)", () => {
 
     expect(result.status).toBe("approved");
     const [entry] = readLedger(ledgerPath);
-    expect(entry.mode).toBe("cloud");
-    expect(entry.actionsRunId).toBe("1234567890");
-    expect(entry.actionsArtifact).toBe("001-ts-migrate-http-client-demo-ts-service");
+    expect(entry.mode).toBe("local");
+    expect(entry.actionsRunId).toBeUndefined();
+    expect(entry.actionsArtifact).toBeUndefined();
   });
 
   it("live state: the run publishes its stage as it goes, and clears it when it lands", async () => {
