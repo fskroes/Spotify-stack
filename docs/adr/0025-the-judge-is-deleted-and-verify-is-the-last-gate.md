@@ -68,6 +68,14 @@ than a dead type. This is the same rule the cloud mode was kept under —
 [`judge-cage-spec.md`](../judge-cage-spec.md) stays for the same reason:
 ADR-0011 cites it, and a record is not a part.
 
+> **2026-08-06, later the same day: the spec was deleted after all.** A file in
+> the tree is inventory, whatever it records, and `Historical` is a label on the
+> shelf rather than a deletion. Git holds it at `ae9acbb`. ADR-0011's two
+> citations of it were left pointing at a path that no longer resolves —
+> repairing them would rewrite an ADR to agree with later code. This note
+> retracts the paragraph above it and nothing else; the ledger-type clause
+> stands.
+
 ## Status
 
 Reversible, and the reversal is named: **if a merged fleet PR turns out to carry
