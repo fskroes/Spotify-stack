@@ -14,7 +14,7 @@
 
 [![Quickstart](https://img.shields.io/badge/Quickstart-60_seconds-1f9e7f?style=for-the-badge&logoColor=white)](#start-in-60-seconds)
 [![Docs](https://img.shields.io/badge/Docs-11181d?style=for-the-badge)](docs/README.md)
-[![Decisions](https://img.shields.io/badge/24_Decisions-11181d?style=for-the-badge)](docs/adr)
+[![Decisions](https://img.shields.io/badge/25_Decisions-11181d?style=for-the-badge)](docs/adr)
 
 <sub>Runs anywhere Node ≥ 20 does &nbsp;·&nbsp; one repo per run &nbsp;·&nbsp; dry-run by default &nbsp;·&nbsp; MIT</sub>
 
@@ -51,7 +51,7 @@
 
 <br><br>
 
-A run can die four ways. Every one of them happens **before a human opens the diff**.
+A run can die three ways. Every one of them happens **before a human opens the diff**.
 
 </div>
 
@@ -59,7 +59,6 @@ A run can die four ways. Every one of them happens **before a human opens the di
 |:--:|---|---|
 | ⛔ | `scope-violation` | The diff touched files the task's scope contract didn't allow. |
 | 🔴 | `verify-failed` | A deterministic check the repo already had went red. |
-| ⚖️ | `vetoed` | The judge refused twice, after guidance to self-correct. |
 | ⚪ | `no-changes` | The precondition was already satisfied. Correctly doing nothing. |
 
 ```sh
@@ -79,8 +78,8 @@ pnpm fleet report          # the tally, and the kill log with reasons
 
 ## Ship faster, review less.
 
-Write the task once, in plain English. It fans out across the fleet.
-<br>What reaches you is a pre-verified pull request to co-sign — not a rough draft to audit.
+Write the task once, in plain English. Run it against a target.
+<br>What reaches you is a verified pull request to co-sign — not a rough draft to audit.
 
 </div>
 
@@ -122,7 +121,7 @@ git config core.hooksPath .githooks   # enable the public-repo scrub hook
 pnpm test    # unit + hermetic e2e — real eslint, tsc and vitest in temp workspaces
 
 pnpm fleet run tasks/examples/001-ts-migrate-http-client.md --repo demo-ts-service --local \
-  --engine mock --mock-patch packages/runner/test/fixtures/001-good.patch --judge approve
+  --engine mock --mock-patch packages/runner/test/fixtures/001-good.patch
 
 cat artifacts/001-ts-migrate-http-client/demo-ts-service/diff.patch
 ```
@@ -192,7 +191,7 @@ Four boundaries carry the design weight.
 
 <div align="center">
 
-<sub><b>A new agent capability is a cage change, not a feature.</b> &nbsp;·&nbsp; <a href="docs/adr">All 24 decisions →</a></sub>
+<sub><b>A new agent capability is a cage change, not a feature.</b> &nbsp;·&nbsp; <a href="docs/adr">All 25 decisions →</a></sub>
 
 </div>
 

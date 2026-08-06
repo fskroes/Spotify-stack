@@ -103,7 +103,7 @@ private target belong in your git-ignored `tasks/private/`, not in a PR.
   `fix: the scrub check could not see 2287 lines of the operator`.
 - **New behaviour needs a test.** The hermetic e2e suite in
   `packages/runner/test/e2e.test.ts` is the model for anything touching the run
-  loop; it uses real verifiers and a stubbed judge.
+  loop; it uses real verifiers in temporary workspaces.
 - **Bug reports beat guesses.** If you are not sure whether something is a bug or
   a decision, open an issue and ask — it is often in an ADR.
 

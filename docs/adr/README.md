@@ -30,6 +30,7 @@ record shows what was considered instead and why it lost.
 | [0022](0022-gate-3-is-deleted-absorbed-by-gate-2s-voiding-rule.md) | Panel gate 3 is deleted, absorbed by gate 2's voiding rule | gates |
 | [0023](0023-a-generated-project-is-tree-construction-not-a-gate-input.md) | A generated project file is tree construction, not a gate input | verify↔run |
 | [0024](0024-the-machine-is-frozen-and-the-triggers-thaw-it.md) | The machine is frozen at 0023, and three triggers thaw it | process |
+| [0025](0025-the-judge-is-deleted-and-verify-is-the-last-gate.md) | The judge is deleted, and green verify is the last gate | judge |
 
 **0003–0008 were written retroactively** (2026-07-26), reconstructing the
 reasoning behind decisions already in the code. They are sound arguments, not

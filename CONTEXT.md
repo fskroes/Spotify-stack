@@ -86,19 +86,15 @@ The thing that produces the diff — `claude` (headless Claude Code, the default
 or `mock` (applies a fixture patch, for hermetic tests). Swapping the engine
 changes nothing about the gates: scope, verify, and judge run identically.
 
-## Judge
+## Judge — historical
 
-The model review standing between a green diff and a human. It reads the task,
-the diff, and the verification summary, and returns approve or veto with reasons.
-It may also read the run's workspace — read-only, through a tool the runner roots
-there ([ADR-0011](docs/adr/0011-the-runner-owns-the-judges-reads.md)), because a
-reviewer that can only check what the task asserted is examining the wrong
-document.
-
-Two transports carry the call, an SDK client and the local `claude` CLI, and
-which one runs is a **billing** question. It is never a capability question: the
-judge's [cage](#cage) is the same either way, and evidence records which
-capability produced a verdict rather than only which model did.
+The LLM review that stood between green verification and a pull request: task +
+diff + verify summary → approve or veto, with the runner owning its reads
+([ADR-0011](docs/adr/0011-the-runner-owns-the-judges-reads.md)). **Deleted
+2026-08-06** ([ADR-0025](docs/adr/0025-the-judge-is-deleted-and-verify-is-the-last-gate.md))
+after 0 vetoes in 48 runs. The term stays defined because `vetoes`, `judgeMs`
+and the `vetoed` status survive in the contract and 48 archived ledger rows
+carry them. Nothing can produce a new verdict.
 
 ## Cage
 

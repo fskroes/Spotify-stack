@@ -26,10 +26,10 @@ cat artifacts/onramp-1-feed-tests/demo-feed-service/diff.patch
 ```
 
 `pr-preview.md` is the *exact* PR body a real run would open, built from this
-run's real verify results and judge verdict. Check it against the diff: can
-you answer **what changed / why / what was deliberately not touched / who
-checked it / how you'd undo it** without reading the diff? That's the
-contract every fleet PR has to meet.
+run's real verify results. Check it against the diff: can you answer **what
+changed / why / what was deliberately not touched / what was proven / how
+you'd undo it** without reading the diff? That's the contract every fleet PR
+has to meet.
 
 ## 2. First co-sign
 
@@ -39,10 +39,10 @@ Run the second task for real:
 pnpm fleet run tasks/onramp/onramp-2-args-tests.md --repo demo-feed-service --pr
 ```
 
-Read the PR as it's presented. Note what you are being asked to do: not
-review raw agent output — co-sign a change that was mechanically scoped,
-deterministically verified, and approved by a judge that shows its reasoning.
-If the body answers your questions, merge it.
+Read the PR as it's presented. Note what you are being asked to do: co-sign a
+change that was mechanically scoped and deterministically verified. Nothing
+reviewed it for *intent* — that part is yours, and the body says so. If it
+answers your questions and the diff is right, merge it.
 
 **Then do the revert drill.** Press the **Revert** button on the merged PR —
 once, for real. The point is to *feel* that undo is one step, not to believe
@@ -56,7 +56,7 @@ pnpm fleet report
 ```
 
 This is the other half of the record: what the fleet stopped *before anyone
-reviewed it* — verify failures, judge vetoes, scope violations, each with the
+reviewed it* — verify failures and scope violations, each with the
 reason it died. A system that only showed you its successes would be
 advertising; the kill log is why the successes mean something.
 
