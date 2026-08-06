@@ -20,7 +20,6 @@ export interface EngineResult {
 
 export interface Engine {
   run(prompt: string): EngineResult;
-  resume(sessionId: string, guidance: string): EngineResult;
 }
 
 /**
@@ -168,15 +167,12 @@ export function claudeEngine(opts: { workspace: string; mcpConfigPath: string })
 
   return {
     run: (prompt) => invoke([prompt]),
-    resume: (sessionId, guidance) => invoke(["--resume", sessionId, guidance]),
   };
 }
 
 /**
  * Hermetic test engine: applies a fixture patch instead of spawning Claude.
  * `mockPatch: "NONE"` simulates the NO_CHANGES_NEEDED precondition path.
- * On resume it applies `<patch>.retry.patch` when present (simulating a
- * self-correction) and otherwise makes no further changes.
  */
 export function mockEngine(opts: { workspace: string; mockPatch: string; usage?: ProducerUsage[] }): Engine {
   const nextUsage = () => opts.usage?.shift() ?? unavailableProducerUsage("mock engine does not produce model usage evidence");
@@ -201,18 +197,6 @@ export function mockEngine(opts: { workspace: string; mockPatch: string; usage?:
         };
       }
       return apply(opts.mockPatch, "initial");
-    },
-    resume: () => {
-      const retryPatch = `${opts.mockPatch}.retry.patch`;
-      if (opts.mockPatch !== "NONE" && existsSync(retryPatch)) {
-        return apply(retryPatch, "retry");
-      }
-      return {
-        resultText: "mock engine: no further changes",
-        sessionId: "mock",
-        transcript: JSON.stringify({ engine: "mock", resumed: true }),
-        usage: nextUsage(),
-      };
     },
   };
 }

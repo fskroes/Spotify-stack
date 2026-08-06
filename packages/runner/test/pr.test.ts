@@ -37,14 +37,6 @@ function input(overrides: Partial<PrBodyInput> = {}): PrBodyInput {
     ],
     verifyState: "passed",
     verifySummary: "VERIFY PASSED\n✔ npm run test passed (3.2s)",
-    verdict: {
-      verdict: "approve",
-      violations: [],
-      guidance: "",
-      rationale: "touches only the new test file; no production code changed; all checks green",
-    },
-    vetoes: [],
-    judgeName: "claude-opus-4-8",
     record: fleetRecord(
       [
         { ts: new Date().toISOString(), task: "a", repo: "r", status: "approved", mode: "local", vetoes: 0 },
@@ -69,12 +61,12 @@ describe("diffStats", () => {
 });
 
 describe("buildPrBody", () => {
-  it("answers what/why/what-not/who-checked/undo without the diff", () => {
+  it("answers what/why/what-not/undo without the diff", () => {
     const body = buildPrBody(input());
 
     // Header: risk chip + system voice.
     expect(body).toContain("**Risk: drudgery**");
-    expect(body).toContain("co-signing a verified change, not reviewing raw agent output");
+    expect(body).toContain("Nothing reviewed the change for intent; that is what you are doing now.");
 
     // What changed: diffstat + files.
     expect(body).toContain("2 files, +3 −1");
@@ -94,7 +86,6 @@ describe("buildPrBody", () => {
     expect(body).toContain("<details><summary>Raw verify log</summary>");
 
     // Judgment: model + rationale.
-    expect(body).toContain("claude-opus-4-8: approved — touches only the new test file");
 
     // Undo: one step, real sha.
     expect(body).toContain("`git revert abc1234`");
@@ -103,23 +94,6 @@ describe("buildPrBody", () => {
     expect(body).toContain("a fleet defect, not a reviewer failure");
     expect(body).toContain("https://github.com/o/control/issues/new");
     expect(body).toContain("Last 30 days: 1 shipped · 1 killed before review");
-  });
-
-  it("shows the veto trail as an immune-system trace", () => {
-    const body = buildPrBody(
-      input({
-        vetoes: [
-          {
-            verdict: "veto",
-            violations: ["package-lock.json modified without being asked"],
-            guidance: "revert it",
-            rationale: "lockfile drift",
-          },
-        ],
-      }),
-    );
-    expect(body).toContain("Pass 1 vetoed (package-lock.json modified without being asked) → corrected → re-judged.");
-    expect(body).toContain("Final verdict after 1 correction: approved.");
   });
 
   it("says nothing ran — and drops the verified claim — when verification was inconclusive", () => {
@@ -132,7 +106,7 @@ describe("buildPrBody", () => {
     );
 
     // The banner may not call this a verified change: nothing verified it.
-    expect(body).not.toContain("co-signing a verified change");
+    expect(body).not.toContain("Nothing reviewed the change for intent");
     expect(body).toContain("could not verify");
     // "What actually ran" must answer honestly: nothing did.
     expect(body).toContain("no verifiers detected");
@@ -151,7 +125,7 @@ describe("buildPrBody", () => {
       }),
     );
 
-    expect(body).not.toContain("co-signing a verified change");
+    expect(body).not.toContain("Nothing reviewed the change for intent");
     expect(body).toContain("live-contract-check");
     // The other road to inconclusive must not be claimed: verifiers did run.
     expect(body).not.toContain("no verifiers detected");
@@ -162,7 +136,7 @@ describe("buildPrBody", () => {
   it("shows no gate affordance when a task declared none or all were met", () => {
     for (const unmetGates of [undefined, []]) {
       const body = buildPrBody(input({ unmetGates }));
-      expect(body).toContain("co-signing a verified change");
+      expect(body).toContain("Nothing reviewed the change for intent");
       expect(body).not.toContain("mandated");
     }
   });
@@ -203,7 +177,7 @@ describe("buildPrBody", () => {
     // Every check that ran was green, and the recorded state is still `passed`
     // — but the banner may not call this a verified change, because part of the
     // diff under the reviewer's eyes is not what verification saw.
-    expect(body).not.toContain("co-signing a verified change");
+    expect(body).not.toContain("Nothing reviewed the change for intent");
     expect(body).toContain("every check that ran was green");
   });
 
@@ -228,47 +202,6 @@ describe("buildPrBody", () => {
 
     expect(body).toContain("✖ `npm run lint` FAILED (0.9s)");
     expect(body).toContain("– `npm run test` did not run (earlier check failed)");
-  });
-
-  it("names the files the judge opened, so a veto can be weighed against them", () => {
-    const body = buildPrBody(
-      input({
-        judgeName: "claude-opus-4-8 + rooted-read",
-        readPaths: ["src/index.ts", "build/manifest.json"],
-      }),
-    );
-
-    // The capability beside the model: two reviewers on the same model with
-    // different powers is the condition ADR-0011 ends, and this line is where a
-    // human meets it.
-    expect(body).toContain("claude-opus-4-8 + rooted-read: approved");
-    expect(body).toContain("Read 2 files in the workspace under review:");
-    expect(body).toContain("- `src/index.ts`");
-    expect(body).toContain("- `build/manifest.json`");
-  });
-
-  it("says a judge read nothing only when a judge read nothing", () => {
-    // Empty is a claim about a reviewer that held the capability and used none
-    // of it. It belongs in the body: an approve from a judge that opened no
-    // file is a weaker signal than one from a judge that opened six.
-    expect(buildPrBody(input({ readPaths: [] }))).toContain("Read no files in the workspace");
-  });
-
-  it("claims nothing about the reads of a verdict that recorded none", () => {
-    // The trap this field shares with unmet gates. Every verdict produced
-    // before reads were recorded carries no paths, and rendering those as "read
-    // no files" would tell a reviewer something no record ever established.
-    const body = buildPrBody(input({ judgeName: "claude-opus-4-8 + text-only" }));
-
-    expect(body).not.toContain("Read no files");
-    expect(body).not.toContain("in the workspace under review");
-    // The capability nothing emits any more still renders, because verdicts
-    // were produced that way and must keep saying so.
-    expect(body).toContain("claude-opus-4-8 + text-only: approved");
-  });
-
-  it("counts one file as one file", () => {
-    expect(buildPrBody(input({ readPaths: ["src/index.ts"] }))).toContain("Read 1 file in the workspace");
   });
 
   it("falls back cleanly without scope, sha, or links", () => {

@@ -5,7 +5,6 @@
  * previewed in dry-run as the pr-preview.md artifact.
  */
 import type { VerifyState } from "@fleet/contract";
-import type { Verdict } from "@fleet/judge";
 import { noGateInputs, type GateInputDecision } from "./gate-inputs.js";
 import { formatRecordLine, type FleetRecord } from "./ledger.js";
 import type { Task } from "./task.js";
@@ -40,18 +39,6 @@ export interface PrBodyInput {
    *  gate-input affordance at all. */
   gateInputs?: GateInputDecision;
   verifySummary: string;
-  verdict: Verdict;
-  /** Veto verdicts absorbed before the final approval, in order. */
-  vetoes: Verdict[];
-  /** Composed prose — model *and* capability, e.g. `claude-opus-4-8 +
-   *  rooted-read`. A model name alone cannot tell two reviewers with different
-   *  powers apart, which is what ADR-0011 exists to end. */
-  judgeName: string;
-  /** Workspace-relative paths the runner served the judge while it reviewed —
-   *  observed by the runner, never reported by the model. Absent and empty are
-   *  different claims and render differently below; `VerdictEvidence` in
-   *  `@fleet/contract` is where that distinction is stated. */
-  readPaths?: string[];
   record: FleetRecord;
   /** Commit sha for the revert instruction; dry-run preview omits it. */
   sha?: string;
@@ -79,7 +66,7 @@ export function diffStats(diff: string): { files: string[]; additions: number; d
 }
 
 const STANDING_RULE =
-  "Standing rule: dependency manifests and lockfiles (package.json, package-lock.json, pnpm-lock.yaml, …) are never modified unless a task explicitly asks for it — the judge vetoes any that slip through.";
+  "Standing rule: dependency manifests and lockfiles (package.json, package-lock.json, pnpm-lock.yaml, …) are never modified unless a task explicitly asks for it. Nothing enforces this mechanically inside a task's own scope — check the file list above.";
 
 const code = (paths: string[]): string => paths.map((p) => `\`${p}\``).join(", ");
 
@@ -140,7 +127,7 @@ function gateInputLines(decision: GateInputDecision): string[] {
 }
 
 export function buildPrBody(input: PrBodyInput): string {
-  const { task, verdict, record } = input;
+  const { task, record } = input;
   const stats = diffStats(input.diff);
   const sha = input.sha ?? "<sha>";
   // Asked once: two sections of this body make claims that are only true when
@@ -162,7 +149,7 @@ export function buildPrBody(input: PrBodyInput): string {
         STANDING_RULE,
       ]
     : [
-        `This task carries no scope contract; the judge reviewed the full diff against the task prompt.`,
+        `This task carries no scope contract, so nothing bounded the diff — read the file list below against the task prompt.`,
         ``,
         STANDING_RULE,
       ];
@@ -195,35 +182,6 @@ export function buildPrBody(input: PrBodyInput): string {
     ...(gateInputs ? gateInputLines(gateInputs) : []),
   ];
 
-  const vetoTrail =
-    input.vetoes.length > 0
-      ? [
-          ``,
-          ...input.vetoes.map(
-            (v, i) => `Pass ${i + 1} vetoed (${v.violations.join("; ")}) → corrected → re-judged.`,
-          ),
-          `Final verdict after ${input.vetoes.length} correction${input.vetoes.length === 1 ? "" : "s"}: approved.`,
-        ]
-      : [];
-
-  // What the judge actually opened, so a reviewer can tell a veto grounded in
-  // the source from a confident invention — and, on an approve, how much of the
-  // repository the reviewer that cleared this change had actually seen.
-  //
-  // The three cases are three different states of knowledge, and only one of
-  // them is silence: a record that carries no paths says nothing about what was
-  // read, and this body must not fill that in.
-  const readSection =
-    input.readPaths === undefined
-      ? []
-      : input.readPaths.length === 0
-        ? [``, `Read no files in the workspace — this verdict rests on the task, the diff and the verification output alone.`]
-        : [
-            ``,
-            `Read ${input.readPaths.length} file${input.readPaths.length === 1 ? "" : "s"} in the workspace under review:`,
-            ...input.readPaths.map((p) => `- \`${p}\``),
-          ];
-
   // The banner's claim has to survive the verify state. "A verified change" is
   // only true when something verified it.
   // A held gate input is the third way this claim can be too strong, and it is
@@ -235,17 +193,17 @@ export function buildPrBody(input: PrBodyInput): string {
   const banner = !unverified
     ? held.length > 0
       ? `> **Risk: ${task.risk}** · Proposed by the fleet runner, and every check that ran was green — but ${held.length === 1 ? "one file in this diff was" : `${held.length} files in this diff were`} **not part of what proved it**: ${code(held)} ${held.length === 1 ? "is a gate input" : "are gate inputs"} this task did not amend, so verification used the base version. Read ${held.length === 1 ? "that edit" : "those edits"}.`
-      : `> **Risk: ${task.risk}** · Proposed and pre-vetted by the fleet runner. You are co-signing a verified change, not reviewing raw agent output.`
+      : `> **Risk: ${task.risk}** · Proposed by the fleet runner and verified — every check that ran was green. Nothing reviewed the change for intent; that is what you are doing now.`
     : // Ahead of the unmet-gate clause and of the no-verifiers one, because it is
       // the strongest of the three claims and the only one where checks ran and
       // still proved nothing: the tree they ran on was the base commit (ADR-0021).
       // Without this branch a run here would read as "this repository has no
       // verifiers", which is false — they ran, on the wrong tree.
       gateInputs?.treeIsBase
-      ? `> **Risk: ${task.risk}** · Proposed by the fleet runner and reviewed by the judge, but **nothing of this change was verified** — every file in this diff is a gate input this task did not amend, so the checks ran against the base commit and none of this change was in what they ran. A green above says nothing about the diff below. Read all of it.`
+      ? `> **Risk: ${task.risk}** · Proposed by the fleet runner but **nothing of this change was verified** — every file in this diff is a gate input this task did not amend, so the checks ran against the base commit and none of this change was in what they ran. A green above says nothing about the diff below. Read all of it.`
       : unmet.length > 0
-        ? `> **Risk: ${task.risk}** · Proposed by the fleet runner and reviewed by the judge, but **the fleet could not fully verify it** — this task mandated ${unmet.map((g) => `\`${g}\``).join(", ")}, which did not run. Read the diff.`
-        : `> **Risk: ${task.risk}** · Proposed by the fleet runner and reviewed by the judge, but **the fleet could not verify it** — this repository has no verifiers, so no check ran. Read the diff.`;
+        ? `> **Risk: ${task.risk}** · Proposed by the fleet runner but **the fleet could not fully verify it** — this task mandated ${unmet.map((g) => `\`${g}\``).join(", ")}, which did not run. Read the diff.`
+        : `> **Risk: ${task.risk}** · Proposed by the fleet runner but **the fleet could not verify it** — this repository has no verifiers, so no check ran. Read the diff.`;
 
   return [
     banner,
@@ -274,23 +232,6 @@ export function buildPrBody(input: PrBodyInput): string {
     ``,
     "```",
     input.verifySummary,
-    "```",
-    ``,
-    `</details>`,
-    ``,
-    `## Judgment`,
-    ``,
-    `${input.judgeName}: ${verdict.verdict === "approve" ? "approved" : "vetoed"} — ${verdict.rationale}`,
-    ...readSection,
-    ...vetoTrail,
-    ``,
-    // What the model returned, and only that. The paths above are the runner's
-    // observation and deliberately not folded in here, where a reader would
-    // take them for part of the judge's own answer.
-    `<details><summary>Raw verdict JSON</summary>`,
-    ``,
-    "```json",
-    JSON.stringify(verdict, null, 2),
     "```",
     ``,
     `</details>`,

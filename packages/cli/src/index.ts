@@ -372,7 +372,6 @@ program
   .option("--pr", "push a branch and open a PR (default: dry-run)", false)
   .option("--engine <engine>", "claude | mock", "claude")
   .option("--mock-patch <path>", "patch file for the mock engine (or NONE)")
-  .option("--judge <mode>", "claude | cli | approve | veto | veto-once (default: cli locally on your subscription, claude/SDK in CI)")
   .option("--recompile-knowledge", "recompile drifted knowledge before the run (opt-in real agent spend, ~$0.79)", false)
   .action(async (taskArg: string, options) => {
     if (options.recompileKnowledge) await recompileKnowledgeIfStale(options.repo);
@@ -389,7 +388,6 @@ program
         options.mockPatch && options.mockPatch !== "NONE"
           ? path.resolve(options.mockPatch)
           : options.mockPatch,
-      judgeMode: options.judge,
     });
     console.log(`\nstatus:    ${result.status}`);
     console.log(`artifacts: ${path.relative(controlRepo, result.artifactsDir)}`);

@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { VERIFY_STATES, VerdictEvidenceSchema } from "@fleet/contract";
 import { runVerify } from "@fleet/mcp-verify";
-import { composedVerifyState, evidenceFor, findUnmetGates, judgeLine, verdictRecord } from "../src/run.js";
+import { composedVerifyState, evidenceFor, findUnmetGates } from "../src/run.js";
 import type { VerifyCheck } from "../src/pr.js";
 
 /** Checks as verification reports them — only `name` and `status` decide a
@@ -146,66 +146,6 @@ describe("evidenceFor — unmet gates", () => {
 });
 
 /** What a verdict records about the reviewer that produced it (ADR-0011). */
-describe("the recorded verdict", () => {
-  const verdict = { verdict: "approve" as const, violations: [], guidance: "", rationale: "fine" };
-
-  it("carries the runner's observations beside the model's answer", () => {
-    const record = JSON.parse(
-      verdictRecord(verdict, {
-        readPaths: ["src/index.ts"],
-        judge: { model: "claude-opus-4-8", capability: "rooted-read" },
-      }),
-    );
-
-    expect(record.rationale).toBe("fine");
-    expect(record.readPaths).toEqual(["src/index.ts"]);
-    expect(record.judge).toEqual({ model: "claude-opus-4-8", capability: "rooted-read" });
-    // And it parses as what the contract declares, which is the only thing any
-    // reader of this file is entitled to assume about it.
-    expect(VerdictEvidenceSchema.parse(record).readPaths).toEqual(["src/index.ts"]);
-  });
-
-  it("writes no field at all for what it did not observe", () => {
-    // Not `"readPaths": null`, and not `[]`: absent is the absence of a claim,
-    // and both alternatives are claims — one that the field is known to be
-    // nothing, one that the judge opened no file.
-    const record = JSON.parse(verdictRecord(verdict, { judge: { model: "m", capability: "stub" } }));
-
-    expect("readPaths" in record).toBe(false);
-    expect(VerdictEvidenceSchema.parse(record).readPaths).toBeUndefined();
-  });
-
-  it("still records a judgement nothing was observed about", () => {
-    // An injected client that declares neither: the verdict is recorded as the
-    // model gave it, with no claim attached about a reviewer nobody observed.
-    expect(JSON.parse(verdictRecord(verdict, {}))).toEqual(verdict);
-  });
-});
-
-describe("the reviewer-facing judge line", () => {
-  it("names the capability beside the model, because the model alone cannot", () => {
-    expect(judgeLine({ model: "claude-opus-4-8", capability: "rooted-read" })).toBe("claude-opus-4-8 + rooted-read");
-  });
-
-  it("renders a capability nothing emits any more, for the records that carry it", () => {
-    expect(judgeLine({ model: "claude-opus-4-8", capability: "text-only" })).toBe("claude-opus-4-8 + text-only");
-  });
-
-  it("passes through a capability this build has never heard of", () => {
-    // Open vocabulary: a newer runner's value must degrade to prose a human can
-    // still read, not to a blank or a guess.
-    expect(judgeLine({ model: "m", capability: "rooted-grep" })).toBe("m + rooted-grep");
-  });
-
-  it("does not make a stub judge say `stub` twice", () => {
-    expect(judgeLine({ model: "stub judge (approve)", capability: "stub" })).toBe("stub judge (approve)");
-  });
-
-  it("claims no reviewer for a judgement that recorded none", () => {
-    expect(judgeLine(undefined)).toBe("an unrecorded judge");
-  });
-});
-
 /** @fleet/mcp-verify is dependency-free plain JS, so its VerifyState typedef is
  *  a hand-copy of the contract's VERIFY_STATES rather than an import — and
  *  run.ts bridges the two with an unchecked `as VerifyResult` cast. The runner

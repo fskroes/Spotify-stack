@@ -1,8 +1,7 @@
 /**
  * Hermetic end-to-end tests: the full runner loop — workspace preparation,
  * agent-config injection, (mock) agent edit, REAL deterministic verification
- * (eslint + tsc + vitest execute inside the workspace), stubbed judge, and
- * dry-run artifacts — with zero network and no API key. The real Claude
+ * (eslint + tsc + vitest execute inside the workspace), and dry-run artifacts — with zero network and no API key. The real Claude
  * engine is the same code path with a different spawn.
  */
 import { execFileSync } from "node:child_process";
@@ -10,11 +9,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { JudgeClient, Verdict } from "@fleet/judge";
 import type { InflightRecord } from "@fleet/contract";
 import { inflightDir, readInflight } from "../src/inflight.js";
 import { retainedKillDir } from "../src/kill-retention.js";
 import { readLedger } from "../src/ledger.js";
+import { unavailableProducerUsage } from "../src/model-usage.js";
 import { run } from "../src/run.js";
 
 const CONTROL_REPO = path.resolve(__dirname, "..", "..", "..");
@@ -84,7 +83,6 @@ describe("runner e2e (mock engine, hermetic)", () => {
       dryRun: true,
       engine: "mock",
       mockPatch: GOOD_PATCH,
-      judgeMode: "approve",
       ledgerPath,
       artifactsRoot,
       log: quiet,
@@ -110,7 +108,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
     expect(result.verify?.summary).toContain("VERIFY PASSED");
 
     // Dry-run artifacts.
-    for (const f of ["diff.patch", "verdict.json", "verify.log", "transcript.json", "result.json", "pr-preview.md"]) {
+    for (const f of ["diff.patch", "verify.log", "transcript.json", "result.json", "pr-preview.md"]) {
       expect(existsSync(path.join(result.artifactsDir, f)), f).toBe(true);
     }
 
@@ -118,7 +116,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
     // copy — so a same-task rerun can't destroy this run's evidence. The bulky
     // transcript stays out of the archive.
     const runDir = path.join(artifactsRoot, "runs", result.runId);
-    for (const f of ["diff.patch", "verdict.json", "verify.log", "result.json", "pr-preview.md"]) {
+    for (const f of ["diff.patch", "verify.log", "result.json", "pr-preview.md"]) {
       expect(readFileSync(path.join(runDir, f), "utf8"), f).toBe(
         readFileSync(path.join(result.artifactsDir, f), "utf8"),
       );
@@ -138,12 +136,11 @@ describe("runner e2e (mock engine, hermetic)", () => {
 
     // The dry-run preview is the exact reviewer-facing PR body.
     const preview = readFileSync(path.join(result.artifactsDir, "pr-preview.md"), "utf8");
-    expect(preview).toContain("co-signing a verified change");
+    expect(preview).toContain("Nothing reviewed the change for intent");
     expect(preview).toContain("## What changed");
     expect(preview).toContain("## Undo");
     expect(preview).toContain("`git revert <sha>`");
     expect(preview).toContain("Last 30 days:");
-    expect(preview).toContain("stub judge (approve): approved —");
 
     // The run recorded itself in the (test-scoped) ledger.
     const entries = readLedger(ledgerPath);
@@ -191,7 +188,6 @@ describe("runner e2e (mock engine, hermetic)", () => {
         dryRun: true,
         engine: "mock",
         mockPatch: GOOD_PATCH,
-        judgeMode: "approve",
         ledgerPath: tmpLedger(),
         artifactsRoot,
         log: quiet,
@@ -234,7 +230,6 @@ describe("runner e2e (mock engine, hermetic)", () => {
       dryRun: true,
       engine: "mock",
       mockPatch: GOOD_PATCH,
-      judgeMode: "approve",
       ledgerPath,
       artifactsRoot: tmpArtifacts(),
       log: quiet,
@@ -249,23 +244,18 @@ describe("runner e2e (mock engine, hermetic)", () => {
 
   it("live state: the run publishes its stage as it goes, and clears it when it lands", async () => {
     const ledgerPath = tmpLedger();
-    // The judge is the one place a stub gets to look at the world mid-run.
+    // With the judge gone the engine is the only stub that gets to look at the
+    // world mid-run, and it looks from inside the agent stage.
     const seen: InflightRecord[] = [];
-    const veto: Verdict = {
-      verdict: "veto",
-      violations: ["stub: first attempt rejected"],
-      guidance: "try again",
-      rationale: "stub",
-    };
-    const approve: Verdict = { verdict: "approve", violations: [], guidance: "", rationale: "stub" };
-    let calls = 0;
-    const judgeClient: JudgeClient = {
-      messages: {
-        parse: async () => {
-          calls += 1;
-          seen.push(...readInflight(ledgerPath));
-          return { parsed_output: calls === 1 ? veto : approve };
-        },
+    const engineOverride = {
+      run: () => {
+        seen.push(...readInflight(ledgerPath));
+        return {
+          resultText: "NO_CHANGES_NEEDED",
+          sessionId: "stub",
+          transcript: "{}",
+          usage: unavailableProducerUsage("stub engine"),
+        };
       },
     };
 
@@ -275,24 +265,17 @@ describe("runner e2e (mock engine, hermetic)", () => {
       repoName: "demo-ts-service",
       local: true,
       dryRun: true,
-      engine: "mock",
-      mockPatch: GOOD_PATCH,
-      judgeMode: "claude", // stubbed client: no network, no API key
-      judgeClient,
+      engineOverride,
       ledgerPath,
       artifactsRoot: tmpArtifacts(),
       log: quiet,
     });
 
-    expect(result.status).toBe("approved");
-    // Both times the judge looked, exactly one record was in flight — this
-    // process's — and it said "judge". The second says which pass through the
-    // agent→verify→judge loop it was on, which the stage alone cannot.
-    expect(seen).toHaveLength(2);
-    expect(seen.map((r) => [r.stage, r.pass])).toEqual([
-      ["judge", 1],
-      ["judge", 2],
-    ]);
+    expect(result.status).toBe("no-changes");
+    // When the engine looked, exactly one record was in flight — this
+    // process's — and it said "agent", on the run's only pass.
+    expect(seen).toHaveLength(1);
+    expect(seen.map((r) => [r.stage, r.pass])).toEqual([["agent", 1]]);
     expect(seen[0]).toMatchObject({
       v: 1,
       pid: process.pid,
@@ -320,7 +303,6 @@ describe("runner e2e (mock engine, hermetic)", () => {
       dryRun: true,
       engine: "mock",
       mockPatch: GOOD_PATCH,
-      judgeMode: "veto", // must never be consulted
       ledgerPath,
       artifactsRoot: tmpArtifacts(),
       log: quiet,
@@ -328,7 +310,6 @@ describe("runner e2e (mock engine, hermetic)", () => {
 
     expect(result.status).toBe("scope-violation");
     expect(result.verify).toBeUndefined();
-    expect(result.verdict).toBeUndefined();
     expect(result.prUrl).toBeUndefined();
 
     const violation = JSON.parse(
@@ -372,7 +353,6 @@ describe("runner e2e (mock engine, hermetic)", () => {
       dryRun: true,
       engine: "mock",
       mockPatch: GOOD_PATCH,
-      judgeMode: "approve",
       ledgerPath,
       artifactsRoot: tmpArtifacts(),
       log: quiet,
@@ -399,7 +379,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
     // The co-sign body may not claim a verified change, and must say which
     // gate is missing — it sits directly above the ask to sign.
     const preview = readFileSync(path.join(result.artifactsDir, "pr-preview.md"), "utf8");
-    expect(preview).not.toContain("co-signing a verified change");
+    expect(preview).not.toContain("Nothing reviewed the change for intent");
     expect(preview).toContain("live-contract-check");
 
     // And the judge was told in prose, since its whole input is the task, the
@@ -423,7 +403,6 @@ describe("runner e2e (mock engine, hermetic)", () => {
       dryRun: true,
       engine: "mock",
       mockPatch: SCOREBOARD_PATCH,
-      judgeMode: "approve",
       ledgerPath,
       artifactsRoot: tmpArtifacts(),
       log: quiet,
@@ -470,7 +449,6 @@ describe("runner e2e (mock engine, hermetic)", () => {
       dryRun: true,
       engine: "mock",
       mockPatch: NEW_TEST_PATCH,
-      judgeMode: "approve",
       ledgerPath,
       artifactsRoot: tmpArtifacts(),
       log: quiet,
@@ -503,7 +481,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
     expect(preview).toContain("Gate input added by this change");
     expect(preview).toContain("`test/timeout.test.ts`");
     // The banner is the ordinary one: nothing here was left unverified.
-    expect(preview).toContain("co-signing a verified change");
+    expect(preview).toContain("Nothing reviewed the change for intent");
     expect(preview).not.toContain("held at the base");
   });
 
@@ -518,7 +496,6 @@ describe("runner e2e (mock engine, hermetic)", () => {
       dryRun: true,
       engine: "mock",
       mockPatch: SCOREBOARD_PATCH,
-      judgeMode: "approve",
       ledgerPath,
       artifactsRoot: tmpArtifacts(),
       log: quiet,
@@ -565,7 +542,6 @@ describe("runner e2e (mock engine, hermetic)", () => {
       dryRun: true,
       engine: "mock",
       mockPatch: GOOD_PATCH,
-      judgeMode: "approve",
       ledgerPath,
       artifactsRoot: tmpArtifacts(),
       log: quiet,
@@ -582,7 +558,7 @@ describe("runner e2e (mock engine, hermetic)", () => {
     expect(entries[0].evidence?.[0]).toContain("all green");
 
     const preview = readFileSync(path.join(result.artifactsDir, "pr-preview.md"), "utf8");
-    expect(preview).toContain("co-signing a verified change");
+    expect(preview).toContain("Nothing reviewed the change for intent");
     expect(result.verify?.summary).not.toContain("GATES UNMET");
   });
 
@@ -596,7 +572,6 @@ describe("runner e2e (mock engine, hermetic)", () => {
       dryRun: true,
       engine: "mock",
       mockPatch: BAD_PATCH,
-      judgeMode: "approve",
       ledgerPath,
       artifactsRoot: tmpArtifacts(),
       log: quiet,
@@ -609,7 +584,6 @@ describe("runner e2e (mock engine, hermetic)", () => {
     // eslint (unused var) before tsc even runs — either error is fine.
     expect(result.verify?.summary).toMatch(/error/);
     expect(result.verify?.summary).toContain("userService.ts");
-    expect(result.verdict).toBeUndefined();
     expect(existsSync(path.join(result.artifactsDir, "verdict.json"))).toBe(false);
 
     // Retained: the whole verify log, not the ledger's first-failed-check
@@ -617,152 +591,6 @@ describe("runner e2e (mock engine, hermetic)", () => {
     const kill = killStore(ledgerPath, result.runId);
     expect(readFileSync(path.join(kill, "why", "verify.log"), "utf8")).toBe(result.verify?.summary);
     expect(readFileSync(path.join(kill, "diff.patch"), "utf8")).toContain("userService.ts");
-  });
-
-  it("judge veto with self-correction: veto once → resume → approved", async () => {
-    const result = await run({
-      controlRepo: CONTROL_REPO,
-      taskPath: TASK_001,
-      repoName: "demo-ts-service",
-      local: true,
-      dryRun: true,
-      engine: "mock",
-      mockPatch: GOOD_PATCH,
-      judgeMode: "veto-once",
-      ledgerPath: tmpLedger(),
-      artifactsRoot: tmpArtifacts(),
-      log: quiet,
-    });
-
-    expect(result.status).toBe("approved");
-    // The retry transcript proves the resume happened.
-    expect(existsSync(path.join(result.artifactsDir, "transcript.retry-1.json"))).toBe(true);
-    // The absorbed veto surfaces as the immune-system trace in the preview.
-    expect(result.vetoes).toHaveLength(1);
-    const preview = readFileSync(path.join(result.artifactsDir, "pr-preview.md"), "utf8");
-    expect(preview).toContain("Pass 1 vetoed (stub: first attempt rejected)");
-  });
-
-  it("revert after veto: an emptied diff is classified on every pass, not approved", async () => {
-    const ledgerPath = tmpLedger();
-    // The judge vetoes pass 1's migration and the agent reverts the workspace
-    // instead of correcting it, so pass 2 stages nothing. Pass 1 classifies an
-    // empty diff (`no-changes` when the sentinel was declared, `agent-failed`
-    // otherwise); every later pass must apply the same rule. Otherwise the run
-    // records the judge's approval of a change that no longer exists, beside a
-    // zero-byte diff.patch — a claim the fleet did not earn.
-    const result = await run({
-      controlRepo: CONTROL_REPO,
-      taskPath: TASK_001,
-      repoName: "demo-ts-service",
-      local: true,
-      dryRun: true,
-      engine: "mock",
-      mockPatch: REVERT_PATCH,
-      judgeMode: "veto-once",
-      ledgerPath,
-      artifactsRoot: tmpArtifacts(),
-      log: quiet,
-    });
-
-    // The revert is not declared with the sentinel, so it is a failure to
-    // correct — not a benign "nothing was needed".
-    expect(result.status).toBe("agent-failed");
-    expect(result.diff.trim()).toBe("");
-    expect(result.prUrl).toBeUndefined();
-    const [entry] = readLedger(ledgerPath);
-    expect(entry.status).toBe("agent-failed");
-    // The veto that triggered the retry stays on the record; the run ends on
-    // what the last pass produced, not on the judge's earlier word.
-    expect(result.vetoes).toHaveLength(1);
-    expect(entry.vetoes).toBe(1);
-  });
-
-  it("records usage across initial agent, veto, resume, and fresh judge review", async () => {
-    const ledgerPath = tmpLedger();
-    const observedAgent = (inputTokens: number) => ({
-      producer: { source: "claude-cli-result" as const },
-      billing: { source: "unknown", evidence: "fixture" },
-      modelUsage: { availability: "observed" as const, value: [{ model: "claude-opus-4-8", tokens: { inputTokens, cacheCreationInputTokens: 0, cacheReadInputTokens: 2, outputTokens: 4 } }] },
-      reportedCost: { availability: "observed" as const, value: { kind: "claude-cli-estimate", usd: 0 } },
-      providerRetries: { availability: "unavailable" as const, reason: "fixture" },
-    });
-    let reviews = 0;
-    const judgeClient: JudgeClient = {
-      messages: {
-        async parse() {
-          reviews += 1;
-          return {
-            parsed_output: reviews === 1
-              ? { verdict: "veto", violations: ["fixture veto"], guidance: "retry", rationale: "fixture" }
-              : { verdict: "approve", violations: [], guidance: "", rationale: "fixture" },
-            model: "claude-opus-4-8",
-            usage: { input_tokens: 0, cache_creation_input_tokens: 1, cache_read_input_tokens: 3, output_tokens: 5 },
-          };
-        },
-      },
-    };
-
-    const result = await run({
-      controlRepo: CONTROL_REPO,
-      taskPath: TASK_001,
-      repoName: "demo-ts-service",
-      local: true,
-      dryRun: true,
-      engine: "mock",
-      mockPatch: GOOD_PATCH,
-      mockUsage: [observedAgent(10), { ...observedAgent(8), modelUsage: { availability: "unavailable", reason: "fixture resume unavailable" } }],
-      judgeMode: "claude",
-      judgeClient,
-      ledgerPath,
-      artifactsRoot: tmpArtifacts(),
-      log: quiet,
-    });
-
-    const evidence = JSON.parse(readFileSync(path.join(path.dirname(ledgerPath), "fleet", "evidence", result.runId, "model-usage.json"), "utf8"));
-    expect(evidence.attempts.map(({ rail, ordinal, role }: { rail: string; ordinal: number; role: string }) => `${rail}:${ordinal}:${role}`)).toEqual([
-      "agent:1:initial", "judge:1:review", "agent:2:resume", "judge:2:review",
-    ]);
-    expect(evidence.attempts[0].modelUsage.value[0].tokens.cacheCreationInputTokens).toBe(0);
-    const recorded = readLedger(ledgerPath)[0].modelUsage;
-    expect(recorded?.agent).toMatchObject({ availability: "partial", attempts: 2 });
-    expect(recorded?.agent.tokens).toBeUndefined();
-    expect(recorded?.judge.tokens).toEqual({ inputTokens: 0, cacheCreationInputTokens: 2, cacheReadInputTokens: 6, outputTokens: 10 });
-  });
-
-  it("judge veto exhausted: retries used up → vetoed, no PR", async () => {
-    const vetoLedger = tmpLedger();
-    const result = await run({
-      controlRepo: CONTROL_REPO,
-      taskPath: TASK_001,
-      repoName: "demo-ts-service",
-      local: true,
-      dryRun: true,
-      engine: "mock",
-      mockPatch: GOOD_PATCH,
-      judgeMode: "veto",
-      maxJudgeRetries: 1,
-      ledgerPath: vetoLedger,
-      artifactsRoot: tmpArtifacts(),
-      log: quiet,
-    });
-
-    expect(result.status).toBe("vetoed");
-    expect(result.verdict?.verdict).toBe("veto");
-    expect(result.prUrl).toBeUndefined();
-
-    const entries = readLedger(vetoLedger);
-    expect(entries[0]).toMatchObject({ status: "vetoed", vetoes: 2, reason: "stub: change rejected" });
-
-    // The retained verdict is the answer key the ledger's `reason` cannot be:
-    // the full violation array, the rationale, and the judge identity pair
-    // ADR-0011 exists to preserve (ADR-0015).
-    const verdict = JSON.parse(
-      readFileSync(path.join(killStore(vetoLedger, result.runId), "why", "verdict.json"), "utf8"),
-    ) as { violations: string[]; rationale: string; judge: { model: string; capability: string } };
-    expect(verdict.violations).toEqual(["stub: change rejected"]);
-    expect(verdict.rationale).toBe("stub judge: auto-vetoed");
-    expect(verdict.judge).toEqual({ model: "stub judge (veto)", capability: "stub" });
   });
 
   it("precondition path: agent makes no changes and declares NO_CHANGES_NEEDED", async () => {
@@ -774,7 +602,6 @@ describe("runner e2e (mock engine, hermetic)", () => {
       dryRun: true,
       engine: "mock",
       mockPatch: "NONE",
-      judgeMode: "approve",
       ledgerPath: tmpLedger(),
       artifactsRoot: tmpArtifacts(),
       log: quiet,
@@ -797,7 +624,6 @@ describe("stop hook (unit-level, real verify)", () => {
       dryRun: true,
       engine: "mock",
       mockPatch: GOOD_PATCH,
-      judgeMode: "approve",
       ledgerPath: tmpLedger(),
       artifactsRoot: tmpArtifacts(),
       log: quiet,

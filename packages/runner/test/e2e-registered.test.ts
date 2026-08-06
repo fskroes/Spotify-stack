@@ -73,7 +73,6 @@ const runWith = (controlRepo: string, taskPath: string, ledgerPath: string) =>
     dryRun: true,
     engine: "mock",
     mockPatch: GOOD_PATCH,
-    judgeMode: "approve",
     ledgerPath,
     log: quiet,
   });

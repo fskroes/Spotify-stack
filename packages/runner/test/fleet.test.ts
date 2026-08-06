@@ -12,7 +12,6 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 import { findRepo, loadFleet, resolveFleetRepo, resolveLocalSource, resolveOwner } from "../src/fleet.js";
-import { defaultJudgeMode } from "../src/run.js";
 
 const savedOwner = process.env.GH_OWNER;
 const savedCI = process.env.GITHUB_ACTIONS;
@@ -124,17 +123,5 @@ describe("loadFleet overlay (fleet/repos.local.yaml)", () => {
 
     expect(resolveLocalSource(repo, controlRepo)).toBe("/control/demo-repos/demo");
     expect(resolveLocalSource({ ...repo, local_path: "/source/demo" }, controlRepo)).toBe("/source/demo");
-  });
-});
-
-describe("defaultJudgeMode", () => {
-  it("defaults to the subscription cli judge locally", () => {
-    delete process.env.GITHUB_ACTIONS;
-    expect(defaultJudgeMode()).toBe("cli");
-  });
-
-  it("defaults to the SDK claude judge in CI", () => {
-    process.env.GITHUB_ACTIONS = "true";
-    expect(defaultJudgeMode()).toBe("claude");
   });
 });

@@ -3,11 +3,9 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import picomatch from "picomatch";
-import { knownJudgeCapability, type JudgeIdentity, type RunStatus, type VerdictEvidence, type VerifyState } from "@fleet/contract";
+import { type RunStatus, type VerifyState } from "@fleet/contract";
 import { runVerify } from "@fleet/mcp-verify";
-import { createCliJudgeClient, createJudgeClient, judgeWithEvidence, type JudgeClient, type JudgeInput, type JudgeResult, type Verdict } from "@fleet/judge";
 import { defaultArtifactsRoot, prepareRunArtifactsDir, REVIEW_ARTIFACTS } from "./artifacts.js";
-import { assertJudgeReadStartupMarker, preflightJudgeRead } from "./judge-read-check.js";
 import { killRetentionLog, retainKill } from "./kill-retention.js";
 import { claudeEngine, mockEngine, type Engine, type EngineResult } from "./engine.js";
 import { createUsageCollector, unavailableProducerUsage, writeModelUsageEvidence, type ProducerUsage, type UsageCollector } from "./model-usage.js";
@@ -50,9 +48,6 @@ export interface RunOptions {
   mockPatch?: string;
   /** Ordered agent observations for the mock engine (initial, then resumes). */
   mockUsage?: ProducerUsage[];
-  judgeMode?: "claude" | "cli" | "approve" | "veto" | "veto-once";
-  judgeClient?: JudgeClient;
-  maxJudgeRetries?: number;
   /** Override the committed ledger location (tests point this at a temp file). */
   ledgerPath?: string;
   /** Override where artifacts are written (tests point this at a temp dir).
@@ -80,9 +75,6 @@ export interface RunResult {
    *  Absent when the run never built a tree — nothing was held or carried,
    *  because nothing was reconstituted. */
   gateInputs?: GateInputDecision;
-  verdict?: Verdict;
-  /** Veto verdicts absorbed along the way (includes a final fatal one). */
-  vetoes: Verdict[];
   prUrl?: string;
   /** Short commit sha, set once a change is committed (non-dry-run approvals). */
   sha?: string;
@@ -100,122 +92,20 @@ Complete the task below. Rules of engagement:
   repository has no verifiers and nothing you do will turn it green.
 - Never modify dependency manifests or lockfiles (package.json,
   package-lock.json, pnpm-lock.yaml, Package.resolved, …) unless the task
-  explicitly asks for it. Judges veto out-of-scope changes; every veto costs a
-  full retry loop.
+  explicitly asks for it. The runner kills any run whose diff leaves the task's
+  scope, and a person reads every diff that reaches a pull request.
 - If the task's preconditions are not met, make no changes and end your reply
   with exactly: NO_CHANGES_NEEDED
 `;
 
 export function buildPreamble(task: Task, knowledgePreamble?: string): string {
   const scopeRule = task.scope
-    ? `- You may only modify files matching: ${task.scope.join(", ")}. The runner\n  mechanically kills any run whose diff touches other files — before verify,\n  judge, or review.\n`
+    ? `- You may only modify files matching: ${task.scope.join(", ")}. The runner\n  mechanically kills any run whose diff touches other files — before verify\n  or review.\n`
     : "";
   // The knowledge block sits after the rules of engagement and before the task,
   // so the agent knows the injected file is available while reading what to do.
   const knowledgeBlock = knowledgePreamble ? `\n${knowledgePreamble}\n` : "";
   return `${HARNESS_RULES}${scopeRule}${knowledgeBlock}\n--- TASK ---\n${task.raw}`;
-}
-
-/**
- * Judge mode when the caller didn't pass one. In CI (`GITHUB_ACTIONS`, the same
- * cloud signal used below) the SDK judge runs against the ANTHROPIC_API_KEY
- * secret. Locally we default to `cli` — judges via the local `claude` CLI on the
- * user's subscription, so a local run needs no API key and burns no credits.
- */
-export function defaultJudgeMode(): NonNullable<RunOptions["judgeMode"]> {
-  return process.env.GITHUB_ACTIONS ? "claude" : "cli";
-}
-
-/**
- * Whether this run's judge will start a read server of its own — the only case
- * with a subprocess to prove anything about.
- *
- * The SDK transport calls the reader in-process, and an injected client
- * replaces the transport wholesale, subprocess and all: handshaking a server
- * neither will ever start proves nothing, and asserting a marker neither can
- * write would fail every run that used one.
- */
-function judgeStartsAReadServer(opts: RunOptions): boolean {
-  return (opts.judgeMode ?? defaultJudgeMode()) === "cli" && !opts.judgeClient;
-}
-
-/**
- * @param artifactsDir  Where the CLI judge's read server writes the startup
- *   marker this runner asserts afterwards — one file per invocation, so a
- *   retry's judge is proven to have had a reader of its own rather than
- *   inheriting the first attempt's proof.
- */
-function makeJudge(
-  opts: RunOptions,
-  { artifactsDir }: { artifactsDir: string },
-): (input: Omit<JudgeInput, "client" | "model">) => Promise<JudgeResult> {
-  const mode = opts.judgeMode ?? defaultJudgeMode();
-  const stub = (verdict: Verdict): JudgeResult => ({
-    verdict,
-    usage: unavailableProducerUsage("stub judge does not produce model usage evidence"),
-    // Named on the record, because a run judged by nothing must not be readable
-    // as a run judged by something. `readPaths` stays absent rather than empty:
-    // a stub had no reader, and empty would claim one that chose not to read.
-    judge: { model: `stub judge (${mode})`, capability: "stub" },
-  });
-  let calls = 0;
-  return async (input) => {
-    calls += 1;
-    switch (mode) {
-      case "approve":
-        return stub({ verdict: "approve", violations: [], guidance: "", rationale: "stub judge: auto-approved (no review performed)" });
-      case "veto":
-        return stub({
-          verdict: "veto",
-          violations: ["stub: change rejected"],
-          guidance: "stub guidance: correct the diff",
-          rationale: "stub judge: auto-vetoed",
-        });
-      case "veto-once":
-        return stub(calls === 1
-          ? {
-              verdict: "veto",
-              violations: ["stub: first attempt rejected"],
-              guidance: "stub guidance: try again",
-              rationale: "stub judge: auto-vetoed first attempt",
-            }
-          : { verdict: "approve", violations: [], guidance: "", rationale: "stub judge: auto-approved after retry" });
-      // One client per invocation, rooted at this run's workspace: the read
-      // capability the judge is handed is scoped to the thing under review, and
-      // cannot outlive it (ADR-0011). Which transport carries a verdict is a
-      // billing question and not a capability one, and these are the two call
-      // sites where that would silently stop being true.
-      //
-      // Their *launch* paths are not symmetric, though, and the marker below
-      // belongs on `cli` alone: that transport starts the read server as a
-      // subprocess, which can fail to come up and leave a judge reviewing
-      // blind. `claude` calls the reader in-process — an unavailable one
-      // throws, and a throwing judge is already a failed run. A check on that
-      // path could not fail, and a check that cannot fail reads like a
-      // guarantee.
-      case "cli": {
-        // The other half of `judgeStartsAReadServer`, which the mode has
-        // already settled by the time control reaches this case.
-        if (opts.judgeClient) return judgeWithEvidence({ ...input, client: opts.judgeClient });
-        const markerPath = path.join(artifactsDir, `judge-read-startup.${calls}.json`);
-        // Per invocation, like the marker and for the same reason: a retry's
-        // verdict must say what *its* judge read, not what the attempt before
-        // it did.
-        const journalPath = path.join(artifactsDir, `judge-read-paths.${calls}.txt`);
-        const result = await judgeWithEvidence({
-          ...input,
-          client: createCliJudgeClient({ workspace: input.workspace, markerPath, journalPath }),
-        });
-        // After the verdict, and fatal to it. A verdict reached without the
-        // ability to read is not a cheaper verdict — it is the one this whole
-        // cage exists to stop being recorded as a review (ADR-0011).
-        assertJudgeReadStartupMarker(markerPath);
-        return result;
-      }
-      case "claude":
-        return judgeWithEvidence({ ...input, client: opts.judgeClient ?? createJudgeClient({ workspace: input.workspace }) });
-    }
-  };
 }
 
 function makeEngine(opts: RunOptions, workspace: string, mcpConfigPath: string): Engine {
@@ -241,7 +131,7 @@ function controlRepoWebUrl(controlRepo: string): string | undefined {
 }
 
 /** The first violation/failure line — keeps a kill legible in the ledger. */
-function killReason(result: Pick<RunResult, "status" | "verify" | "verdict" | "resultText">, scopeOffenders?: string[]): string | undefined {
+function killReason(result: Pick<RunResult, "status" | "verify" | "resultText">, scopeOffenders?: string[]): string | undefined {
   switch (result.status) {
     case "agent-failed":
       return "agent produced no diff without declaring NO_CHANGES_NEEDED";
@@ -250,8 +140,6 @@ function killReason(result: Pick<RunResult, "status" | "verify" | "verdict" | "r
       const firstLine = failed?.summary.split("\n").find((l) => l.trim() !== "")?.trim();
       return failed ? `${failed.label} failed${firstLine ? `: ${firstLine}` : ""}` : "verification failed";
     }
-    case "vetoed":
-      return result.verdict?.violations[0] ?? result.verdict?.rationale;
     case "scope-violation":
       return `out-of-scope files: ${(scopeOffenders ?? []).slice(0, 5).join(", ")}${(scopeOffenders?.length ?? 0) > 5 ? ", …" : ""}`;
     case "engine-failed":
@@ -304,36 +192,6 @@ export function composedVerifyState(
 }
 
 /**
- * The verdict as it is *recorded*: what the model returned, plus what the runner
- * observed about the judge that returned it (cage spec §7.1).
- *
- * Two authors, one file, and the split matters. The verdict fields are the
- * model's answer; `readPaths` and `judge` are the runner's account of the
- * reviewer — which is why neither appears on the schema the model fills in. A
- * judge asked to list its own reads can list files it never opened, and telling
- * that apart from a grounded veto is the entire purpose of recording them.
- *
- * Absent stays absent: `JSON.stringify` drops an undefined field, so a judgement
- * that observed nothing writes a record with no such key rather than one
- * claiming a judge that read nothing.
- */
-export function verdictRecord(verdict: Verdict, result: Pick<JudgeResult, "readPaths" | "judge">): string {
-  const evidence: VerdictEvidence = { readPaths: result.readPaths, judge: result.judge };
-  return JSON.stringify({ ...verdict, ...evidence }, null, 2);
-}
-
-/**
- * The one line of prose the PR body names the reviewer with.
- *
- * Composed from the structured pair rather than replacing it: a human at
- * co-sign reads a sentence, and a model name alone cannot tell two reviewers
- * with different powers apart, which is the condition ADR-0011 ends. The pair
- * is recorded beside this in `verdict.json`, for readers that are not people.
- *
- * A stub names no capability. "stub judge (approve) + stub" says the same thing
- * twice, and the model half already says the only thing that matters about it.
- */
-/**
  * Where a co-signer can read the task this PR claims to satisfy, or nothing.
  *
  * **Tracked, not merely present.** `tasks/private/` is git-ignored, so a private
@@ -367,11 +225,6 @@ export function taskFileUrl(
   return `${webUrl}/blob/main/${rel}`;
 }
 
-export function judgeLine(judge: JudgeIdentity | undefined): string {
-  if (!judge) return "an unrecorded judge";
-  return knownJudgeCapability(judge.capability) === "stub" ? judge.model : `${judge.model} + ${judge.capability}`;
-}
-
 /**
  * A short, capped slice of the evidence that decided the run — the gate output
  * a reader would want when the one-line `reason` isn't enough. Kept small on
@@ -379,7 +232,7 @@ export function judgeLine(judge: JudgeIdentity | undefined): string {
  * it must not carry multi-KB diffs or full logs (those stay in artifacts/).
  */
 export function evidenceFor(
-  result: Pick<RunResult, "status" | "verify" | "verdict" | "resultText" | "unmetGates" | "gateInputs">,
+  result: Pick<RunResult, "status" | "verify" | "resultText" | "unmetGates" | "gateInputs">,
   scopeOffenders?: string[],
 ): string[] | undefined {
   const cap = (lines: string[]): string[] =>
@@ -394,11 +247,6 @@ export function evidenceFor(
       const failed = result.verify?.checks.find((c) => c.status === "failed");
       if (!failed) return undefined;
       return cap([`✗ ${failed.label} failed`, ...failed.summary.split("\n")]);
-    }
-    case "vetoed": {
-      const v = result.verdict;
-      if (!v) return undefined;
-      return cap([...v.violations.map((line) => `veto: ${line}`), ...(v.rationale ? [v.rationale] : [])]);
     }
     case "scope-violation":
       return cap([
@@ -493,7 +341,6 @@ export interface PassContext {
   task: Task;
   workspace: string;
   engine: Engine;
-  judgeOnce: (input: Omit<JudgeInput, "client" | "model">) => Promise<JudgeResult>;
   registered: VerifierCheck[];
   /** First prompt only: the file persists on disk across passes and `resume`
    *  carries the session, so the agent keeps both without being re-told. */
@@ -519,30 +366,9 @@ export interface EndedPass {
    *  died at scope, or before the diff applied, held nothing. */
   gateInputs?: GateInputDecision;
   scopeOffenders?: string[];
-  /** Only ever the *prior* pass's, and only when this pass never reached the
-   *  workspace — see the agent-failure path in `runPass`. */
-  verdict?: Verdict;
 }
 
-/**
- * A pass the judge rejected. The only outcome that may seed another pass, which
- * is why it alone carries the session and the ordinal: `runPass`'s second
- * parameter accepts this type and no other, so "only a veto starts another
- * pass" is a compile error rather than a convention.
- */
-export interface VetoedPass {
-  outcome: "vetoed";
-  ordinal: number;
-  sessionId: string;
-  diff: string;
-  resultText: string;
-  verify: VerifyResult;
-  unmetGates: string[];
-  gateInputs: GateInputDecision;
-  judgeResult: JudgeResult;
-}
-
-/** A pass the judge approved. The run may ship what it produced. */
+/** A pass that reached green verify. The run may ship what it produced. */
 export interface ApprovedPass {
   outcome: "approved";
   diff: string;
@@ -550,19 +376,17 @@ export interface ApprovedPass {
   verify: VerifyResult;
   unmetGates: string[];
   gateInputs: GateInputDecision;
-  judgeResult: JudgeResult;
 }
 
-export type PassOutcome = EndedPass | VetoedPass | ApprovedPass;
+export type PassOutcome = EndedPass | ApprovedPass;
 
 /**
  * The task's mandate, checked against what actually executed. Verification
  * itself never learns about tasks — it is shared with the agent-facing MCP
  * tool, and handing the agent a mandate it cannot act on would leave it
  * chasing a pass it has no way to produce. Naming the unmet gates in the
- * summary is not redundancy with the wire field: the judge's whole input is
- * the task markdown, the diff, and this text, so this is what lets it
- * decline to approve a change on the strength of checks the task never asked for.
+ * summary is not redundancy with the wire field: it is what the agent reads, so
+ * an unmet gate is visible to the thing that could still act on it.
  */
 function applyGates(task: Task, result: VerifyResult): { verify: VerifyResult; unmetGates: string[] } {
   const unmet = findUnmetGates(task.gates, result.checks);
@@ -578,77 +402,35 @@ function applyGates(task: Task, result: VerifyResult): { verify: VerifyResult; u
   };
 }
 
-/** The veto, handed back to the agent that produced the change. */
-function resumeGuidance(verdict: Verdict): string {
-  return (
-    `A reviewer rejected your change:\n${verdict.violations.map((v) => `- ${v}`).join("\n")}\n\n` +
-    `${verdict.guidance}\nCorrect the change, then call the verify tool again.`
-  );
-}
-
 /**
- * One [pass](../../../CONTEXT.md#pass): agent → scope → verify → judge. A run
- * has at least one; a judge veto starts another.
- *
- * The veto retry used to be a second copy of this sequence, and the two copies
- * drifted — the copy never classified an empty diff, so an agent that reverted
- * its vetoed change reached `approved` beside a zero-byte `diff.patch`. One
- * implementation, looped, cannot drift.
+ * The [pass](../../../CONTEXT.md#pass): agent → scope → verify. A run has
+ * exactly one. The veto retry that could start a second died with the judge
+ * (ADR-0025), and with it the resume path.
  *
  * A pass reports **only what it observed** ([ADR-0012](../../../docs/adr/0012-a-pass-reports-only-what-it-observed.md)).
- * It never pairs this pass's diff with an earlier pass's verification or
- * verdict: that green belongs to a change this pass replaced, and a verdict on
- * a diff nobody reviewed is the one output the system may not produce
- * (ADR-0004). The single exception is documented at the agent-failure path,
- * where this pass never reached the workspace at all.
  */
-export async function runPass(ctx: PassContext, prior?: VetoedPass): Promise<PassOutcome> {
-  const ordinal = (prior?.ordinal ?? 0) + 1;
+export async function runPass(ctx: PassContext): Promise<PassOutcome> {
   const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-  // Every pass, not only the retries: stage alone cannot tell a second trip
-  // through Agent from a run that never left it. Re-entering on the first pass
-  // too means `stageSince` marks the real start of the agent call, so a cold
-  // clone stops consuming the agent stage's staleness budget. The stage label is
-  // unchanged either way — cloning stays bracketed into the phase it starts.
-  ctx.inflight.enter("agent", ordinal);
-  ctx.log(prior ? "· resuming agent…" : "· running agent…");
+  // Entered explicitly rather than assumed: `stageSince` marks the real start of
+  // the agent call, so a cold clone stops consuming the agent stage's staleness
+  // budget. Cloning stays bracketed into the phase it starts.
+  ctx.inflight.enter("agent", 1);
+  ctx.log("· running agent…");
   let engineResult: EngineResult;
   try {
-    engineResult = await ctx.timed("agentMs", () =>
-      prior
-        ? ctx.engine.resume(prior.sessionId, resumeGuidance(prior.judgeResult.verdict))
-        : ctx.engine.run(buildPreamble(ctx.task, ctx.knowledgePreamble)),
-    );
+    engineResult = await ctx.timed("agentMs", () => ctx.engine.run(buildPreamble(ctx.task, ctx.knowledgePreamble)));
     ctx.usage.recordAgent(engineResult.usage);
   } catch (error) {
-    ctx.usage.recordAgent(
-      unavailableProducerUsage(
-        prior
-          ? "agent resume failed before a usable final envelope"
-          : "agent invocation failed before a usable final envelope",
-      ),
-    );
-    // The one place a pass may report an earlier pass's facts, and it is not the
-    // stale-green hazard: this pass never reached the workspace, so the change
-    // `prior` verified and judged is still exactly what is staged there. Diff,
-    // verification and verdict continue to describe the same change, and
-    // reporting nothing would misreport a dirty workspace as clean. Every path
-    // below has staged something of its own, where an earlier green would
-    // describe a change that no longer exists.
-    if (prior) ctx.artifact("diff.patch", prior.diff);
+    ctx.usage.recordAgent(unavailableProducerUsage("agent invocation failed before a usable final envelope"));
     return {
       outcome: "ended",
       status: "engine-failed",
       resultText: errorText(error),
-      diff: prior?.diff ?? "",
-      verify: prior?.verify,
-      unmetGates: prior?.unmetGates,
-      gateInputs: prior?.gateInputs,
-      verdict: prior?.judgeResult.verdict,
+      diff: "",
     };
   }
-  ctx.artifact(prior ? `transcript.retry-${prior.ordinal}.json` : "transcript.json", engineResult.transcript);
+  ctx.artifact("transcript.json", engineResult.transcript);
 
   const diff = stagedDiff(ctx.workspace);
   const resultText = engineResult.resultText;
@@ -656,9 +438,7 @@ export async function runPass(ctx: PassContext, prior?: VetoedPass): Promise<Pas
   if (diff.trim() === "") {
     // The task template requires the agent to END its reply with the sentinel —
     // a mere mention (e.g. while explaining a failure) must not count as a
-    // benign no-op. Applied on every pass, not just the first: an agent that
-    // reverts its vetoed change has produced nothing to review, and the run has
-    // to say so rather than record an approval of a change that no longer exists.
+    // benign no-op.
     const declared = resultText.trim().endsWith("NO_CHANGES_NEEDED");
     return { outcome: "ended", status: declared ? "no-changes" : "agent-failed", diff, resultText };
   }
@@ -761,27 +541,10 @@ export async function runPass(ctx: PassContext, prior?: VetoedPass): Promise<Pas
     return { outcome: "ended", status: "verify-failed", diff, resultText, verify, unmetGates, gateInputs };
   }
 
-  ctx.inflight.enter("judge");
-  let judgeResult: JudgeResult;
-  try {
-    judgeResult = await ctx.timed("judgeMs", () =>
-      ctx.judgeOnce({ taskMarkdown: ctx.task.raw, diff, verifySummary: verify.summary, workspace: ctx.workspace }),
-    );
-    ctx.usage.recordJudge(judgeResult.usage);
-  } catch (error) {
-    ctx.usage.recordJudge(unavailableProducerUsage("judge invocation failed before a usable producer response"));
-    ctx.artifact("diff.patch", diff);
-    // No verdict, deliberately: this pass never got one. An earlier pass's veto
-    // judged a *different* diff, and recording it beside this one would pair a
-    // verdict with a change its judge never saw.
-    return { outcome: "ended", status: "engine-failed", diff, resultText: errorText(error), verify, unmetGates, gateInputs };
-  }
-
   ctx.artifact("diff.patch", diff);
-  const facts = { diff, resultText, verify, unmetGates, gateInputs, judgeResult };
-  return judgeResult.verdict.verdict === "veto"
-    ? { outcome: "vetoed", ordinal, sessionId: engineResult.sessionId, ...facts }
-    : { outcome: "approved", ...facts };
+  // Green verify is now the last gate before review. Nothing else may reject a
+  // change, so this returns approved or it has already returned ended.
+  return { outcome: "approved", diff, resultText, verify, unmetGates, gateInputs };
 }
 
 export async function run(opts: RunOptions): Promise<RunResult> {
@@ -789,15 +552,13 @@ export async function run(opts: RunOptions): Promise<RunResult> {
   const task = loadTask(opts.taskPath);
   const repo = findRepo(opts.controlRepo, opts.repoName);
   const dryRun = opts.dryRun ?? true;
-  const maxRetries = opts.maxJudgeRetries ?? 2;
   const ledgerPath = opts.ledgerPath ?? defaultLedgerPath(opts.controlRepo);
   const artifactsRoot = opts.artifactsRoot ?? defaultArtifactsRoot(opts.controlRepo);
-  const vetoes: Verdict[] = [];
   const runId = randomUUID();
   const usage = createUsageCollector();
 
-  // Phase timings, accumulated across the (possibly repeated) agent→verify→judge
-  // loop. `finish` reads these by reference after the phases have run.
+  // Phase timings for the run's one pass. `finish` reads these by reference
+  // after the phases have run.
   const startedAt = Date.now();
   const timings = { agentMs: 0, verifyMs: 0, judgeMs: 0 };
   const timed = async <T>(phase: keyof typeof timings, fn: () => T | Promise<T>): Promise<T> => {
@@ -876,10 +637,9 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       log("· no compiled knowledge for this target — running cold");
     }
     const engine = makeEngine(opts, workspace, mcpConfigPath);
-    const judgeOnce = makeJudge(opts, { artifactsDir });
 
-    const finish = (result: Omit<RunResult, "vetoes" | "runId">, scopeOffenders?: string[]): RunResult => {
-      const full: RunResult = { ...result, vetoes, runId };
+    const finish = (result: Omit<RunResult, "runId">, scopeOffenders?: string[]): RunResult => {
+      const full: RunResult = { ...result, runId };
       const modelUsageEvidence = usage.evidence(runId, new Date().toISOString());
       // A custom ledger is the runner's hermetic-test seam. Keep its durable
       // evidence beside that ledger instead of leaking test runs into the control
@@ -902,7 +662,9 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         // this code path writes can be a cloud run. `"cloud"` survives in the
         // contract and the readers because two archived ledger rows carry it.
         mode: "local",
-        vetoes: vetoes.length,
+        // Always 0. The judge is deleted (ADR-0025) and nothing can veto, but
+        // the field stays on the wire because 48 archived rows carry it.
+        vetoes: 0,
         reason: killReason(full, scopeOffenders),
         prUrl: full.prUrl,
         title: task.title,
@@ -960,28 +722,6 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       return full;
     };
 
-    // Before the agent, not merely before the judge. The handshake costs no
-    // tokens and the agent's are model spend too, so a run whose judge could
-    // never have read this workspace dies before anything is billed to it
-    // (ADR-0011: a judge that cannot read fails the run). Once per run — the
-    // workspace does not change between veto-retries, so neither can the
-    // answer, and only the per-invocation marker is worth re-proving.
-    if (judgeStartsAReadServer(opts)) {
-      try {
-        await preflightJudgeRead({ workspace, log });
-      } catch (error) {
-        return finish({
-          task,
-          repo,
-          workspace,
-          artifactsDir,
-          diff: "",
-          resultText: error instanceof Error ? error.message : String(error),
-          status: "engine-failed",
-        });
-      }
-    }
-
     // The knowledge preamble need only be in the first prompt: the file
     // persists on disk across passes (the workspace is not recreated) and
     // engine.resume carries the session, so the agent keeps both.
@@ -994,7 +734,6 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       task,
       workspace,
       engine,
-      judgeOnce,
       registered,
       knowledgePreamble,
       // Absent when the task declares no scope, which leaves the judge as the
@@ -1020,49 +759,17 @@ export async function run(opts: RunOptions): Promise<RunResult> {
           verify: pass.verify,
           unmetGates: pass.unmetGates,
           gateInputs: pass.gateInputs,
-          verdict: pass.verdict,
           status: pass.status,
         },
         pass.scopeOffenders,
       );
 
-    // The loop — and the only place retry policy lives. A pass knows nothing
-    // about how many are allowed; it produces an outcome, and only a veto can
-    // seed the next one, which is why `runPass` accepts no other kind.
-    let pass = await runPass(ctx);
-    while (pass.outcome === "vetoed" && vetoes.length < maxRetries) {
-      vetoes.push(pass.judgeResult.verdict);
-      // This veto's own evidence, not the run's: each pass was a separate
-      // judgement with its own reads, and folding them together would credit
-      // one pass's grounding to another's. The filename records whether the veto
-      // was retried — this loop's decision, which the pass cannot know.
-      artifact(`verdict.veto-${vetoes.length}.json`, verdictRecord(pass.judgeResult.verdict, pass.judgeResult));
-      log(`· judge vetoed (retry ${vetoes.length}/${maxRetries}) — resuming agent with guidance`);
-      pass = await runPass(ctx, pass);
-    }
-
+    // One pass, always. The veto retry loop lived here and was the only thing
+    // that could start a second one (ADR-0025).
+    const pass = await runPass(ctx);
     if (pass.outcome === "ended") return settle(pass);
 
-    const { diff, resultText, verify, unmetGates, gateInputs, judgeResult } = pass;
-    const verdict = judgeResult.verdict;
-    artifact("verdict.json", verdictRecord(verdict, judgeResult));
-
-    if (pass.outcome === "vetoed") {
-      vetoes.push(verdict);
-      return finish({
-        task,
-        repo,
-        workspace,
-        artifactsDir,
-        diff,
-        resultText,
-        verify,
-        unmetGates,
-        gateInputs,
-        verdict,
-        status: "vetoed",
-      });
-    }
+    const { diff, resultText, verify, unmetGates, gateInputs } = pass;
 
     // Assemble the reviewer-facing PR body (previewed as an artifact in
     // dry-run). The fleet record deliberately reads the ledger *before* this
@@ -1081,14 +788,6 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       // been verified, and that is not a fact the body may leave to the log.
       gateInputs,
       verifySummary: verify.summary,
-      verdict,
-      vetoes,
-      // Both taken from the judgement that actually produced this verdict,
-      // rather than from the mode the run asked for. The mode says which
-      // transport was requested; these say what answered and what it opened —
-      // and an injected client is exactly the case where those differ.
-      judgeName: judgeLine(judgeResult.judge),
-      readPaths: judgeResult.readPaths,
       record: fleetRecord(readLedger(ledgerPath)),
       taskFileUrl: taskFileUrl(opts.controlRepo, opts.taskPath, webUrl),
       newIssueUrl: webUrl ? `${webUrl}/issues/new` : undefined,
@@ -1100,7 +799,6 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       artifact("pr-preview.md", buildPrBody(bodyInput));
     } else {
       log("· opening pull request…");
-      // Push + `gh pr create` takes seconds and has always rendered as "judge".
       inflight.enter("shipping");
       ({ url: prUrl, sha } = openPullRequest({
         workspace,
@@ -1120,7 +818,6 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       verify,
       unmetGates,
       gateInputs,
-      verdict,
       prUrl,
       sha,
       status: "approved",
