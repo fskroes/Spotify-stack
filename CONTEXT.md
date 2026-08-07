@@ -379,8 +379,8 @@ It governs an **edit**, and only an edit. A gate input the base does not have is
 carried into the tree and runs, with no licence and none available: there is
 nothing to hold it at, and a gate that never existed cannot have been weakened
 ([ADR-0021](docs/adr/0021-a-gate-input-the-base-never-had-is-carried.md)). What
-such a file proves is worth what it asserts, which is a reading the judge and the
-co-signer make — the [scoreboard it could be played to](#playing-to-the-scoreboard)
+such a file proves is worth what it asserts, which is a reading the co-signer
+makes — the [scoreboard it could be played to](#playing-to-the-scoreboard)
 is a different defect, and no path rule reaches it.
 
 "Stays in the diff" is a claim about the *diff*, never a promise about the run.
