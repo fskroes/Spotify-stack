@@ -8,7 +8,7 @@
  * nothing prunes and nothing expires:
  *
  *     fleet/evidence/<runId>/kill/diff.patch     the blinded view
- *     fleet/evidence/<runId>/kill/why/…          verdict.json | verify.log | scope-violation.json
+ *     fleet/evidence/<runId>/kill/why/…          verify.log | scope-violation.json
  *     fleet/evidence/<runId>/kill/outcome.json   absent until someone re-adjudicates
  *
  * The separation is a property of the **path**, not of a reader's discipline: a
@@ -60,7 +60,6 @@ const KILLING_ARTEFACT = {
   agent: null,
   scope: "scope-violation.json",
   verify: "verify.log",
-  judge: "verdict.json",
 } as const satisfies Record<TerminalStage, string | null>;
 
 export type KillRetention =

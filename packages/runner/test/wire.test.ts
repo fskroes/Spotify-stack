@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  InflightRecordSchema,
   isKillStatus,
   knownVerifyState,
   LedgerEntrySchema,
@@ -11,7 +10,6 @@ import {
   RUN_STATUSES,
   runFacts,
   VERIFY_STATES,
-  type InflightRecord,
   type LedgerEntry,
 } from "../src/wire.js";
 
@@ -27,30 +25,7 @@ function entry(overrides: Partial<LedgerEntry> = {}): LedgerEntry {
   };
 }
 
-function inflight(overrides: Partial<InflightRecord> = {}): InflightRecord {
-  return {
-    v: 1,
-    runId: "run-live",
-    pid: 4242,
-    startedAt: "2026-07-15T10:00:00.000Z",
-    task: "007-api",
-    repo: "demo-api",
-    title: "Add a verifier",
-    stage: "agent",
-    pass: 1,
-    stageSince: "2026-07-15T10:00:00.000Z",
-    ...overrides,
-  };
-}
-
 describe("reading a record back off disk", () => {
-  it("keeps structural discriminants strict — an unknown in-flight version is a loud failure", () => {
-    // There is no graceful rendering of a shape fork. A future v:2 record means
-    // the sweep is reading something it does not understand, and saying so is
-    // the upgrade signal.
-    expect(InflightRecordSchema.safeParse({ ...inflight(), v: 2 }).success).toBe(false);
-  });
-
   it("degrades on the fields the oldest ledger rows were written without", () => {
     // 7 of the 50 archived rows predate one or more of these. Absent is *not
     // recorded* — never a zero and never a green.
@@ -64,7 +39,7 @@ describe("reading a record back off disk", () => {
 
 describe("run fate vocabulary", () => {
   it("states domain facts for every status, exhaustively", () => {
-    expect(RUN_STATUSES.length).toBe(7);
+    expect(RUN_STATUSES.length).toBe(6);
     for (const s of RUN_STATUSES) {
       const facts = RUN_FACTS[s];
       expect(RUN_KINDS).toContain(facts.kind);
@@ -78,7 +53,6 @@ describe("run fate vocabulary", () => {
       "agent-failed",
       "scope-violation",
       "verify-failed",
-      "vetoed",
     ]);
     for (const s of RUN_STATUSES) {
       expect(isKillStatus(s)).toBe(RUN_FACTS[s].kind === "killed");
@@ -89,7 +63,6 @@ describe("run fate vocabulary", () => {
     // The ledger is append-only: a row may name a status a later build stopped
     // producing, and a report must render that row rather than crash on it.
     expect(runFacts("approved")).toEqual({ kind: "shipped", diedAt: null });
-    expect(runFacts("vetoed")?.diedAt).toBe("judge");
     expect(runFacts("engine-failed")?.kind).toBe("infra");
     expect(runFacts("quarantined")).toBeUndefined();
     expect(isKillStatus("quarantined")).toBe(false);

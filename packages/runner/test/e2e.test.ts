@@ -9,8 +9,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { InflightRecord } from "../src/wire.js";
-import { inflightDir, readInflight } from "../src/inflight.js";
 import { retainedKillDir } from "../src/kill-retention.js";
 import { readLedger } from "../src/ledger.js";
 import { unavailableProducerUsage } from "../src/model-usage.js";
@@ -158,10 +156,6 @@ describe("runner e2e (mock engine, hermetic)", () => {
     expect(entries[0].timings).toBeDefined();
     expect(entries[0].timings!.verifyMs).toBeGreaterThanOrEqual(0);
     expect(entries[0].evidence?.length).toBeGreaterThan(0);
-    // The live claim is dropped once the run is durable in the ledger — but the
-    // fleet-wide store itself survives, since concurrent runs live in it.
-    expect(readInflight(ledgerPath)).toEqual([]);
-    expect(existsSync(inflightDir(ledgerPath))).toBe(true);
   });
 
   it("injects the target's compiled knowledge, archives it per run, and keeps it out of the diff", async () => {
@@ -242,53 +236,33 @@ describe("runner e2e (mock engine, hermetic)", () => {
     expect(entry.actionsArtifact).toBeUndefined();
   });
 
-  it("live state: the run publishes its stage as it goes, and clears it when it lands", async () => {
+  it("the ledger row carries the runId the run reports — the key cosign looks it up by", async () => {
     const ledgerPath = tmpLedger();
-    // With the judge gone the engine is the only stub that gets to look at the
-    // world mid-run, and it looks from inside the agent stage.
-    const seen: InflightRecord[] = [];
-    const engineOverride = {
-      run: () => {
-        seen.push(...readInflight(ledgerPath));
-        return {
-          resultText: "NO_CHANGES_NEEDED",
-          sessionId: "stub",
-          transcript: "{}",
-          usage: unavailableProducerUsage("stub engine"),
-        };
-      },
-    };
-
     const result = await run({
       controlRepo: CONTROL_REPO,
       taskPath: TASK_001,
       repoName: "demo-ts-service",
       local: true,
       dryRun: true,
-      engineOverride,
+      engineOverride: {
+        run: () => ({
+          resultText: "NO_CHANGES_NEEDED",
+          sessionId: "stub",
+          transcript: "{}",
+          usage: unavailableProducerUsage("stub engine"),
+        }),
+      },
       ledgerPath,
       artifactsRoot: tmpArtifacts(),
       log: quiet,
     });
 
+    // `fleet cosign <runId>` finds the run with findRun(entries, runId). If the
+    // appended row ever lost this field, every shipped run would become
+    // un-co-signable and nothing else would fail.
     expect(result.status).toBe("no-changes");
-    // When the engine looked, exactly one record was in flight — this
-    // process's — and it said "agent", on the run's only pass.
-    expect(seen).toHaveLength(1);
-    expect(seen.map((r) => [r.stage, r.pass])).toEqual([["agent", 1]]);
-    expect(seen[0]).toMatchObject({
-      v: 1,
-      pid: process.pid,
-      task: "001-ts-migrate-http-client",
-      repo: "demo-ts-service",
-    });
-    expect(seen[0].title).toBeTruthy();
-    expect(Date.parse(seen[0].stageSince)).toBeGreaterThanOrEqual(Date.parse(seen[0].startedAt));
-
-    // runId is the reconcile key: the same run, live and then decided.
     const [entry] = readLedger(ledgerPath);
-    expect(entry.runId).toBe(seen[0].runId);
-    expect(readInflight(ledgerPath)).toEqual([]);
+    expect(entry.runId).toBe(result.runId);
   });
 
   it("scope gate: out-of-scope diff dies before verify/judge, recorded as a kill", async () => {
@@ -323,10 +297,6 @@ describe("runner e2e (mock engine, hermetic)", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].status).toBe("scope-violation");
     expect(entries[0].reason).toContain("out-of-scope files: src/");
-    // A kill is a terminal path like any other: it must not leave a ghost in
-    // the lane, claiming to be running forever.
-    expect(readInflight(ledgerPath)).toEqual([]);
-
     // …and it leaves a retained kill behind, in the store nothing prunes: the
     // diff by itself, the artefact that killed it one directory down, and no
     // outcome — nobody has re-adjudicated this yet (ADR-0015). The ledger line

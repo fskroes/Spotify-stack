@@ -30,10 +30,12 @@ record shows what was considered instead and why it lost.
 | [0022](0022-gate-3-is-deleted-absorbed-by-gate-2s-voiding-rule.md) | Panel gate 3 is deleted, absorbed by gate 2's voiding rule | gates |
 | [0023](0023-a-generated-project-is-tree-construction-not-a-gate-input.md) | A generated project file is tree construction, not a gate input | verify↔run |
 | [0024](0024-the-machine-is-frozen-and-the-triggers-thaw-it.md) | The machine is frozen at 0023, and three triggers thaw it | process |
-| [0025](0025-the-judge-is-deleted-and-verify-is-the-last-gate.md) | The judge is deleted, and green verify is the last gate | judge |
+| [0025](0025-the-judge-is-deleted-and-verify-is-the-last-gate.md) | The judge is deleted, and green verify is the last gate — its keep-the-vocabulary half corrected by [0030](0030-the-vetoed-status-leaves-the-vocabulary.md), which measured 0 archived `vetoed` rows | judge |
 | [0026](0026-the-desktop-operator-is-deleted.md) | The desktop operator is deleted, and the CLI is the only surface | operator |
 | [0027](0027-the-wire-contract-package-is-deleted.md) | The wire-contract package is deleted; tolerance needs a named external producer | contract |
 | [0028](0028-the-browser-dashboard-is-deleted.md) | The browser dashboard is deleted, and the terminal is the report | operator |
+| [0029](0029-the-in-flight-store-is-deleted.md) | The in-flight store is deleted; a run is visible in its own terminal | run loop |
+| [0030](0030-the-vetoed-status-leaves-the-vocabulary.md) | The `vetoed` status leaves the vocabulary, and an unclassified row is counted | contract |
 
 **0003–0008 were written retroactively** (2026-07-26), reconstructing the
 reasoning behind decisions already in the code. They are sound arguments, not

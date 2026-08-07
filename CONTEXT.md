@@ -91,9 +91,12 @@ The LLM review that stood between green verification and a pull request: task +
 diff + verify summary → approve or veto, with the runner owning its reads
 ([ADR-0011](docs/adr/0011-the-runner-owns-the-judges-reads.md)). **Deleted
 2026-08-06** ([ADR-0025](docs/adr/0025-the-judge-is-deleted-and-verify-is-the-last-gate.md))
-after 0 vetoes in 48 runs. The term stays defined because `vetoes`, `judgeMs`
-and the `vetoed` status survive in the contract and 48 archived ledger rows
-carry them. Nothing can produce a new verdict.
+after 0 vetoes in 48 runs. The term stays defined because three *fields* survive
+in `wire.ts`, carried because archived rows hold them: `vetoes` (all 50 rows,
+every one zero), `timings.judgeMs` (30 rows non-zero) and the `judge` usage rail
+(44 rows). The `vetoed` **status** does not survive — no archived row ever
+carried it ([ADR-0030](docs/adr/0030-the-vetoed-status-leaves-the-vocabulary.md)).
+Nothing can produce a new verdict.
 
 ## Cage
 
@@ -128,7 +131,7 @@ is pushed and no PR opened. `--pr` opts in. A dry run is the honest rehearsal:
 ## Kill log
 
 The half of the ledger recording runs the fleet stopped **before anyone reviewed
-them** — scope violations, red verifiers, judge vetoes — each with its reason. A
+them** — scope violations and red verifiers — each with its reason. A
 system that showed only its successes would be advertising; the kill log is what
 makes the successes mean something. What each of those runs *left behind* is a
 [retained kill](#retained-kill).
@@ -170,9 +173,10 @@ unscoreable review is a ritual rather than an instrument.
 
 ## Wire contract
 
-Everything the fleet writes down and reads back: the append-only ledger and the
-in-flight store. Declared once, in `packages/runner/src/wire.ts`, beside the
-code that writes it — it was a package while a second machine had to agree on
+Everything the fleet writes down and reads back — which, since
+[ADR-0029](docs/adr/0029-the-in-flight-store-is-deleted.md) deleted the in-flight
+store, means the append-only ledger and the per-run usage artifact. Declared
+once, in `packages/runner/src/wire.ts`, beside the code that writes it — it was a package while a second machine had to agree on
 it, and [ADR-0027](docs/adr/0027-the-wire-contract-package-is-deleted.md) ended
 that. The co-sign result is emitted as a JSON line and never read back, so it is
 a plain type rather than a schema.

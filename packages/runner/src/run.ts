@@ -11,7 +11,6 @@ import { claudeEngine, mockEngine, type Engine, type EngineResult } from "./engi
 import { createUsageCollector, unavailableProducerUsage, writeModelUsageEvidence, type ProducerUsage, type UsageCollector } from "./model-usage.js";
 import { decideGateInputs, gateInputNote, noGateInputs, type GateInputDecision } from "./gate-inputs.js";
 import { findRepo, type FleetRepo } from "./fleet.js";
-import { beginInflight, sweepInflight, type InflightHandle } from "./inflight.js";
 import { appendLedger, defaultLedgerPath, fleetRecord, readLedger } from "./ledger.js";
 import { buildPrBody, type VerifyCheck } from "./pr.js";
 import { buildRunPreamble } from "@fleet/knowledge";
@@ -28,7 +27,7 @@ interface VerifyResult {
   summary: string;
 }
 
-/** The seven ways a run can end — owned by `wire.ts` (RUN_STATUSES),
+/** Every way a run can end — owned by `wire.ts` (RUN_STATUSES),
  *  re-exported here so the runner's existing importers keep their entry point. */
 export type { RunStatus };
 
@@ -348,7 +347,6 @@ export interface PassContext {
   inScope?: (file: string) => boolean;
   artifact: (name: string, content: string) => void;
   timed: <T>(phase: keyof PassTimings, fn: () => T | Promise<T>) => Promise<T>;
-  inflight: InflightHandle;
   usage: UsageCollector;
   log: (line: string) => void;
 }
@@ -411,10 +409,6 @@ function applyGates(task: Task, result: VerifyResult): { verify: VerifyResult; u
 export async function runPass(ctx: PassContext): Promise<PassOutcome> {
   const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-  // Entered explicitly rather than assumed: `stageSince` marks the real start of
-  // the agent call, so a cold clone stops consuming the agent stage's staleness
-  // budget. Cloning stays bracketed into the phase it starts.
-  ctx.inflight.enter("agent", 1);
   ctx.log("· running agent…");
   let engineResult: EngineResult;
   try {
@@ -443,8 +437,7 @@ export async function runPass(ctx: PassContext): Promise<PassOutcome> {
   }
 
   // The scope contract is enforced mechanically, not just promised: any diff
-  // outside task.scope dies here — before verify, judge, or a human.
-  ctx.inflight.enter("scope");
+  // outside task.scope dies here — before verify, or a human.
   const { inScope } = ctx;
   const offenders = inScope ? stagedFiles(ctx.workspace).filter((file) => !inScope(file)) : [];
   if (offenders.length > 0) {
@@ -483,7 +476,6 @@ export async function runPass(ctx: PassContext): Promise<PassOutcome> {
     );
   }
   ctx.log("· reconstituting the verification tree…");
-  ctx.inflight.enter("verify");
   let tree: VerificationTree;
   try {
     tree = await ctx.timed("verifyMs", () =>
@@ -582,238 +574,205 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     if (REVIEW_ARTIFACTS.has(name)) writeFileSync(path.join(runDir, name), content);
   };
 
-  // Reap what SIGKILL (and only SIGKILL) can still orphan, before staking a
-  // claim of our own. The report server never does this: a GET stays
-  // side-effect-free and cannot race a runner mid-claim.
-  sweepInflight(ledgerPath, log);
-
-  // Claim a live slot before the workspace exists: a run is worth showing while
-  // it clones its target, which on a cold cache is the longest it will ever sit
-  // still without an explanation.
-  const inflight = beginInflight({
-    ledgerPath,
-    runId,
-    startedAt: new Date(startedAt),
-    task: task.id,
-    repo: repo.name,
-    title: task.title,
-    log,
+  log(`▶ task ${task.id} on ${repo.name} (${opts.local ? "local" : repo.url})`);
+  const workspace = prepareWorkspace({
+    controlRepo: opts.controlRepo,
+    repo,
+    taskId: task.id,
+    local: opts.local ?? false,
+    // A run that will open a PR is based on what it opens the PR against,
+    // decided here because only the caller knows the run's intent.
+    pr: !dryRun,
   });
-
-  try {
-    log(`▶ task ${task.id} on ${repo.name} (${opts.local ? "local" : repo.url})`);
-    const workspace = prepareWorkspace({
-      controlRepo: opts.controlRepo,
-      repo,
-      taskId: task.id,
-      local: opts.local ?? false,
-      // A run that will open a PR is based on what it opens the PR against,
-      // decided here because only the caller knows the run's intent.
-      pr: !dryRun,
-    });
-    // Which of this target's registered verifiers actually run here (ADR-0009).
-    // Composed by the runner because only the runner holds both halves: the
-    // registry supplies the capability, the task's `gates:` says what must be
-    // proven, and the environment decides what is even possible. `detect()`
-    // stays target-blind. Computed per run, never cached — a verifier needing
-    // an env var the Actions runner lacks is ineligible there and eligible here.
-    const registered = eligibleVerifiers(repo.verifiers, { env: process.env, gates: task.gates });
-    const { mcpConfigPath } = injectAgentConfig({
-      controlRepo: opts.controlRepo,
-      workspace,
-      registered,
-    });
-    // Prime the run with the target's compiled knowledge, if any exists. Never
-    // spends (renders the stored prose, flags drift); a missing artifact runs
-    // cold. Archived to the run's evidence directly — not via REVIEW_ARTIFACTS,
-    // which doubles as the operator's served set (Stage 6's concern, and would
-    // expose private-target structure).
-    const knowledge = await injectKnowledge({ controlRepo: opts.controlRepo, workspace, repo });
-    if (knowledge.injected && knowledge.content) {
-      writeFileSync(path.join(runDir, RUN_KNOWLEDGE_FILE), knowledge.content);
-      log(`· injected knowledge → ${knowledge.relPath}${knowledge.drift?.recompileRequired ? " (stale — drift banner included)" : ""}`);
-    } else {
-      log("· no compiled knowledge for this target — running cold");
-    }
-    const engine = makeEngine(opts, workspace, mcpConfigPath);
-
-    const finish = (result: Omit<RunResult, "runId">, scopeOffenders?: string[]): RunResult => {
-      const full: RunResult = { ...result, runId };
-      const modelUsageEvidence = usage.evidence(runId, new Date().toISOString());
-      // A custom ledger is the runner's hermetic-test seam. Keep its durable
-      // evidence beside that ledger instead of leaking test runs into the control
-      // repo's committed fleet/evidence directory.
-      const evidenceRoot = opts.ledgerPath ? path.dirname(ledgerPath) : opts.controlRepo;
-      const persistedUsage = writeModelUsageEvidence({
-        controlRepo: evidenceRoot,
-        evidence: modelUsageEvidence,
-      });
-      const modelUsage = usage.projection(modelUsageEvidence, persistedUsage.sha256);
-      artifact("model-usage.json", persistedUsage.content);
-      artifact("result.json", JSON.stringify({ ...full, task: task.id, repo: repo.name, modelUsage }, null, 2));
-      appendLedger(ledgerPath, {
-        ts: new Date().toISOString(),
-        runId,
-        task: task.id,
-        repo: repo.name,
-        status: full.status,
-        // Always local: the cloud entry point is deleted (ADR-0024), so no run
-        // this code path writes can be a cloud run. `"cloud"` survives in the
-        // contract and the readers because two archived ledger rows carry it.
-        mode: "local",
-        // Always 0. The judge is deleted (ADR-0025) and nothing can veto, but
-        // the field stays on the wire because 48 archived rows carry it.
-        vetoes: 0,
-        reason: killReason(full, scopeOffenders),
-        prUrl: full.prUrl,
-        title: task.title,
-        sha: full.sha?.slice(0, 7),
-        elapsedMs: Date.now() - startedAt,
-        timings: { ...timings },
-        evidence: evidenceFor(full, scopeOffenders),
-        // Recorded, so the operator reads the verification state as a fact
-        // rather than string-matching the evidence lines. Absent when the run
-        // died before verify — nothing is known, which is not the same as green.
-        // This is the *composed* state, not a passthrough of verify.state: it
-        // folds in whether the task's mandated gates actually ran.
-        verifyState: composedVerifyState(full),
-        modelUsage,
-        // Only when something is outstanding. Omitted for a run that declared no
-        // gates and for one whose gates were all met — neither has anything to
-        // report, and an empty array would read as a positive all-clear.
-        ...((full.unmetGates?.length ?? 0) > 0 ? { unmetGates: full.unmetGates } : {}),
-        // The amendment and the hold, on the same terms as unmetGates: present
-        // only when this run actually had one. A task that declared `amends:`
-        // and produced a diff that touched nothing it names records neither —
-        // the licence was never exercised, so there is nothing to report
-        // (ADR-0014). The reason travels with the glob, because a licence
-        // without its justification is the bare glob this design refuses.
-        ...((full.gateInputs?.carried.length ?? 0) > 0
-          ? { amendments: full.gateInputs?.carried.map(({ glob, reason }) => ({ glob, reason })) }
-          : {}),
-        ...((full.gateInputs?.held.length ?? 0) > 0 ? { heldGateInputs: full.gateInputs?.held } : {}),
-      });
-      // Strictly after the append: the run is now durable in the ledger, so
-      // dropping the live claim can only ever lose a row that has a replacement.
-      // A reader that catches the gap sees the run twice — once live, once
-      // decided — and reconciles on runId.
-      inflight.clear();
-      // A kill's diff and the artefact that killed it are copied into the
-      // evidence store, which nothing prunes (ADR-0015). Best-effort like the
-      // render below — the run is already decided and durable, so nothing here
-      // may fail it — but reported rather than swallowed.
-      const retentionLine = killRetentionLog(
-        retainKill({ evidenceRoot, runId, status: full.status, artifactsDir }),
-      );
-      if (retentionLine) log(retentionLine);
-      log(`■ ${full.status}${full.prUrl ? ` → ${full.prUrl}` : ""}`);
-      return full;
-    };
-
-    // The knowledge preamble need only be in the first prompt: the file
-    // persists on disk across passes (the workspace is not recreated) and
-    // engine.resume carries the session, so the agent keeps both.
-    const knowledgePreamble =
-      knowledge.injected && knowledge.relPath && knowledge.artifactSha
-        ? buildRunPreamble(knowledge.relPath, knowledge.artifactSha, knowledge.drift?.recompileRequired ?? false)
-        : undefined;
-
-    const ctx: PassContext = {
-      task,
-      workspace,
-      engine,
-      registered,
-      knowledgePreamble,
-      // Absent when the task declares no scope, which leaves the judge as the
-      // only scope police.
-      inScope: task.scope ? picomatch(task.scope, { dot: true }) : undefined,
-      artifact,
-      timed,
-      inflight,
-      usage,
-      log,
-    };
-
-    /** A pass that reached a fate of its own: record it and stop. */
-    const settle = (pass: EndedPass): RunResult =>
-      finish(
-        {
-          task,
-          repo,
-          workspace,
-          artifactsDir,
-          diff: pass.diff,
-          resultText: pass.resultText,
-          verify: pass.verify,
-          unmetGates: pass.unmetGates,
-          gateInputs: pass.gateInputs,
-          status: pass.status,
-        },
-        pass.scopeOffenders,
-      );
-
-    // One pass, always. The veto retry loop lived here and was the only thing
-    // that could start a second one (ADR-0025).
-    const pass = await runPass(ctx);
-    if (pass.outcome === "ended") return settle(pass);
-
-    const { diff, resultText, verify, unmetGates, gateInputs } = pass;
-
-    // Assemble the reviewer-facing PR body (previewed as an artifact in
-    // dry-run). The fleet record deliberately reads the ledger *before* this
-    // run's own line is appended in finish().
-    const webUrl = controlRepoWebUrl(opts.controlRepo);
-    const bodyInput = {
-      task,
-      diff,
-      verifyChecks: verify.checks,
-      // The composed state, so the co-sign banner and "What actually ran" agree
-      // with the ledger rather than with verification's own narrower answer.
-      verifyState: composedVerifyState({ verify, unmetGates }) ?? verify.state,
-      unmetGates,
-      // What the tree held and what the task licensed, with the reason. A
-      // co-signer is being asked to merge a diff part of which may not have
-      // been verified, and that is not a fact the body may leave to the log.
-      gateInputs,
-      verifySummary: verify.summary,
-      record: fleetRecord(readLedger(ledgerPath)),
-      taskFileUrl: taskFileUrl(opts.controlRepo, opts.taskPath, webUrl),
-      newIssueUrl: webUrl ? `${webUrl}/issues/new` : undefined,
-    };
-
-    let prUrl: string | undefined;
-    let sha: string | undefined;
-    if (dryRun) {
-      artifact("pr-preview.md", buildPrBody(bodyInput));
-    } else {
-      log("· opening pull request…");
-      inflight.enter("shipping");
-      ({ url: prUrl, sha } = openPullRequest({
-        workspace,
-        repo,
-        task,
-        bodyFor: (s) => buildPrBody({ ...bodyInput, sha: s }),
-      }));
-    }
-
-    return finish({
-      task,
-      repo,
-      workspace,
-      artifactsDir,
-      diff,
-      resultText,
-      verify,
-      unmetGates,
-      gateInputs,
-      prUrl,
-      sha,
-      status: "approved",
-    });
-  } finally {
-    // The throw path: prepareWorkspace fails on a bad clone or a missing
-    // local_path, and finish() never runs. Clearing is idempotent, so the
-    // successful path clearing first inside finish() costs nothing here.
-    inflight.clear();
+  // Which of this target's registered verifiers actually run here (ADR-0009).
+  // Composed by the runner because only the runner holds both halves: the
+  // registry supplies the capability, the task's `gates:` says what must be
+  // proven, and the environment decides what is even possible. `detect()`
+  // stays target-blind. Computed per run, never cached — a verifier needing
+  // an env var the Actions runner lacks is ineligible there and eligible here.
+  const registered = eligibleVerifiers(repo.verifiers, { env: process.env, gates: task.gates });
+  const { mcpConfigPath } = injectAgentConfig({
+    controlRepo: opts.controlRepo,
+    workspace,
+    registered,
+  });
+  // Prime the run with the target's compiled knowledge, if any exists. Never
+  // spends (renders the stored prose, flags drift); a missing artifact runs
+  // cold. Archived to the run's evidence directly — not via REVIEW_ARTIFACTS,
+  // which doubles as the operator's served set (Stage 6's concern, and would
+  // expose private-target structure).
+  const knowledge = await injectKnowledge({ controlRepo: opts.controlRepo, workspace, repo });
+  if (knowledge.injected && knowledge.content) {
+    writeFileSync(path.join(runDir, RUN_KNOWLEDGE_FILE), knowledge.content);
+    log(`· injected knowledge → ${knowledge.relPath}${knowledge.drift?.recompileRequired ? " (stale — drift banner included)" : ""}`);
+  } else {
+    log("· no compiled knowledge for this target — running cold");
   }
+  const engine = makeEngine(opts, workspace, mcpConfigPath);
+
+  const finish = (result: Omit<RunResult, "runId">, scopeOffenders?: string[]): RunResult => {
+    const full: RunResult = { ...result, runId };
+    const modelUsageEvidence = usage.evidence(runId, new Date().toISOString());
+    // A custom ledger is the runner's hermetic-test seam. Keep its durable
+    // evidence beside that ledger instead of leaking test runs into the control
+    // repo's committed fleet/evidence directory.
+    const evidenceRoot = opts.ledgerPath ? path.dirname(ledgerPath) : opts.controlRepo;
+    const persistedUsage = writeModelUsageEvidence({
+      controlRepo: evidenceRoot,
+      evidence: modelUsageEvidence,
+    });
+    const modelUsage = usage.projection(modelUsageEvidence, persistedUsage.sha256);
+    artifact("model-usage.json", persistedUsage.content);
+    artifact("result.json", JSON.stringify({ ...full, task: task.id, repo: repo.name, modelUsage }, null, 2));
+    appendLedger(ledgerPath, {
+      ts: new Date().toISOString(),
+      runId,
+      task: task.id,
+      repo: repo.name,
+      status: full.status,
+      // Always local: the cloud entry point is deleted (ADR-0024), so no run
+      // this code path writes can be a cloud run. `"cloud"` survives in the
+      // contract and the readers because two archived ledger rows carry it.
+      mode: "local",
+      // Always 0. The judge is deleted (ADR-0025) and nothing can veto, but
+      // the field stays on the wire because 48 archived rows carry it.
+      vetoes: 0,
+      reason: killReason(full, scopeOffenders),
+      prUrl: full.prUrl,
+      title: task.title,
+      sha: full.sha?.slice(0, 7),
+      elapsedMs: Date.now() - startedAt,
+      timings: { ...timings },
+      evidence: evidenceFor(full, scopeOffenders),
+      // Recorded, so the operator reads the verification state as a fact
+      // rather than string-matching the evidence lines. Absent when the run
+      // died before verify — nothing is known, which is not the same as green.
+      // This is the *composed* state, not a passthrough of verify.state: it
+      // folds in whether the task's mandated gates actually ran.
+      verifyState: composedVerifyState(full),
+      modelUsage,
+      // Only when something is outstanding. Omitted for a run that declared no
+      // gates and for one whose gates were all met — neither has anything to
+      // report, and an empty array would read as a positive all-clear.
+      ...((full.unmetGates?.length ?? 0) > 0 ? { unmetGates: full.unmetGates } : {}),
+      // The amendment and the hold, on the same terms as unmetGates: present
+      // only when this run actually had one. A task that declared `amends:`
+      // and produced a diff that touched nothing it names records neither —
+      // the licence was never exercised, so there is nothing to report
+      // (ADR-0014). The reason travels with the glob, because a licence
+      // without its justification is the bare glob this design refuses.
+      ...((full.gateInputs?.carried.length ?? 0) > 0
+        ? { amendments: full.gateInputs?.carried.map(({ glob, reason }) => ({ glob, reason })) }
+        : {}),
+      ...((full.gateInputs?.held.length ?? 0) > 0 ? { heldGateInputs: full.gateInputs?.held } : {}),
+    });
+    // A kill's diff and the artefact that killed it are copied into the
+    // evidence store, which nothing prunes (ADR-0015). Best-effort like the
+    // render below — the run is already decided and durable, so nothing here
+    // may fail it — but reported rather than swallowed.
+    const retentionLine = killRetentionLog(
+      retainKill({ evidenceRoot, runId, status: full.status, artifactsDir }),
+    );
+    if (retentionLine) log(retentionLine);
+    log(`■ ${full.status}${full.prUrl ? ` → ${full.prUrl}` : ""}`);
+    return full;
+  };
+
+  // The knowledge preamble need only be in the first prompt: the file
+  // persists on disk across passes (the workspace is not recreated) and
+  // engine.resume carries the session, so the agent keeps both.
+  const knowledgePreamble =
+    knowledge.injected && knowledge.relPath && knowledge.artifactSha
+      ? buildRunPreamble(knowledge.relPath, knowledge.artifactSha, knowledge.drift?.recompileRequired ?? false)
+      : undefined;
+
+  const ctx: PassContext = {
+    task,
+    workspace,
+    engine,
+    registered,
+    knowledgePreamble,
+    // Absent when the task declares no `scope:` — the diff is unrestricted.
+    inScope: task.scope ? picomatch(task.scope, { dot: true }) : undefined,
+    artifact,
+    timed,
+    usage,
+    log,
+  };
+
+  /** A pass that reached a fate of its own: record it and stop. */
+  const settle = (pass: EndedPass): RunResult =>
+    finish(
+      {
+        task,
+        repo,
+        workspace,
+        artifactsDir,
+        diff: pass.diff,
+        resultText: pass.resultText,
+        verify: pass.verify,
+        unmetGates: pass.unmetGates,
+        gateInputs: pass.gateInputs,
+        status: pass.status,
+      },
+      pass.scopeOffenders,
+    );
+
+  // One pass, always. The veto retry loop lived here and was the only thing
+  // that could start a second one (ADR-0025).
+  const pass = await runPass(ctx);
+  if (pass.outcome === "ended") return settle(pass);
+
+  const { diff, resultText, verify, unmetGates, gateInputs } = pass;
+
+  // Assemble the reviewer-facing PR body (previewed as an artifact in
+  // dry-run). The fleet record deliberately reads the ledger *before* this
+  // run's own line is appended in finish().
+  const webUrl = controlRepoWebUrl(opts.controlRepo);
+  const bodyInput = {
+    task,
+    diff,
+    verifyChecks: verify.checks,
+    // The composed state, so the co-sign banner and "What actually ran" agree
+    // with the ledger rather than with verification's own narrower answer.
+    verifyState: composedVerifyState({ verify, unmetGates }) ?? verify.state,
+    unmetGates,
+    // What the tree held and what the task licensed, with the reason. A
+    // co-signer is being asked to merge a diff part of which may not have
+    // been verified, and that is not a fact the body may leave to the log.
+    gateInputs,
+    verifySummary: verify.summary,
+    record: fleetRecord(readLedger(ledgerPath)),
+    taskFileUrl: taskFileUrl(opts.controlRepo, opts.taskPath, webUrl),
+    newIssueUrl: webUrl ? `${webUrl}/issues/new` : undefined,
+  };
+
+  let prUrl: string | undefined;
+  let sha: string | undefined;
+  if (dryRun) {
+    artifact("pr-preview.md", buildPrBody(bodyInput));
+  } else {
+    log("· opening pull request…");
+    ({ url: prUrl, sha } = openPullRequest({
+      workspace,
+      repo,
+      task,
+      bodyFor: (s) => buildPrBody({ ...bodyInput, sha: s }),
+    }));
+  }
+
+  return finish({
+    task,
+    repo,
+    workspace,
+    artifactsDir,
+    diff,
+    resultText,
+    verify,
+    unmetGates,
+    gateInputs,
+    prUrl,
+    sha,
+    status: "approved",
+  });
 }

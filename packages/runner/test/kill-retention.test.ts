@@ -49,20 +49,20 @@ function retain(status: string, files: Record<string, string>): {
 
 describe("retained kill store", () => {
   it("keeps the diff and the artefact that killed it, apart", () => {
-    const verdict = JSON.stringify({ verdict: "veto", violations: ["a", "b"], readPaths: ["src/a.ts"] });
-    const { outcome, controlRepo, runId } = retain("vetoed", { "diff.patch": DIFF, "verdict.json": verdict });
+    const log = "VERIFY FAILED\n✗ eslint  src/a.ts  2 problems";
+    const { outcome, controlRepo, runId } = retain("verify-failed", { "diff.patch": DIFF, "verify.log": log });
 
     expect(outcome.kind).toBe("retained");
     const dir = retainedKillDir(controlRepo, runId);
     expect(readFileSync(path.join(dir, "diff.patch"), "utf8")).toBe(DIFF);
-    expect(readFileSync(path.join(dir, "why", "verdict.json"), "utf8")).toBe(verdict);
+    expect(readFileSync(path.join(dir, "why", "verify.log"), "utf8")).toBe(log);
   });
 
   it("blinds by path: the kill directory itself holds only the diff", () => {
     // A reader handed `kill/` sees the question and no part of the answer. Two
     // files in one directory would make "don't open that one" the entire
     // protection, and it would fail the first time somebody globbed.
-    const { controlRepo, runId } = retain("vetoed", { "diff.patch": DIFF, "verdict.json": "{}" });
+    const { controlRepo, runId } = retain("verify-failed", { "diff.patch": DIFF, "verify.log": "VERIFY FAILED" });
 
     expect(readdirSync(retainedKillDir(controlRepo, runId)).sort()).toEqual(["diff.patch", "why"]);
   });
@@ -90,7 +90,7 @@ describe("retained kill store", () => {
 
   it("retains nothing for a run that was not killed", () => {
     // An approved run's evidence is the PR. Nothing here is awaiting review.
-    const { outcome, controlRepo, runId } = retain("approved", { "diff.patch": DIFF, "verdict.json": "{}" });
+    const { outcome, controlRepo, runId } = retain("approved", { "diff.patch": DIFF, "verify.log": "ok" });
 
     expect(outcome.kind).toBe("nothing-to-retain");
     expect(existsSync(retainedKillDir(controlRepo, runId))).toBe(false);
@@ -113,7 +113,7 @@ describe("retained kill store", () => {
     const outcome = retainKill({
       evidenceRoot: controlRepo,
       runId,
-      status: "vetoed",
+      status: "verify-failed",
       artifactsDir: path.join(controlRepo, "artifacts", "gone"),
     });
 
@@ -124,7 +124,7 @@ describe("retained kill store", () => {
     // A diff with an empty `why/` is a blinded question with no answer key, and
     // it would count as a retained kill to anyone counting them. Not retained is
     // a state the store can describe; half-retained is not.
-    const { outcome, controlRepo, runId } = retain("vetoed", { "diff.patch": DIFF }); // no verdict.json
+    const { outcome, controlRepo, runId } = retain("verify-failed", { "diff.patch": DIFF }); // no verify.log
 
     expect(outcome.kind).toBe("failed");
     expect(existsSync(retainedKillDir(controlRepo, runId))).toBe(false);
@@ -133,7 +133,7 @@ describe("retained kill store", () => {
   it("never silently replaces a retained kill", () => {
     // Canonical evidence is append-only, as it is for model usage: an existing
     // path is a collision or an operator intervention, never a reason to
-    // overwrite the record of a judgement — and never a reason for the rollback
+    // overwrite the record of a kill — and never a reason for the rollback
     // above to delete one either.
     const controlRepo = tmpControlRepo();
     const runId = randomUUID();
@@ -167,7 +167,7 @@ describe("killRetentionLog", () => {
   });
 
   it("names the store a retained kill landed in, so a reviewer can find it", () => {
-    const line = killRetentionLog({ kind: "retained", dir: "/fleet/evidence/abc/kill", why: "verdict.json" });
+    const line = killRetentionLog({ kind: "retained", dir: "/fleet/evidence/abc/kill", why: "verify.log" });
 
     expect(line).toContain("/fleet/evidence/abc/kill");
   });

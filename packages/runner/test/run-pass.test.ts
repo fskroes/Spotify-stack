@@ -16,9 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import picomatch from "picomatch";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Stage } from "../src/wire.js";
 import type { Engine, EngineResult } from "../src/engine.js";
-import type { InflightHandle } from "../src/inflight.js";
 import { createUsageCollector, unavailableProducerUsage } from "../src/model-usage.js";
 import {
   runPass,
@@ -89,7 +87,6 @@ const engineResult = (resultText: string, sessionId = "session-1"): EngineResult
 interface Harness {
   ctx: PassContext;
   artifacts: Map<string, string>;
-  stages: Array<[Stage, number | undefined]>;
   logs: string[];
   timings: PassTimings;
 }
@@ -102,17 +99,11 @@ function harness(opts: {
 }): Harness {
   const task = opts.task ?? taskFor();
   const artifacts = new Map<string, string>();
-  const stages: Array<[Stage, number | undefined]> = [];
   const logs: string[] = [];
   const timings: PassTimings = { agentMs: 0, verifyMs: 0, judgeMs: 0 };
 
   const engine: Engine = {
     run: () => opts.onRun(),
-  };
-
-  const inflight: InflightHandle = {
-    enter: (stage, pass) => stages.push([stage, pass]),
-    clear: () => {},
   };
 
   const ctx: PassContext = {
@@ -132,12 +123,11 @@ function harness(opts: {
         timings[phase] += Date.now() - started;
       }
     },
-    inflight,
     usage: createUsageCollector(),
     log: (line) => logs.push(line),
   };
 
-  return { ctx, artifacts, stages, logs, timings };
+  return { ctx, artifacts, logs, timings };
 }
 
 describe("a pass classifies an empty diff", () => {

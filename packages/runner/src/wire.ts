@@ -1,13 +1,12 @@
 /**
- * The shapes the fleet writes down and reads back: the append-only ledger, the
- * in-flight store, and the per-run usage artifact.
+ * The shapes the fleet writes down and reads back: the append-only ledger and
+ * the per-run usage artifact.
  *
  * These used to be a package (`@fleet/contract`) because two machines at
  * different commits had to agree on them. There is one machine now, and one
  * reader — this one — always at the same commit as the writer beside it. So the
- * shapes live next to their writer, and only two things here are still parsed
- * rather than merely constructed: the ledger lines and the in-flight files,
- * both read back off disk.
+ * shapes live next to their writer, and only one thing here is still parsed
+ * rather than merely constructed: the ledger lines, read back off disk.
  *
  * **Optional is not tolerance.** Measured against the 50 archived rows
  * ([experiment, 2026-08-07](../../../docs/experiments/2026-08-07-strict-parse-of-the-archived-ledger.md)):
@@ -39,7 +38,6 @@ export const RUN_STATUSES = [
   "no-changes", // precondition not met — agent correctly did nothing
   "agent-failed", // agent produced no diff without declaring NO_CHANGES_NEEDED
   "verify-failed", // deterministic verification red after the agent finished
-  "vetoed", // judge vetoed and retries were exhausted (no producer since ADR-0025)
   "scope-violation", // diff touched files outside the task's scope contract
   "engine-failed", // the engine process crashed mid-run
 ] as const;
@@ -49,7 +47,7 @@ export type RunStatus = (typeof RUN_STATUSES)[number];
  * The coarse fate a status rolls up to — what funnel math and the trend bars
  * count:
  *  - `shipped`: a change survived the filter and became a PR (`approved`)
- *  - `killed`:  the immune system stopped a bad change (the four kills)
+ *  - `killed`:  the immune system stopped a bad change (the three kills)
  *  - `infra`:   the run itself broke, so there is no verdict on the change
  *  - `neutral`: there was nothing to decide (`no-changes`)
  */
@@ -57,12 +55,11 @@ export const RUN_KINDS = ["shipped", "killed", "infra", "neutral"] as const;
 export type RunKind = (typeof RUN_KINDS)[number];
 
 /**
- * The pipeline gate a *killed* run died at — where the change was stopped.
- * Deliberately distinct from the in-flight `stage` (STAGES, where a live run is
- * *now*): this is past-tense and exists only for kills, so `shipping` — which a
- * run only reaches once it has already passed every gate — is not a member.
+ * The pipeline gate a *killed* run died at — where the change was stopped. It is
+ * past-tense and exists only for kills, so `shipping` — which a run only reaches
+ * once it has already passed every gate — is not a member.
  */
-export const TERMINAL_STAGES = ["agent", "scope", "verify", "judge"] as const;
+export const TERMINAL_STAGES = ["agent", "scope", "verify"] as const;
 export type TerminalStage = (typeof TERMINAL_STAGES)[number];
 
 /** The domain facts a status carries — true regardless of the surface reading it. */
@@ -83,15 +80,20 @@ export const RUN_FACTS = {
   "no-changes": { kind: "neutral", diedAt: null },
   "agent-failed": { kind: "killed", diedAt: "agent" },
   "verify-failed": { kind: "killed", diedAt: "verify" },
-  vetoed: { kind: "killed", diedAt: "judge" },
   "scope-violation": { kind: "killed", diedAt: "scope" },
   "engine-failed": { kind: "infra", diedAt: null },
 } as const satisfies Record<RunStatus, RunFacts>;
 
 /** The facts for a status this build knows, else `undefined` — the lookup a
- *  reader uses on a historical row whose status no producer writes any more. */
+ *  reader uses on a historical row whose status no producer writes any more.
+ *
+ *  `Object.hasOwn` rather than a plain index: `status` is `z.string()`, so a row
+ *  reading `"constructor"` or `"toString"` would otherwise resolve through the
+ *  prototype to a truthy non-`RunFacts` value. That row would then be neither
+ *  classified nor *reported as unclassified* — the one outcome this lookup and
+ *  `FleetRecord.unclassified` exist to prevent (ADR-0030). */
 export function runFacts(status: string): RunFacts | undefined {
-  return (RUN_FACTS as Record<string, RunFacts>)[status];
+  return Object.hasOwn(RUN_FACTS, status) ? (RUN_FACTS as Record<string, RunFacts>)[status] : undefined;
 }
 
 /** The statuses that count as the immune system killing a change before review
@@ -121,15 +123,6 @@ export type VerifyState = (typeof VERIFY_STATES)[number];
 export function knownVerifyState(value: string | undefined): VerifyState | undefined {
   return (VERIFY_STATES as readonly string[]).includes(value as string) ? (value as VerifyState) : undefined;
 }
-
-/**
- * Where a run currently is. Deliberately *not* the Funnel's bar list: `scope`
- * is a ~10ms glob check nobody will ever catch, and `shipping` (push + `gh pr
- * create`) is seconds long but renders as "judge" today, because the Funnel
- * counts the outcome rather than the phase.
- */
-export const STAGES = ["agent", "scope", "verify", "judge", "shipping"] as const;
-export type Stage = (typeof STAGES)[number];
 
 // --- Model usage evidence (sanitized per-run artifact + ledger projection) ---
 
@@ -277,8 +270,8 @@ const LedgerUsageRailSchema = z.object({
 
 /** Compact, public-ledger projection of the canonical per-run artifact. Omitted
  * on the 6 oldest rows — absence means "not recorded", never a zero-usage run.
- * The `judge` rail has had no producer since ADR-0025 and is carried because 32
- * archived rows hold one. */
+ * The `judge` rail has had no producer since ADR-0025 and is carried because all
+ * 44 rows that record usage at all hold one. */
 export const LedgerUsageProjectionSchema = z.object({
   artifact: z.object({
     version: z.number().int().positive(),
@@ -319,9 +312,9 @@ export const LedgerEntrySchema = z.object({
   // exist when the oldest rows were written. Both read as absent; absent always
   // means *not recorded*, never zero, empty, or green. ---
 
-  /** Ties this line to the run's in-flight record (`fleet/inflight/<pid>.json`).
-   *  A run's line is appended *before* its live record is unlinked, so a reader
-   *  scanning both drops any live row whose runId already reached the ledger. */
+  /** The co-sign key. `fleet cosign <runId>` finds the run by matching this
+   *  (`cosign.ts`, `findRun`), so it is the one field a human copies out of the
+   *  ledger by hand. Absent on the 6 oldest rows, which predate it. */
   runId: z.string().optional(),
   /** Human-readable task title, so ledger views need not resolve the task file. */
   title: z.string().optional(),
@@ -372,35 +365,6 @@ export const LedgerEntrySchema = z.object({
   actionsArtifact: z.string().optional(),
 });
 export type LedgerEntry = z.infer<typeof LedgerEntrySchema>;
-
-// --- In-flight record (fleet/inflight/<pid>.json — the live half of the ledger) ---
-
-export const InflightRecordSchema = z.object({
-  /** Wire version — a structural discriminant, checked strictly: a future v:2
-   *  record is a different shape, and failing loudly here is the upgrade signal. */
-  v: z.literal(1),
-  /** Reconcile key: also written to the run's ledger line, so a reader can drop
-   *  a live row the ledger has already superseded. */
-  runId: z.string(),
-  /** Liveness probe for the staleness sweep — `process.kill(pid, 0)`. */
-  pid: z.number(),
-  startedAt: z.string(),
-  task: z.string(),
-  repo: z.string(),
-  /** Carried, because no ledger line exists yet to read the title from. */
-  title: z.string(),
-  /** See STAGES for the values this side knows. */
-  stage: z.string(),
-  /** 1-based pass through the agent→verify loop, which is not monotonic.
-   *  Named for the pass, not the attempt: an *attempt* is one model invocation
-   *  on one rail (see `UsageAttemptSchema`), and a single pass may contain more
-   *  than one. */
-  pass: z.number(),
-  /** The instant `stage` was entered. Not a heartbeat: writes happen only on
-   *  transitions, so a healthy ten-minute agent phase looks ten minutes stale. */
-  stageSince: z.string(),
-});
-export type InflightRecord = z.infer<typeof InflightRecordSchema>;
 
 // --- Reading the ledger back off disk ---
 

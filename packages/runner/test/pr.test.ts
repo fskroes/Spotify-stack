@@ -40,7 +40,7 @@ function input(overrides: Partial<PrBodyInput> = {}): PrBodyInput {
     record: fleetRecord(
       [
         { ts: new Date().toISOString(), task: "a", repo: "r", status: "approved", mode: "local", vetoes: 0 },
-        { ts: new Date().toISOString(), task: "b", repo: "r", status: "vetoed", mode: "local", vetoes: 1 },
+        { ts: new Date().toISOString(), task: "b", repo: "r", status: "verify-failed", mode: "local", vetoes: 0 },
       ],
     ),
     sha: "abc1234",
@@ -84,8 +84,6 @@ describe("buildPrBody", () => {
     // What actually ran: per-check reasoning, raw log collapsed.
     expect(body).toContain("✔ `npm run test` passed (3.2s)");
     expect(body).toContain("<details><summary>Raw verify log</summary>");
-
-    // Judgment: model + rationale.
 
     // Undo: one step, real sha.
     expect(body).toContain("`git revert abc1234`");
