@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -73,6 +73,37 @@ describe("ensureDependencies", () => {
     writeFileSync(path.join(dir, "package-lock.json"), "{ not json");
 
     expect(() => ensureDependencies(dir)).toThrow(/dependency install failed in \.\s*\(npm ci\)/);
+  });
+
+  // The lockfile names the package manager. A pnpm target installed with npm
+  // resolves a tree its lockfile never pinned AND writes a package-lock.json the
+  // repo does not have — which `git add -A` sweeps straight into the run diff.
+  // Measured on a real target before this branch existed: 105 KB of lockfile
+  // nobody authored, in a PR that would have looked green.
+  it("installs a pnpm workspace with pnpm, and never writes package-lock.json", () => {
+    writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ dependencies: { "left-pad": "^1.3.0" } }),
+    );
+    // Valid YAML, but out of date with the package.json above, so
+    // `--frozen-lockfile` refuses offline rather than resolving from the network.
+    writeFileSync(path.join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+
+    expect(() => ensureDependencies(dir)).toThrow(/\(pnpm install\)/);
+    expect(existsSync(path.join(dir, "package-lock.json"))).toBe(false);
+  });
+
+  // Both present is ambiguous, and npm never produces pnpm-lock.yaml — so the
+  // pnpm one is the target's positive statement about itself and wins.
+  it("prefers pnpm when a workspace carries both lockfiles", () => {
+    writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ dependencies: { "left-pad": "^1.3.0" } }),
+    );
+    writeFileSync(path.join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    writeFileSync(path.join(dir, "package-lock.json"), "{ not json");
+
+    expect(() => ensureDependencies(dir)).toThrow(/\(pnpm install\)/);
   });
 
   it("names the nested directory when a nested install fails", () => {

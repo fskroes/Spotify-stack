@@ -7,6 +7,34 @@ const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_BUFFER = 32 * 1024 * 1024;
 
 /**
+ * Which installer to run, read off the lockfile the target committed. This is a
+ * convention, never per-target configuration — the same shape the gate-input set
+ * uses (ADR-0020). A target that commits a lockfile has already named its
+ * package manager, and a `pnpm` field in `repos.yaml` would be a second place
+ * for that answer to live and drift from.
+ *
+ * Every entry names a command that **cannot rewrite the lockfile**. `npm ci` and
+ * `pnpm --frozen-lockfile` both fail rather than resolve when the lockfile and
+ * `package.json` disagree. Plain `npm install` can write, and any such write
+ * lands in the run diff as a change nobody authored.
+ *
+ * pnpm is matched first: npm never produces `pnpm-lock.yaml`, so its presence is
+ * a positive statement about the target, while a stray `package-lock.json` in a
+ * pnpm repo is what this table exists to stop the runner creating.
+ */
+const INSTALLERS = [
+  { lockfile: "pnpm-lock.yaml", command: "pnpm", args: ["install", "--frozen-lockfile"] },
+  { lockfile: "package-lock.json", command: "npm", args: ["ci", "--no-fund", "--no-audit"] },
+] as const;
+
+/**
+ * No lockfile, so nothing is pinned and nothing can be violated. `npm install`
+ * writes `package-lock.json` here, which is correct: the workspace had no
+ * lockfile to preserve.
+ */
+const NO_LOCKFILE = { command: "npm", args: ["install", "--no-fund", "--no-audit"] } as const;
+
+/**
  * Make a workspace's dependencies present, so the checks that resolve their
  * executables out of `node_modules` can run at all.
  *
@@ -39,19 +67,17 @@ export function ensureDependencies(root: string): void {
   for (const dir of workspaces) {
     if (!existsSync(path.join(dir, "package.json"))) continue;
     if (existsSync(path.join(dir, "node_modules"))) continue;
-    // `npm ci` never rewrites the lockfile — plain `npm install` can, and any
-    // such write lands in the run diff and gets the change vetoed.
-    const hasLockfile = existsSync(path.join(dir, "package-lock.json"));
-    const args = hasLockfile
-      ? ["ci", "--no-fund", "--no-audit"]
-      : ["install", "--no-fund", "--no-audit"];
+    const installer =
+      INSTALLERS.find((i) => existsSync(path.join(dir, i.lockfile))) ?? NO_LOCKFILE;
+    const args = [...installer.args];
     try {
-      execFileSync("npm", args, {
+      execFileSync(installer.command, args, {
         cwd: dir,
         encoding: "utf8",
-        // Captured, not inherited: execFileSync would otherwise echo npm's
-        // stderr straight to the runner's log, where a failure is already
-        // reported once — with the directory attached — by the throw below.
+        // Captured, not inherited: execFileSync would otherwise echo the
+        // installer's stderr straight to the runner's log, where a failure is
+        // already reported once — with the directory attached — by the throw
+        // below.
         stdio: ["ignore", "pipe", "pipe"],
         timeout: INSTALL_TIMEOUT_MS,
         maxBuffer: MAX_BUFFER,
@@ -62,7 +88,7 @@ export function ensureDependencies(root: string): void {
       const output = `${err.stdout ?? ""}\n${err.stderr ?? ""}`.trim();
       throw new Error(
         `dependency install failed in ${path.relative(root, dir) || "."} ` +
-          `(npm ${args[0]}): ${output || err.message}`,
+          `(${installer.command} ${args[0]}): ${output || err.message}`,
       );
     }
   }
