@@ -39,18 +39,15 @@ These are accepted properties of the design. Reporting them is fine, but they
 are documented trade-offs rather than defects:
 
 - **Task prompts and target repo contents are trusted inputs.** An agent reading
-  a target repo can be influenced by text inside it. The mitigation is the cage
-  plus the three gates — a manipulated agent still cannot touch git, still has to
-  produce an in-scope diff that passes deterministic checks, and still has to get
-  past a judge and a human co-signer. Point the fleet at repos you trust.
+  a target repo can be influenced by text inside it. The mitigation is the cage:
+  a manipulated agent still cannot touch git or the network, still has to produce
+  an in-scope diff that passes deterministic checks, and still has to get past a
+  human co-signer. Point the fleet at repos you trust.
 - **A repo with no detectable checks passes the verify gate vacuously.** This is
   reported as *unverifiable*, not green. Confirm what the gate will run before
-  dispatching a task — see [`docs/README.md`](docs/README.md).
-- **The LLM judge is not a security control.** It is a quality gate that can be
-  wrong in both directions. The mechanical gates and the human co-sign are the
-  controls.
-- **`--pr` and `fleet dispatch` do real things.** Dry-run is the default
-  everywhere precisely because the non-default is consequential.
+  running a task — see [`docs/README.md`](docs/README.md).
+- **`--pr` does real things.** Dry-run is the default everywhere precisely
+  because the non-default is consequential.
 - **Vulnerabilities in Claude Code, the Anthropic API, or `gh`** belong upstream,
   not here. Report those to their vendors.
 

@@ -33,9 +33,9 @@ targets.
 ## Scope contract
 
 The `scope:` globs a task's diff may touch. The runner kills any run whose diff
-falls outside them (`scope-violation`) **before** verify, judge, or PR —
-mechanically, without a model in the loop. Omitting `scope` means unrestricted,
-and leaves the judge as the only scope police. Distinct from a
+falls outside them (`scope-violation`) **before** verify or PR — mechanically,
+without a model in the loop. Omitting `scope` means unrestricted, and nothing
+else polices what the diff touches. Distinct from a
 [mandated gate](#mandated-gate): scope constrains *what may change*, gates
 constrain *what must have been proven*.
 
@@ -48,10 +48,10 @@ source of truth for what a status means; no surface may re-derive it.
 
 ## Pass
 
-One traversal of the four phases inside a [run](#run) — the agent produces a
-diff, [scope](#scope-contract) is enforced, verification runs, the judge rules.
-A run has at least one pass; a judge veto starts another, up to the run's retry
-limit. A pass reports **only what it observed**: one that died before verifying
+One traversal of the three phases inside a [run](#run) — the agent produces a
+diff, [scope](#scope-contract) is enforced, verification runs. A run has exactly
+one; the veto retry that could start a second died with the
+[judge](#judge--historical). A pass reports **only what it observed**: one that died before verifying
 carries no [verification state](#verification-state) at all, because an earlier
 pass's green belongs to an earlier diff. Not an [attempt](#attempt) — an attempt
 is one model invocation on one [rail](#rail), so a single pass contains two.
@@ -60,8 +60,7 @@ is one model invocation on one [rail](#rail), so a single pass contains two.
 
 The disposable directory one [run](#run) acts in: a tree materialised from the
 target's git objects at a single base commit, with dependencies present on top.
-It is the only place the agent may write, and the only place the [judge](#judge)
-may read ([ADR-0011](docs/adr/0011-the-runner-owns-the-judges-reads.md)).
+It is the only place the agent may write.
 
 Its base is a **commit, or there is no run**. An operator's uncommitted edit, an
 untracked file, and ignored build output are not in it — so they are not in the
@@ -84,7 +83,7 @@ goes green in one and red in the other is a finding rather than an artefact
 
 The thing that produces the diff — `claude` (headless Claude Code, the default)
 or `mock` (applies a fixture patch, for hermetic tests). Swapping the engine
-changes nothing about the gates: scope, verify, and judge run identically.
+changes nothing about the gates: scope and verify run identically.
 
 ## Judge — historical
 
@@ -100,9 +99,9 @@ carry them. Nothing can produce a new verdict.
 
 The capabilities a fleet-invoked model process has — enforced by the runner, not
 requested of the model. The agent's is an allowlist plus a hook injected into its
-workspace; the judge's is a rooted read tool and nothing else. Every such process
-has one, and a process nobody chose a cage for has the widest one available,
-which is how the judge came to be less constrained than the agent it reviews.
+workspace. Every such process has one, and a process nobody chose a cage for has
+the widest one available — which is how the [judge](#judge--historical), while it
+existed, came to be less constrained than the agent it reviewed.
 
 Widening a cage is therefore a decision, not a feature — it belongs in an ADR
 with the failure mode it accepts, alongside
@@ -292,7 +291,7 @@ run" case the tri-state exists to name.
 
 Any unmet gate makes the recorded [verification state](#verification-state)
 `inconclusive`, and travels to every surface by name (`unmetGates` on the wire,
-plus the verification summary prose the judge reads). It does **not** change
+plus the verification summary prose). It does **not** change
 [run status](#run-status-vs-verification-state): a good diff with an unmet gate
 still ships as `approved`. Blocking would make declaring a gate dangerous, so
 authors would stop declaring them; the proposition is *cheap to declare, loud
@@ -399,7 +398,7 @@ the same property that keeps [`scope`](#scope-contract), `gates`, and a
 and is not decoration: the failure this design cannot mechanically prevent is an
 operator declaring amendments reflexively, and a justification is the friction
 that a bare glob would not carry. An amendment is loud by construction — named
-with its reason in the PR header, on the ledger line, and in what the judge reads.
+with its reason in the PR header and on the ledger line.
 
 ## Moving the scoreboard
 
@@ -424,7 +423,7 @@ instead of computing it.
 principle, because the changes live in ordinary source code — the thing the agent
 is employed to write, and indistinguishable by path from legitimate work. The
 mechanisms that could reach it are a check the agent cannot enumerate, mutation
-testing, the judge, and the human. Carried on #115 as unspecified; it must pass
+testing, and the human. Carried on #115 as unspecified; it must pass
 that map's standing instrument test before it graduates.
 
 ## Run status vs. verification state

@@ -59,7 +59,7 @@ passes — the same standard the fleet's own runs are held to.
 
 ## Changing behaviour
 
-Check whether an ADR already decided it. [`docs/adr/`](docs/adr) holds twelve
+Check whether an ADR already decided it. [`docs/adr/`](docs/adr) holds the
 decisions, each carrying the option that lost. The ones most likely to catch you:
 
 - The agent may only edit files and call `verify`; the runner owns git, the
