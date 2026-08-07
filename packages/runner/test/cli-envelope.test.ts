@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { UsageAttemptSchema, sanitizeCliEnvelopeUsage } from "../src/index.js";
+import { extractCliEnvelope, sanitizeCliEnvelopeUsage } from "../src/cli-envelope.js";
+import { UsageAttemptSchema } from "../src/wire.js";
 
 /**
  * The single shared sanitizer for a Claude CLI `--output-format json` final
@@ -106,5 +107,20 @@ describe("sanitizeCliEnvelopeUsage", () => {
     const attempt = UsageAttemptSchema.parse({ rail: "agent", ordinal: 1, role: "initial", ...usage });
     expect(attempt).not.toHaveProperty("result");
     expect(attempt).not.toHaveProperty("session_id");
+  });
+});
+
+describe("extractCliEnvelope", () => {
+  it("takes the final result envelope after hook-contaminated stdout", () => {
+    // A SessionStart hook or a CLI notice can prepend its own output, so stdout
+    // is not reliably one JSON value.
+    const stdout = [
+      "SessionStart hook: ready",
+      JSON.stringify({ type: "system", subtype: "init" }),
+      JSON.stringify({ type: "result", result: "first" }),
+      JSON.stringify({ type: "result", result: "final" }),
+    ].join("\n");
+
+    expect(extractCliEnvelope(stdout).result).toBe("final");
   });
 });

@@ -13,17 +13,17 @@
     "./ledger-union": "./src/ledger-union.ts",
     "./ledger-html": "./src/ledger-html.ts",
     "./ledger-serve": "./src/ledger-serve.ts",
-    "./operator-api": "./src/operator-api.ts",
-    "./cloud-sync": "./src/cloud-sync.ts",
-    "./cosign": "./src/cosign.ts"
+    "./cosign": "./src/cosign.ts",
+    "./wire": "./src/wire.ts",
+    "./cli-envelope": "./src/cli-envelope.ts"
   },
   "dependencies": {
-    "@fleet/contract": "workspace:*",
     "@fleet/knowledge": "workspace:*",
     "@fleet/mcp-verify": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.13.0",
     "picomatch": "^4.0.2",
-    "yaml": "^2.8.0"
+    "yaml": "^2.8.0",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/picomatch": "^4.0.0"

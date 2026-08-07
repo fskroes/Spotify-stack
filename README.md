@@ -14,7 +14,7 @@
 
 [![Quickstart](https://img.shields.io/badge/Quickstart-60_seconds-1f9e7f?style=for-the-badge&logoColor=white)](#start-in-60-seconds)
 [![Docs](https://img.shields.io/badge/Docs-11181d?style=for-the-badge)](docs/README.md)
-[![Decisions](https://img.shields.io/badge/26_Decisions-11181d?style=for-the-badge)](docs/adr)
+[![Decisions](https://img.shields.io/badge/27_Decisions-11181d?style=for-the-badge)](docs/adr)
 
 <sub>Runs anywhere Node ≥ 20 does &nbsp;·&nbsp; one repo per run &nbsp;·&nbsp; dry-run by default &nbsp;·&nbsp; MIT</sub>
 
@@ -186,12 +186,12 @@ Four boundaries carry the design weight.
 |---|---|
 | The agent proposes; the runner does everything with a side effect. | [ADR-0003](docs/adr/0003-the-runner-owns-git.md) |
 | Verification is a tri-state; a false green is forbidden. | [ADR-0004](docs/adr/0004-verification-tri-state-and-mandated-gates.md) |
-| Every wire shape is declared once, read tolerantly across time. | [ADR-0001](docs/adr/0001-tolerant-reader-wire-contract.md) |
+| Every wire shape is declared once, beside the code that writes it. | [ADR-0027](docs/adr/0027-the-wire-contract-package-is-deleted.md) |
 | `fleet cosign` has no `--force`. A refusal is the gate working. | [ADR-0005](docs/adr/0005-operator-drives-the-cli-over-ssh.md) |
 
 <div align="center">
 
-<sub><b>A new agent capability is a cage change, not a feature.</b> &nbsp;·&nbsp; <a href="docs/adr">All 26 decisions →</a></sub>
+<sub><b>A new agent capability is a cage change, not a feature.</b> &nbsp;·&nbsp; <a href="docs/adr">All 27 decisions →</a></sub>
 
 </div>
 

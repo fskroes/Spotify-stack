@@ -18,7 +18,7 @@
 import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { constants } from "node:os";
 import path from "node:path";
-import { InflightRecordSchema, type InflightRecord, type Stage } from "@fleet/contract";
+import { InflightRecordSchema, type InflightRecord, type Stage } from "./wire.js";
 import { STALE_AFTER_MS } from "./timeouts.js";
 
 /**

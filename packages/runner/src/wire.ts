@@ -1,39 +1,47 @@
 /**
- * The wire shapes — zod schemas as the single declaration, TS types inferred.
+ * The shapes the fleet writes down and reads back: the append-only ledger, the
+ * in-flight store, and the per-run usage artifact.
  *
- * Tolerant reader (see CONTEXT.md): the operator app and the runner checkout
- * can be at different commits at any time; that is the normal state. So every
- * object schema ignores unknown fields, every enrichment field is optional,
- * and parsing fails — loudly, naming the field — only when a required field
- * is absent or mistyped.
+ * These used to be a package (`@fleet/contract`) because two machines at
+ * different commits had to agree on them. There is one machine now, and one
+ * reader — this one — always at the same commit as the writer beside it. So the
+ * shapes live next to their writer, and only two things here are still parsed
+ * rather than merely constructed: the ledger lines and the in-flight files,
+ * both read back off disk.
  *
- * Open vocabularies (`status`, `mode`, `stage`, refusal `code`, PR state) stay
- * plain strings on the wire, with the known values exported alongside for
- * narrowing — a newer runner may speak values an older operator doesn't know,
- * and that must degrade, not reject. Only structural discriminants — fields
- * that select which sibling fields exist (`RunDetailResponse.state`,
- * `SyncState.kind`, the in-flight record's `v`) — are strict: there is no
- * graceful rendering for an unknown variant of a shape fork.
+ * **Optional is not tolerance.** Measured against the 50 archived rows
+ * ([experiment, 2026-08-07](../../../docs/experiments/2026-08-07-strict-parse-of-the-archived-ledger.md)):
+ * no row carries a key this file does not declare, and no row carries a value
+ * outside the vocabularies below. What the archive does hold is 7 early rows
+ * written before `runId`, `title`, `elapsedMs`, `timings`, `modelUsage` and
+ * `verifyState` existed. Those fields are optional for that reason, and for the
+ * ordinary reason that a field can be a fact about one run and not another —
+ * `prUrl` exists only where a PR does. Absent always means *not recorded*; no
+ * reader may render it as a zero, an empty set, or a green.
+ *
+ * The one wire this repo does not write is read elsewhere: `cli-envelope.ts`
+ * parses Anthropic's Claude CLI output, whose producer can change without a
+ * commit here. That file stays deliberately forgiving. This one does not
+ * have to be.
  */
 import { z } from "zod";
 
-// --- Run vocabulary (known values for narrowing; never enforced by parsing) ---
+// --- Run vocabulary ---
 
 /**
  * Every way a run can end — the single enumeration of run statuses. `run.ts`
- * infers its `RunStatus` from this, and both report surfaces (the ledger HTML
- * and the operator) key their presentation off it. `status` still travels the
- * wire as a plain string (tolerant reader): a newer runner may end a run in a
- * way this reader has never heard of, and that must degrade, not reject.
+ * infers its `RunStatus` from this, and the ledger report keys its presentation
+ * off it. `status` still travels as a plain string: the ledger is append-only,
+ * so a row may name a status a later build stopped producing.
  */
 export const RUN_STATUSES = [
   "approved", // diff approved; PR created unless dry-run
   "no-changes", // precondition not met — agent correctly did nothing
   "agent-failed", // agent produced no diff without declaring NO_CHANGES_NEEDED
   "verify-failed", // deterministic verification red after the agent finished
-  "vetoed", // judge vetoed and retries were exhausted
+  "vetoed", // judge vetoed and retries were exhausted (no producer since ADR-0025)
   "scope-violation", // diff touched files outside the task's scope contract
-  "engine-failed", // the engine process crashed mid-run (e.g. on a judge-retry resume)
+  "engine-failed", // the engine process crashed mid-run
 ] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
@@ -80,19 +88,16 @@ export const RUN_FACTS = {
   "engine-failed": { kind: "infra", diedAt: null },
 } as const satisfies Record<RunStatus, RunFacts>;
 
-/** The facts for a status this build knows, else `undefined` — the tolerant
- *  lookup a reader uses when `status` may carry a value it has never heard of. */
+/** The facts for a status this build knows, else `undefined` — the lookup a
+ *  reader uses on a historical row whose status no producer writes any more. */
 export function runFacts(status: string): RunFacts | undefined {
   return (RUN_FACTS as Record<string, RunFacts>)[status];
 }
 
-/** The four statuses that count as the immune system killing a change before
- *  review — derived from the fate table (`kind === "killed"`), so the kill set
- *  can never drift from the facts. */
+/** The statuses that count as the immune system killing a change before review
+ *  — derived from the fate table (`kind === "killed"`), so the kill set can
+ *  never drift from the facts. */
 export type KillStatus = { [K in RunStatus]: (typeof RUN_FACTS)[K]["kind"] extends "killed" ? K : never }[RunStatus];
-export const KILL_STATUSES: readonly KillStatus[] = RUN_STATUSES.filter(
-  (s): s is KillStatus => RUN_FACTS[s].kind === "killed",
-);
 export function isKillStatus(status: string): status is KillStatus {
   return runFacts(status)?.kind === "killed";
 }
@@ -109,17 +114,13 @@ export function isKillStatus(status: string): status is KillStatus {
 export const VERIFY_STATES = ["passed", "failed", "inconclusive"] as const;
 export type VerifyState = (typeof VERIFY_STATES)[number];
 
-/** The verification state this build knows, else `undefined` — the tolerant
- *  lookup for a field that is absent on every ledger line written before it
- *  existed, and may carry a value only a newer runner speaks. `undefined` means
- *  "not known", which no surface may render as green. */
+/** The verification state this build knows, else `undefined` — the lookup for a
+ *  field absent on every ledger line written before it existed (6 of the 50
+ *  archived rows). `undefined` means "not known", which no surface may render
+ *  as green. */
 export function knownVerifyState(value: string | undefined): VerifyState | undefined {
   return (VERIFY_STATES as readonly string[]).includes(value as string) ? (value as VerifyState) : undefined;
 }
-
-/** Where the run executed. */
-export const RUN_MODES = ["local", "cloud"] as const;
-export type RunMode = (typeof RUN_MODES)[number];
 
 /**
  * Where a run currently is. Deliberately *not* the Funnel's bar list: `scope`
@@ -130,116 +131,7 @@ export type RunMode = (typeof RUN_MODES)[number];
 export const STAGES = ["agent", "scope", "verify", "judge", "shipping"] as const;
 export type Stage = (typeof STAGES)[number];
 
-// --- Verdict evidence (what the runner observed about the judge, ADR-0011) ---
-
-/**
- * What a judge could reach, as a value a record can carry.
- *
- * A model name cannot distinguish two reviewers running the same model with
- * different powers, which is the condition ADR-0011 exists to end — so this
- * travels beside the model rather than folded into it.
- *
- *  - `rooted-read`: the judge held the runner's read tools, rooted at the run's
- *    workspace, and could open the source under review.
- *  - `text-only`: the judge saw the task, the diff and the verification output
- *    and nothing else. **Nothing in this build emits it, and it stays anyway.**
- *    Verdicts were produced that way before ADR-0011 was built, and a record
- *    relabelled to match the current build is a record that lies about the
- *    reviewer that wrote it.
- *  - `stub`: no model reviewed anything (the runner's stub judge modes).
- *
- * Open on the wire, like every other vocabulary here: a newer runner may hand
- * an older reader a capability it has never heard of, and that must degrade.
- */
-export const JUDGE_CAPABILITIES = ["rooted-read", "text-only", "stub"] as const;
-export type JudgeCapability = (typeof JUDGE_CAPABILITIES)[number];
-
-/** The capability this build knows, else `undefined` — the tolerant lookup for
- *  a reader that must render an unfamiliar value as unknown rather than as one
- *  of the values it does know. */
-export function knownJudgeCapability(value: string | undefined): JudgeCapability | undefined {
-  return (JUDGE_CAPABILITIES as readonly string[]).includes(value as string) ? (value as JudgeCapability) : undefined;
-}
-
-/** Who reviewed, as the pair a reviewer needs: which model, holding what.
- *  `capability` is a plain string on the wire — see JUDGE_CAPABILITIES. */
-export const JudgeIdentitySchema = z.object({
-  model: z.string(),
-  capability: z.string(),
-});
-export type JudgeIdentity = z.infer<typeof JudgeIdentitySchema>;
-
-/**
- * What the *runner* observed about a judgement, recorded alongside the verdict
- * the model returned (`verdict.json`, and the PR body a human co-signs).
- *
- * Deliberately not the model's own account. A judge asked to report its reads
- * can invent them, and telling a grounded veto from a confident invention is
- * the entire reason these paths exist — so they are the reads the runner
- * actually served, and no field here appears on the schema the model fills in.
- *
- * Two rules a reader has to get right:
- *
- * 1. **Absent is not empty.** Absent means *not recorded*: every verdict
- *    written before this field existed has no `readPaths`, and rendering those
- *    as a judge that chose to read nothing asserts something no record
- *    established. Empty means the judge held the capability and opened nothing.
- *    This is the same trap `unmetGates` documents above, and it is the same
- *    answer: unknown and none are different, and only one of them is a claim.
- * 2. **Paths are workspace-relative, always.** An absolute path names a private
- *    target's directory layout, and this record reaches a pull-request body a
- *    human reads. The producing side makes that structural rather than
- *    conventional — the path is derived from the resolved read, relative to the
- *    root it was proven to be inside — but a reader taking these from the wire
- *    should not assume a producer that got it right.
- */
-export const VerdictEvidenceSchema = z.object({
-  /** Workspace-relative paths the runner served to the judge, in the order it
-   *  first opened each. Absent on any verdict recorded before this existed. */
-  readPaths: z.array(z.string()).optional(),
-  /** Which reviewer produced the verdict — model *and* capability. */
-  judge: JudgeIdentitySchema.optional(),
-});
-export type VerdictEvidence = z.infer<typeof VerdictEvidenceSchema>;
-
 // --- Model usage evidence (sanitized per-run artifact + ledger projection) ---
-
-/** Open wire vocabularies with known values for reader-side presentation. */
-export const USAGE_RAILS = ["agent", "judge"] as const;
-export type UsageRail = (typeof USAGE_RAILS)[number];
-export const USAGE_ATTEMPT_ROLES = ["initial", "resume", "review"] as const;
-export type UsageAttemptRole = (typeof USAGE_ATTEMPT_ROLES)[number];
-export const USAGE_PRODUCER_SOURCES = ["claude-cli-result", "anthropic-messages-response"] as const;
-export type UsageProducerSource = (typeof USAGE_PRODUCER_SOURCES)[number];
-export const BILLING_SOURCES = ["api", "subscription", "unknown"] as const;
-export type BillingSource = (typeof BILLING_SOURCES)[number];
-export const REPORTED_COST_KINDS = ["claude-cli-estimate"] as const;
-export type ReportedCostKind = (typeof REPORTED_COST_KINDS)[number];
-export const USAGE_AVAILABILITIES = ["observed", "partial", "unavailable"] as const;
-export type UsageAvailability = (typeof USAGE_AVAILABILITIES)[number];
-
-function knownOpenValue<T extends readonly string[]>(values: T, value: string | undefined): T[number] | undefined {
-  return values.includes(value as T[number]) ? (value as T[number]) : undefined;
-}
-
-export function knownUsageRail(value: string | undefined): UsageRail | undefined {
-  return knownOpenValue(USAGE_RAILS, value);
-}
-export function knownUsageAttemptRole(value: string | undefined): UsageAttemptRole | undefined {
-  return knownOpenValue(USAGE_ATTEMPT_ROLES, value);
-}
-export function knownUsageProducerSource(value: string | undefined): UsageProducerSource | undefined {
-  return knownOpenValue(USAGE_PRODUCER_SOURCES, value);
-}
-export function knownBillingSource(value: string | undefined): BillingSource | undefined {
-  return knownOpenValue(BILLING_SOURCES, value);
-}
-export function knownReportedCostKind(value: string | undefined): ReportedCostKind | undefined {
-  return knownOpenValue(REPORTED_COST_KINDS, value);
-}
-export function knownUsageAvailability(value: string | undefined): UsageAvailability | undefined {
-  return knownOpenValue(USAGE_AVAILABILITIES, value);
-}
 
 /** The four counters a producer exposes for one actual served model. They remain
  * separate because cache categories have different prices and explain materially
@@ -264,16 +156,15 @@ function observationSchema<T extends z.ZodType>(value: T) {
   ]);
 }
 
-export const ModelTokenUsageSchema = z
+const ModelTokenUsageSchema = z
   .object({
     /** Actual model identity returned by the producer, never a configured default. */
     model: z.string(),
     tokens: TokenVectorSchema,
   })
   .strict();
-export type ModelTokenUsage = z.infer<typeof ModelTokenUsageSchema>;
 
-export const ReportedCostSchema = z
+const ReportedCostSchema = z
   .object({
     /** Known value: `claude-cli-estimate`; stays open for future producer labels. */
     kind: z.string(),
@@ -281,7 +172,6 @@ export const ReportedCostSchema = z
     usd: z.number().nonnegative(),
   })
   .strict();
-export type ReportedCost = z.infer<typeof ReportedCostSchema>;
 
 export const UsageAttemptSchema = z
   .object({
@@ -360,8 +250,9 @@ export const ModelUsageEvidenceSchema = z
   });
 export type ModelUsageEvidence = z.infer<typeof ModelUsageEvidenceSchema>;
 
-/** Ledger objects stay tolerant even though the canonical artifact is strict:
- * a newer runner must not make an older reader discard an entire historical line. */
+/** Ledger objects are looser than the canonical artifact on purpose: a row is
+ * historical the moment it is written, and one old line must not be discarded
+ * because a later build tightened a rail. */
 const LedgerTokenVectorSchema = z.object({
   inputTokens: z.number().int().nonnegative(),
   cacheCreationInputTokens: z.number().int().nonnegative(),
@@ -372,7 +263,7 @@ const LedgerReportedCostSchema = z.object({ kind: z.string(), usd: z.number().no
 
 const LedgerUsageRailSchema = z.object({
   attempts: z.number().int().nonnegative(),
-  /** Known values: `observed`, `partial`, `unavailable`; kept open on the wire. */
+  /** Known values: `observed`, `partial`, `unavailable`. */
   availability: z.string(),
   /** Actual returned models; present only when the compact projection has them. */
   models: z.array(z.string()).optional(),
@@ -383,10 +274,11 @@ const LedgerUsageRailSchema = z.object({
   /** Coarse source categories observed across the rail's attempts. */
   billingSources: z.array(z.string()),
 });
-export type LedgerUsageRail = z.infer<typeof LedgerUsageRailSchema>;
 
 /** Compact, public-ledger projection of the canonical per-run artifact. Omitted
- * on historical lines — absence means "not recorded", never a zero-usage run. */
+ * on the 6 oldest rows — absence means "not recorded", never a zero-usage run.
+ * The `judge` rail has had no producer since ADR-0025 and is carried because 32
+ * archived rows hold one. */
 export const LedgerUsageProjectionSchema = z.object({
   artifact: z.object({
     version: z.number().int().positive(),
@@ -400,12 +292,12 @@ export type LedgerUsageProjection = z.infer<typeof LedgerUsageProjectionSchema>;
 // --- Ledger entry (persisted in fleet/ledger.jsonl, one line per run) ---
 
 /** Cumulative wall-clock spent in each pipeline phase (summed across judge retries). */
-export const PhaseTimingsSchema = z.object({
+const PhaseTimingsSchema = z.object({
   agentMs: z.number(),
   verifyMs: z.number(),
+  /** No producer since ADR-0025; 30 archived rows carry a non-zero value. */
   judgeMs: z.number(),
 });
-export type PhaseTimings = z.infer<typeof PhaseTimingsSchema>;
 
 export const LedgerEntrySchema = z.object({
   /** ISO-8601 timestamp of the run's completion. */
@@ -413,18 +305,19 @@ export const LedgerEntrySchema = z.object({
   task: z.string(),
   repo: z.string(),
   status: z.string(),
-  /** Where the run executed — see RUN_MODES for the values this side knows. */
+  /** Where the run executed: `local`, or `cloud` on the 2 rows that predate
+   *  ADR-0024 removing the cloud entry point. */
   mode: z.string(),
-  /** Number of judge vetoes the run absorbed (including a final fatal one). */
+  /** Number of judge vetoes the run absorbed. No producer since ADR-0025, and
+   *  zero on all 50 archived rows — carried because every row declares it. */
   vetoes: z.number(),
   /** For kills: the first violation/failure line — keeps the kill legible. */
   reason: z.string().optional(),
   prUrl: z.string().optional(),
 
-  // --- Enrichment (all optional; ledger lines written before this omit them,
-  // and readers must degrade gracefully). Records what the runner already
-  // computed so the ledger can be read on its own — no artifacts/ lookup, which
-  // is gitignored and latest-run-wins. ---
+  // --- Fields a run records only when the fact exists, and fields that did not
+  // exist when the oldest rows were written. Both read as absent; absent always
+  // means *not recorded*, never zero, empty, or green. ---
 
   /** Ties this line to the run's in-flight record (`fleet/inflight/<pid>.json`).
    *  A run's line is appended *before* its live record is unlinked, so a reader
@@ -441,9 +334,9 @@ export const LedgerEntrySchema = z.object({
   timings: PhaseTimingsSchema.optional(),
   /** A few capped lines of the evidence that decided the run (the gate output). */
   evidence: z.array(z.string()).optional(),
-  /** How deterministic verification ended — see VERIFY_STATES for the values
-   *  this side knows. Absent on lines written before the tri-state existed,
-   *  which means "not known": a reader must not render those as green. */
+  /** How deterministic verification ended — see VERIFY_STATES. Absent on the 6
+   *  rows written before the tri-state existed, and on runs where nothing ran;
+   *  a reader must not render either as green. */
   verifyState: z.string().optional(),
   /** Gates the task mandated that no check satisfied — see `unmetGates()` in the
    *  runner. Present and non-empty only when something the task demanded did not
@@ -471,17 +364,12 @@ export const LedgerEntrySchema = z.object({
    * a current producer could not expose its evidence, and is never a zero. */
   modelUsage: LedgerUsageProjectionSchema.optional(),
 
-  // --- Cloud provenance (written by run.ts only when GITHUB_ACTIONS is set;
-  // recorded, never derived by readers). They let the operator pull a cloud
-  // run's evidence on demand — the run executed in Actions, so its artifacts
-  // live there, not on the runner. A cloud line missing these predates artifact
-  // sync and is permanently "no cloud artifact reference". ---
+  // --- Cloud provenance. No producer since ADR-0024 removed the cloud entry
+  // point; 2 archived rows carry both, from runs that executed in Actions. ---
 
-  /** The Actions run that produced this line (`GITHUB_RUN_ID`) — one Actions
-   *  run holds one artifact per repo, so a download must also name the artifact. */
+  /** The Actions run that produced this line (`GITHUB_RUN_ID`). */
   actionsRunId: z.string().optional(),
-  /** The Actions artifact name holding this run's review set: `<task>-<repo>`,
-   *  the exact expression `agent-task.yml` uses for its upload. */
+  /** The Actions artifact name holding this run's review set: `<task>-<repo>`. */
   actionsArtifact: z.string().optional(),
 });
 export type LedgerEntry = z.infer<typeof LedgerEntrySchema>;
@@ -504,9 +392,10 @@ export const InflightRecordSchema = z.object({
   title: z.string(),
   /** See STAGES for the values this side knows. */
   stage: z.string(),
-  /** 1-based pass through the agent→verify→judge loop, which is not monotonic.
+  /** 1-based pass through the agent→verify loop, which is not monotonic.
    *  Named for the pass, not the attempt: an *attempt* is one model invocation
-   *  on one rail (see `UsageAttemptSchema`), and a single pass contains two. */
+   *  on one rail (see `UsageAttemptSchema`), and a single pass may contain more
+   *  than one. */
   pass: z.number(),
   /** The instant `stage` was entered. Not a heartbeat: writes happen only on
    *  transitions, so a healthy ten-minute agent phase looks ten minutes stale. */
@@ -514,17 +403,87 @@ export const InflightRecordSchema = z.object({
 });
 export type InflightRecord = z.infer<typeof InflightRecordSchema>;
 
-// --- Co-sign (the human decision on a shipped run, `fleet cosign --json`) ---
+/**
+ * The dedupe-by-runId invariant, in one place.
+ *
+ * A run's ledger line is appended *before* its in-flight record is unlinked,
+ * so for a moment a run is both live and decided. `runId` is on both sides
+ * precisely so a reader scanning both can drop the live row instead of
+ * drawing the run twice. Match against the whole ledger, not a windowed
+ * slice: a run finishing right now is always inside any window anyway, and a
+ * narrow window must not resurrect a ghost.
+ */
+export function dedupeInflight(entries: LedgerEntry[], inflight: InflightRecord[]): InflightRecord[] {
+  const decided = new Set(entries.flatMap((entry) => (entry.runId ? [entry.runId] : [])));
+  return inflight.filter((record) => !decided.has(record.runId));
+}
 
-/** Longest --close reason accepted; it crosses an SSH boundary as one value. */
+// --- Reading the ledger back off disk ---
+
+export interface SkippedLine {
+  /** 1-based line number in the original text. */
+  line: number;
+  raw: string;
+  /** Dotted path (`timings.agentMs`; "" = the root value) and the reason. */
+  issues: { path: string; message: string }[];
+}
+
+function formatPath(path: ReadonlyArray<PropertyKey>): string {
+  let out = "";
+  for (const segment of path) {
+    if (typeof segment === "number") out += `[${segment}]`;
+    else out += out === "" ? String(segment) : `.${String(segment)}`;
+  }
+  return out;
+}
+
+/**
+ * Parse ledger JSONL text (a file's contents, or `git show` of a committed
+ * copy). Never throws: a line that is not JSON, or is JSON that fails the
+ * schema, lands in `skipped` (with its line number and issues) and the other
+ * lines are unaffected. The ledger is append-only and historical — one corrupt
+ * line must not brick a report. Order is preserved; blank lines are skipped
+ * silently.
+ */
+export function parseLedgerJsonl(text: string): { entries: LedgerEntry[]; skipped: SkippedLine[] } {
+  const entries: LedgerEntry[] = [];
+  const skipped: SkippedLine[] = [];
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i].trim();
+    if (!raw) continue;
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch (err) {
+      skipped.push({ line: i + 1, raw, issues: [{ path: "", message: `invalid JSON: ${(err as Error).message}` }] });
+      continue;
+    }
+    const result = LedgerEntrySchema.safeParse(value);
+    if (result.success) entries.push(result.data);
+    else
+      skipped.push({
+        line: i + 1,
+        raw,
+        issues: result.error.issues.map((issue) => ({ path: formatPath(issue.path), message: issue.message })),
+      });
+  }
+  return { entries, skipped };
+}
+
+// --- Co-sign (the human decision on a shipped run, `fleet cosign --json`) ---
+//
+// Constructed here and printed; nothing in this repo parses it back. It was a
+// wire while the operator app drove `fleet cosign` over SSH (ADR-0005), and
+// ADR-0026 ended that transport — so these are plain types, not schemas.
+
+/** Longest --close reason accepted. */
 export const MAX_REASON_LENGTH = 500;
 
 export const COSIGN_ACTIONS = ["merge", "close"] as const;
 export type CosignAction = (typeof COSIGN_ACTIONS)[number];
 
-/** Refusal codes this side knows — `code` is a string on the wire so a newer
- *  runner can refuse for reasons an older operator has never heard of; `detail`
- *  always carries the human rendering. */
+/** The named ways the co-sign gate refuses. */
 export const COSIGN_REFUSAL_CODES = [
   "run-not-found",
   "not-shipped",
@@ -539,43 +498,36 @@ export const COSIGN_REFUSAL_CODES = [
 export type KnownCosignRefusalCode = (typeof COSIGN_REFUSAL_CODES)[number];
 
 /** One named gate failure — `code` is stable for machines, `detail` for humans. */
-export const CosignRefusalSchema = z.object({
-  code: z.string(),
-  detail: z.string(),
-});
-export type CosignRefusal = z.infer<typeof CosignRefusalSchema>;
+export interface CosignRefusal {
+  code: string;
+  detail: string;
+}
 
-export const CosignResultSchema = z.object({
-  ok: z.boolean(),
-  /** See COSIGN_ACTIONS for the values this side knows. */
-  action: z.string(),
-  runId: z.string(),
-  task: z.string().optional(),
-  repo: z.string().optional(),
-  prUrl: z.string().optional(),
+export interface CosignResult {
+  ok: boolean;
+  action: string;
+  runId: string;
+  task?: string;
+  repo?: string;
+  prUrl?: string;
   /** Present on success: "merged" or "closed". */
-  state: z.string().optional(),
+  state?: string;
   /** Merge receipt fields, read back from GitHub after a merge. */
-  mergedSha: z.string().optional(),
-  mergedBy: z.string().optional(),
-  mergedAt: z.string().optional(),
+  mergedSha?: string;
+  mergedBy?: string;
+  mergedAt?: string;
   /** Why the gate refused — empty on success. */
-  refusals: z.array(CosignRefusalSchema),
-});
-export type CosignResult = z.infer<typeof CosignResultSchema>;
-
-// --- PR live state (formerly "Cosign" in ledger-html.ts — renamed to retire
-// the collision with CosignResult; the wire field name stays `cosign(s)`) ---
+  refusals: CosignRefusal[];
+}
 
 /**
  * The human co-sign state of a shipped PR, fetched live from GitHub at render
  * time (the ledger itself never records it — the merge happens after the run).
  * Known `state` values: "open", "merged", "closed".
  */
-export const PrLiveStateSchema = z.object({
-  state: z.string(),
-  mergedBy: z.string().optional(),
+export interface PrLiveState {
+  state: string;
+  mergedBy?: string;
   /** ISO-8601 merge timestamp. */
-  mergedAt: z.string().optional(),
-});
-export type PrLiveState = z.infer<typeof PrLiveStateSchema>;
+  mergedAt?: string;
+}

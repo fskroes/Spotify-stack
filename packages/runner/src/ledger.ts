@@ -8,7 +8,7 @@
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { isKillStatus, parseLedgerJsonl, type LedgerEntry } from "@fleet/contract";
+import { isKillStatus, parseLedgerJsonl, type LedgerEntry } from "./wire.js";
 
 export interface FleetRecord {
   days: number;

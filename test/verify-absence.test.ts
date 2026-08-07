@@ -43,7 +43,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { RUN_STATUSES, type LedgerEntry, type RunStatus } from "../packages/contract/src/schemas.js";
+import { RUN_STATUSES, type LedgerEntry, type RunStatus } from "../packages/runner/src/wire.js";
 import { renderLedgerHtml } from "../packages/runner/src/ledger-html.js";
 
 /** The readout a reader sees when the field says nothing (`ledger-html.ts`,

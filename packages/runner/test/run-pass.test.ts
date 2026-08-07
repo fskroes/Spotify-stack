@@ -16,7 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import picomatch from "picomatch";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Stage } from "@fleet/contract";
+import type { Stage } from "../src/wire.js";
 import type { Engine, EngineResult } from "../src/engine.js";
 import type { InflightHandle } from "../src/inflight.js";
 import { createUsageCollector, unavailableProducerUsage } from "../src/model-usage.js";

@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { VERIFY_STATES, VerdictEvidenceSchema } from "@fleet/contract";
+import { VERIFY_STATES } from "../src/wire.js";
 import { runVerify } from "@fleet/mcp-verify";
 import { composedVerifyState, evidenceFor, findUnmetGates } from "../src/run.js";
 import type { VerifyCheck } from "../src/pr.js";

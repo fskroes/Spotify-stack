@@ -32,7 +32,7 @@ const MAX_BUFFER = 32 * 1024 * 1024;
  * @property {number} durationMs   0 for a skipped check — it consumed no time
  *
  * @typedef {"passed" | "failed" | "inconclusive"} VerifyState
- *   Mirrors VERIFY_STATES in @fleet/contract (this package is dependency-free
+ *   Mirrors VERIFY_STATES in packages/runner/src/wire.ts (this package is dependency-free
  *   plain JS and cannot import it). `inconclusive` = no verifier ran at all,
  *   which is a legitimate state for a repo that has none — but not a pass.
  *

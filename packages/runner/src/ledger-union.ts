@@ -14,7 +14,7 @@
  * Kept pure over an injected `git` runner, matching cosign.ts's `gh` seam, so
  * every path is testable without a real repo.
  */
-import type { LedgerEntry } from "@fleet/contract";
+import type { LedgerEntry } from "./wire.js";
 import { parseLedger, readLedger } from "./ledger.js";
 
 /** Runs `git` with the given args and returns stdout; throws on failure. */

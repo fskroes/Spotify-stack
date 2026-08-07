@@ -1,9 +1,53 @@
-import type { TokenVector, UsageAttempt } from "./schemas.js";
+/**
+ * The one wire this repo reads but does not write: the final `result` envelope
+ * from `claude --output-format json`.
+ *
+ * Anthropic's CLI is the producer, and it can change shape without a commit
+ * here. That is the only remaining reason to read forgivingly in this codebase
+ * — so this file does, and `wire.ts` does not. Nothing is required beyond what
+ * is read; an unexpected field is ignored, and a fact the envelope does not
+ * expose is reported `unavailable` rather than inferred.
+ */
+import type { TokenVector, UsageAttempt } from "./wire.js";
+
+/**
+ * Read the final `result` envelope from `claude --output-format json` stdout.
+ * A SessionStart hook or CLI notice can prepend its own output, so stdout is not
+ * reliably one JSON value. Scan valid JSON lines from the end instead.
+ */
+export function extractCliEnvelope(stdout: string): Record<string, unknown> {
+  const envelopes: unknown[] = [];
+  try {
+    envelopes.push(JSON.parse(stdout));
+  } catch {
+    for (const line of stdout.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        envelopes.push(JSON.parse(trimmed));
+      } catch {
+        // Plain-text preamble — not the envelope we need.
+      }
+    }
+  }
+
+  for (let i = envelopes.length - 1; i >= 0; i--) {
+    const envelope = envelopes[i];
+    if (envelope && typeof envelope === "object" && typeof (envelope as { result?: unknown }).result === "string") {
+      return envelope as Record<string, unknown>;
+    }
+  }
+  throw new Error(`cli: no JSON result envelope in claude output: ${stdout.slice(0, 500)}`);
+}
+
+export function extractCliResult(stdout: string): string {
+  return extractCliEnvelope(stdout).result as string;
+}
 
 /**
  * The content-free usage subset a producer contributes to one {@link UsageAttempt}.
- * The runner and judge each assign the surrounding `rail`, `ordinal`, and `role`;
- * this is everything a producer's raw output can actually prove.
+ * The runner assigns the surrounding `rail`, `ordinal`, and `role`; this is
+ * everything a producer's raw output can actually prove.
  */
 export type ProducerUsageEvidence = Pick<
   UsageAttempt,
@@ -38,8 +82,8 @@ function tokenVector(value: unknown): TokenVector | undefined {
 
 /**
  * The single sanitizer for a Claude CLI `--output-format json` final result
- * envelope. Both the runner agent engine and the CLI judge route through it, so
- * their CLI-envelope evidence can never drift apart.
+ * envelope. Both the runner agent engine and the CLI ask path route through it,
+ * so their CLI-envelope evidence can never drift apart.
  *
  * It reads only two facts, and treats them as independent observations:
  * `modelUsage` (the four token counters per actual served model) and

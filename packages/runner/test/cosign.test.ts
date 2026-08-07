@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_REASON_LENGTH, type LedgerEntry } from "@fleet/contract";
+import { MAX_REASON_LENGTH, type LedgerEntry } from "../src/wire.js";
 import { cosign, findRun, formatCosignResult, type CosignInput } from "../src/cosign.js";
 
 const PR_URL = "https://github.com/o/demo-feed-service/pull/12";

@@ -25,7 +25,7 @@ import {
   type CosignResult,
   type KnownCosignRefusalCode,
   type LedgerEntry,
-} from "@fleet/contract";
+} from "./wire.js";
 
 /** Runs `gh` with the given args and returns stdout; throws on failure. */
 export type GhRunner = (args: string[]) => string;

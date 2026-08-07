@@ -21,7 +21,8 @@ import {
 import { loadTask } from "@fleet/runner/task";
 import { resolveOwner, targetRepos } from "@fleet/runner/fleet";
 import { knowledgeArtifactPath, resolveKnowledgeRepo } from "@fleet/runner/knowledge";
-import { extractCliEnvelope, sanitizeCliEnvelopeUsage, type LedgerEntry, type PrLiveState } from "@fleet/contract";
+import { extractCliEnvelope, sanitizeCliEnvelopeUsage } from "@fleet/runner/cli-envelope";
+import type { LedgerEntry, PrLiveState } from "@fleet/runner/wire";
 import { invokeClaudeCli } from "./knowledge-cli.js";
 import { resolveTaskPath } from "./resolve-task.js";
 import {

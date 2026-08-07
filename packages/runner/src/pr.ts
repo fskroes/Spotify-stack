@@ -4,7 +4,7 @@
  * Kept pure (string in, string out) so the body is unit-testable and can be
  * previewed in dry-run as the pr-preview.md artifact.
  */
-import type { VerifyState } from "@fleet/contract";
+import type { VerifyState } from "./wire.js";
 import { noGateInputs, type GateInputDecision } from "./gate-inputs.js";
 import { formatRecordLine, type FleetRecord } from "./ledger.js";
 import type { Task } from "./task.js";

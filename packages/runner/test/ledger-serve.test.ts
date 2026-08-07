@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { LedgerEntry } from "@fleet/contract";
+import type { LedgerEntry } from "../src/wire.js";
 import { appendLedger } from "../src/ledger.js";
 import { beginInflight } from "../src/inflight.js";
 import { serveLedger, type ServeLedgerHandle } from "../src/ledger-serve.js";

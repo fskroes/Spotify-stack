@@ -2,14 +2,14 @@ import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { runEvidenceDir } from "./evidence.js";
+import type { ProducerUsageEvidence } from "./cli-envelope.js";
 import {
   ModelUsageEvidenceSchema,
   type LedgerUsageProjection,
   type ModelUsageEvidence,
-  type ProducerUsageEvidence,
   type TokenVector,
   type UsageAttempt,
-} from "@fleet/contract";
+} from "./wire.js";
 
 /** Sanitized producer facts. The runner assigns rail, ordinal, and role.
  *  One shape, defined once in the contract — the runner and judge both use it. */

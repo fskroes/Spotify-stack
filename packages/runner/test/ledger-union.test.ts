@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { LedgerEntry } from "@fleet/contract";
+import type { LedgerEntry } from "../src/wire.js";
 import { appendLedger } from "../src/ledger.js";
 import {
   readRemoteLedger,

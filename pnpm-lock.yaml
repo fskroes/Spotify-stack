@@ -32,9 +32,6 @@ importers:
 
   packages/cli:
     dependencies:
-      '@fleet/contract':
-        specifier: workspace:*
-        version: link:../contract
       '@fleet/intake':
         specifier: workspace:*
         version: link:../intake
@@ -47,12 +44,6 @@ importers:
       commander:
         specifier: ^14.0.0
         version: 14.0.3
-
-  packages/contract:
-    dependencies:
-      zod:
-        specifier: ^4.0.0
-        version: 4.4.3
 
   packages/intake: {}
 
@@ -70,9 +61,6 @@ importers:
 
   packages/runner:
     dependencies:
-      '@fleet/contract':
-        specifier: workspace:*
-        version: link:../contract
       '@fleet/knowledge':
         specifier: workspace:*
         version: link:../knowledge
@@ -88,6 +76,9 @@ importers:
       yaml:
         specifier: ^2.8.0
         version: 2.9.0
+      zod:
+        specifier: ^4.0.0
+        version: 4.4.3
     devDependencies:
       '@types/picomatch':
         specifier: ^4.0.0

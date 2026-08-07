@@ -1,32 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
   dedupeInflight,
-  extractCliEnvelope,
   InflightRecordSchema,
   isKillStatus,
-  JUDGE_CAPABILITIES,
-  KILL_STATUSES,
-  knownJudgeCapability,
+  knownVerifyState,
   LedgerEntrySchema,
   ModelUsageEvidenceSchema,
-  knownBillingSource,
-  knownUsageAvailability,
-  knownUsageRail,
-  parseCosignStdout,
   parseLedgerJsonl,
-  parseWire,
   RUN_FACTS,
   RUN_KINDS,
   RUN_STATUSES,
   runFacts,
-  safeParseWire,
   VERIFY_STATES,
-  VerdictEvidenceSchema,
-  knownVerifyState,
-  WireParseError,
   type InflightRecord,
   type LedgerEntry,
-} from "../src/index.js";
+} from "../src/wire.js";
 
 function entry(overrides: Partial<LedgerEntry> = {}): LedgerEntry {
   return {
@@ -48,7 +36,7 @@ function inflight(overrides: Partial<InflightRecord> = {}): InflightRecord {
     startedAt: "2026-07-15T10:00:00.000Z",
     task: "007-api",
     repo: "demo-api",
-    title: "Add operator API",
+    title: "Add a verifier",
     stage: "agent",
     pass: 1,
     stageSince: "2026-07-15T10:00:00.000Z",
@@ -56,45 +44,22 @@ function inflight(overrides: Partial<InflightRecord> = {}): InflightRecord {
   };
 }
 
-describe("tolerant reading", () => {
-  it("ignores unknown fields and degrades on missing optional ones", () => {
-    const parsed = parseWire(LedgerEntrySchema, { ...entry(), futureField: { deep: true } });
-    expect(parsed.task).toBe("007-api");
-    expect(parsed.runId).toBeUndefined();
-  });
-
-  it("accepts vocabulary this build does not know — status, mode, stage stay open", () => {
-    expect(parseWire(LedgerEntrySchema, entry({ status: "quarantined", mode: "edge" })).status).toBe("quarantined");
-    expect(parseWire(InflightRecordSchema, inflight({ stage: "signing" })).stage).toBe("signing");
-    expect(isKillStatus("quarantined")).toBe(false);
-    expect(isKillStatus("vetoed")).toBe(true);
-  });
-
-  it("fails loudly, naming the field path, on a missing required field", () => {
-    const result = safeParseWire(LedgerEntrySchema, { ...entry(), ts: undefined });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBeInstanceOf(WireParseError);
-      expect(result.error.issues[0].path).toBe("ts");
-    }
-  });
-
+describe("reading a record back off disk", () => {
   it("keeps structural discriminants strict — an unknown in-flight version is a loud failure", () => {
-    const v2 = InflightRecordSchema.safeParse({ ...inflight(), v: 2 });
-    expect(v2.success).toBe(false);
+    // There is no graceful rendering of a shape fork. A future v:2 record means
+    // the sweep is reading something it does not understand, and saying so is
+    // the upgrade signal.
+    expect(InflightRecordSchema.safeParse({ ...inflight(), v: 2 }).success).toBe(false);
   });
-});
 
-describe("Claude CLI envelopes", () => {
-  it("takes the final result envelope after hook-contaminated stdout", () => {
-    const stdout = [
-      "SessionStart hook: ready",
-      JSON.stringify({ type: "system", subtype: "init" }),
-      JSON.stringify({ type: "result", result: "first" }),
-      JSON.stringify({ type: "result", result: "final" }),
-    ].join("\n");
-
-    expect(extractCliEnvelope(stdout).result).toBe("final");
+  it("degrades on the fields the oldest ledger rows were written without", () => {
+    // 7 of the 50 archived rows predate one or more of these. Absent is *not
+    // recorded* — never a zero and never a green.
+    const old = LedgerEntrySchema.parse(entry());
+    expect(old.runId).toBeUndefined();
+    expect(old.verifyState).toBeUndefined();
+    expect(old.modelUsage).toBeUndefined();
+    expect(old.timings).toBeUndefined();
   });
 });
 
@@ -110,15 +75,21 @@ describe("run fate vocabulary", () => {
   });
 
   it("derives the kill set from the fate table — it cannot drift", () => {
-    expect([...KILL_STATUSES].sort()).toEqual(["agent-failed", "scope-violation", "verify-failed", "vetoed"]);
+    expect(RUN_STATUSES.filter(isKillStatus).sort()).toEqual([
+      "agent-failed",
+      "scope-violation",
+      "verify-failed",
+      "vetoed",
+    ]);
     for (const s of RUN_STATUSES) {
       expect(isKillStatus(s)).toBe(RUN_FACTS[s].kind === "killed");
     }
   });
 
-  it("looks up facts tolerantly — undefined for a status this build does not know", () => {
+  it("returns undefined for a status this build has no facts for, instead of throwing", () => {
+    // The ledger is append-only: a row may name a status a later build stopped
+    // producing, and a report must render that row rather than crash on it.
     expect(runFacts("approved")).toEqual({ kind: "shipped", diedAt: null });
-    expect(runFacts("agent-failed")).toEqual({ kind: "killed", diedAt: "agent" });
     expect(runFacts("vetoed")?.diedAt).toBe("judge");
     expect(runFacts("engine-failed")?.kind).toBe("infra");
     expect(runFacts("quarantined")).toBeUndefined();
@@ -131,25 +102,23 @@ describe("verification state", () => {
     expect([...VERIFY_STATES]).toEqual(["passed", "failed", "inconclusive"]);
   });
 
-  it("reads the recorded state tolerantly, never inventing a pass", () => {
+  it("reads the recorded state, never inventing a pass", () => {
     expect(knownVerifyState(entry({ verifyState: "passed" }).verifyState)).toBe("passed");
     expect(knownVerifyState(entry({ verifyState: "inconclusive" }).verifyState)).toBe("inconclusive");
     // A line written before this field existed knows nothing — and "nothing
     // known" must never render as green.
     expect(knownVerifyState(entry().verifyState)).toBeUndefined();
-    // A state a newer runner speaks and this build has never heard of.
     expect(knownVerifyState("quarantined")).toBeUndefined();
   });
 
-  it("carries the state on the wire as a plain, optional string", () => {
+  it("carries the state as a plain, optional string", () => {
     expect(LedgerEntrySchema.parse(entry({ verifyState: "inconclusive" })).verifyState).toBe("inconclusive");
-    expect(LedgerEntrySchema.parse(entry({ verifyState: "quarantined" })).verifyState).toBe("quarantined");
     expect(LedgerEntrySchema.safeParse({ ...entry(), verifyState: 3 }).success).toBe(false);
   });
 
   it("carries unmet gates as optional structured data, not only as prose", () => {
     // A surface must be able to render them without pattern-matching a
-    // paragraph, and an older operator must be able to ignore the field.
+    // paragraph.
     expect(LedgerEntrySchema.parse(entry({ unmetGates: ["live-contract-check"] })).unmetGates).toEqual([
       "live-contract-check",
     ]);
@@ -176,53 +145,8 @@ describe("verification state", () => {
     // ordinary case, since a diff that touched no gate input records neither.
     expect(LedgerEntrySchema.parse(entry()).amendments).toBeUndefined();
     expect(LedgerEntrySchema.parse(entry()).heldGateInputs).toBeUndefined();
-    // A licence with no reason is not a licence this contract will carry.
+    // A licence with no reason is not a licence this ledger will carry.
     expect(LedgerEntrySchema.safeParse({ ...entry(), amendments: [{ glob: "test/**" }] }).success).toBe(false);
-  });
-});
-
-describe("verdict evidence", () => {
-  it("names the capability a verdict was produced with, beside the model", () => {
-    const evidence = VerdictEvidenceSchema.parse({
-      readPaths: ["src/index.ts"],
-      judge: { model: "claude-opus-4-8", capability: "rooted-read" },
-    });
-
-    // The pair, not a composed string: two reviewers on the same model with
-    // different powers are what ADR-0011 exists to tell apart, and a reader
-    // that has to parse prose to do it cannot.
-    expect(evidence.judge).toEqual({ model: "claude-opus-4-8", capability: "rooted-read" });
-    expect(knownJudgeCapability(evidence.judge?.capability)).toBe("rooted-read");
-  });
-
-  it("keeps `text-only` in the vocabulary though nothing emits it any more", () => {
-    // Verdicts were produced that way before the cage was built, and relabelling
-    // one to match the current build would make the record lie about the
-    // reviewer that wrote it.
-    expect([...JUDGE_CAPABILITIES]).toContain("text-only");
-    const historical = VerdictEvidenceSchema.parse({ judge: { model: "claude-opus-4-8", capability: "text-only" } });
-    expect(knownJudgeCapability(historical.judge?.capability)).toBe("text-only");
-    // And no read paths at all — a judge with no reader records none, which is
-    // not the same as one that read nothing.
-    expect(historical.readPaths).toBeUndefined();
-  });
-
-  it("degrades on a capability a newer runner speaks and this build does not", () => {
-    expect(VerdictEvidenceSchema.parse({ judge: { model: "m", capability: "rooted-grep" } }).judge?.capability).toBe("rooted-grep");
-    expect(knownJudgeCapability("rooted-grep")).toBeUndefined();
-  });
-
-  it("distinguishes a judge that read nothing from a verdict that recorded nothing", () => {
-    // The distinction the whole field turns on. Empty is a claim — the judge
-    // held the capability and opened no file. Absent is the absence of a claim.
-    expect(VerdictEvidenceSchema.parse({ readPaths: [] }).readPaths).toEqual([]);
-    expect(VerdictEvidenceSchema.parse({}).readPaths).toBeUndefined();
-  });
-
-  it("reads a verdict record that carries neither field, and rejects a mistyped one", () => {
-    expect(VerdictEvidenceSchema.parse({ verdict: "approve", violations: [], guidance: "", rationale: "fine" })).toEqual({});
-    expect(VerdictEvidenceSchema.safeParse({ readPaths: "src/index.ts" }).success).toBe(false);
-    expect(VerdictEvidenceSchema.safeParse({ judge: { model: "m" } }).success).toBe(false);
   });
 });
 
@@ -279,7 +203,7 @@ describe("model usage evidence", () => {
     expect(LedgerEntrySchema.parse(entry()).modelUsage).toBeUndefined();
   });
 
-  it("keeps ledger usage optional and tolerates future vocabulary", () => {
+  it("keeps the ledger projection readable on rows a later build would not write", () => {
     const parsed = LedgerEntrySchema.parse(entry({
       modelUsage: {
         artifact: { version: 1, sha256: "a".repeat(64) },
@@ -289,13 +213,15 @@ describe("model usage evidence", () => {
           models: ["claude-haiku-4-5"],
           tokens,
           reportedCost: { kind: "claude-cli-estimate", usd: 0.6213254 },
-          billingSources: ["future-provider"],
+          billingSources: ["unknown"],
         },
+        // 32 archived rows carry a judge rail. Nothing has produced one since
+        // ADR-0025 deleted the judge.
         judge: { attempts: 1, availability: "unavailable", billingSources: ["unknown"] },
       },
     }));
     expect(parsed.modelUsage?.agent.tokens).toEqual(tokens);
-    expect(parsed.modelUsage?.agent.billingSources).toEqual(["future-provider"]);
+    expect(parsed.modelUsage?.judge.attempts).toBe(1);
   });
 
   it("rejects a new artifact shape version, malformed observed usage, and content-bearing fields", () => {
@@ -321,7 +247,7 @@ describe("model usage evidence", () => {
     }).success).toBe(false);
   });
 
-  it("keeps ledger projections tolerant while writers prevent false partial totals", () => {
+  it("keeps a partial rail readable while writers prevent false partial totals", () => {
     expect(LedgerEntrySchema.safeParse(entry({
       modelUsage: {
         artifact: { version: 1, sha256: "b".repeat(64) },
@@ -329,15 +255,6 @@ describe("model usage evidence", () => {
         judge: { attempts: 1, availability: "unavailable", billingSources: ["unknown"] },
       },
     })).success).toBe(true);
-  });
-
-  it("narrows known open vocabularies without rejecting a future writer's values", () => {
-    expect(knownUsageRail("agent")).toBe("agent");
-    expect(knownUsageRail("planning")).toBeUndefined();
-    expect(knownUsageAvailability("partial")).toBe("partial");
-    expect(knownUsageAvailability("estimated")).toBeUndefined();
-    expect(knownBillingSource("api")).toBe("api");
-    expect(knownBillingSource("partner-billing")).toBeUndefined();
   });
 });
 
@@ -354,6 +271,8 @@ describe("parseLedgerJsonl", () => {
     expect(entries.map((e) => e.runId)).toEqual(["a", "b"]);
     expect(skipped.map((s) => s.line)).toEqual([2, 4]);
     expect(skipped[0].issues[0].message).toContain("invalid JSON");
+    // The failure names the field, so a corrupt line is diagnosable from the
+    // report alone.
     expect(skipped[1].issues[0].path).toBe("ts");
   });
 
@@ -361,36 +280,6 @@ describe("parseLedgerJsonl", () => {
     const { entries, skipped } = parseLedgerJsonl("garbage\nmore garbage");
     expect(entries).toEqual([]);
     expect(skipped).toHaveLength(2);
-  });
-});
-
-describe("parseCosignStdout", () => {
-  const result = {
-    ok: true,
-    action: "merge",
-    runId: "run-1",
-    state: "merged",
-    refusals: [],
-  };
-
-  it("finds the last valid co-sign result among SSH noise", () => {
-    const output = [
-      "Warning: Permanently added 'runner' to hosts",
-      JSON.stringify({ unrelated: true }),
-      JSON.stringify(result),
-      "",
-    ].join("\n");
-    expect(parseCosignStdout(output)?.state).toBe("merged");
-  });
-
-  it("scans from the end — the newest result wins", () => {
-    const output = `${JSON.stringify({ ...result, runId: "old" })}\n${JSON.stringify(result)}`;
-    expect(parseCosignStdout(output)?.runId).toBe("run-1");
-  });
-
-  it("returns null when no line validates, never throwing", () => {
-    expect(parseCosignStdout("pnpm banner\n{broken json")).toBeNull();
-    expect(parseCosignStdout(JSON.stringify({ ok: true }))).toBeNull();
   });
 });
 

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { InflightRecord } from "@fleet/contract";
+import type { InflightRecord } from "../src/wire.js";
 import {
   beginInflight,
   inflightDir,

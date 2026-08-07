@@ -14,7 +14,7 @@
 import { type IncomingMessage, type ServerResponse, createServer, type Server } from "node:http";
 import { type FSWatcher, mkdirSync, watch } from "node:fs";
 import path from "node:path";
-import type { PrLiveState } from "@fleet/contract";
+import type { PrLiveState } from "./wire.js";
 import { readLedger } from "./ledger.js";
 import { inflightDir, readLiveInflight } from "./inflight.js";
 import { type RenderOptions, LEDGER_EVENTS_PATH, renderLedgerHtml } from "./ledger-html.js";

@@ -6,7 +6,7 @@ record shows what was considered instead and why it lost.
 
 | # | Decision | Seam |
 |---|---|---|
-| [0001](0001-tolerant-reader-wire-contract.md) | Tolerant reader on the wire (premise narrowed to time by [0026](0026-the-desktop-operator-is-deleted.md)) | contract |
+| [0001](0001-tolerant-reader-wire-contract.md) | Tolerant reader on the wire — **superseded in full by [0027](0027-the-wire-contract-package-is-deleted.md)**, which measured the premise at 0 of 50 rows | contract |
 | [0002](0002-model-usage-evidence-contract.md) | Model-usage evidence: canonical document + compact ledger projection | evidence |
 | [0003](0003-the-runner-owns-git.md) | The agent proposes; the runner owns git and the network | agent↔runner |
 | [0004](0004-verification-tri-state-and-mandated-gates.md) | Verification is a tri-state, and a gate asserts rather than instructs | verify↔run |
@@ -32,6 +32,7 @@ record shows what was considered instead and why it lost.
 | [0024](0024-the-machine-is-frozen-and-the-triggers-thaw-it.md) | The machine is frozen at 0023, and three triggers thaw it | process |
 | [0025](0025-the-judge-is-deleted-and-verify-is-the-last-gate.md) | The judge is deleted, and green verify is the last gate | judge |
 | [0026](0026-the-desktop-operator-is-deleted.md) | The desktop operator is deleted, and the CLI is the only surface | operator |
+| [0027](0027-the-wire-contract-package-is-deleted.md) | The wire-contract package is deleted; tolerance needs a named external producer | contract |
 **0003–0008 were written retroactively** (2026-07-26), reconstructing the
 reasoning behind decisions already in the code. They are sound arguments, not
 contemporaneous minutes — do not read their option lists as a record of what was

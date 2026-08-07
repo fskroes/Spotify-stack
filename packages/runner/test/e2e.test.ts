@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { InflightRecord } from "@fleet/contract";
+import type { InflightRecord } from "../src/wire.js";
 import { inflightDir, readInflight } from "../src/inflight.js";
 import { retainedKillDir } from "../src/kill-retention.js";
 import { readLedger } from "../src/ledger.js";

@@ -28,7 +28,7 @@ import {
   type RunStatus,
   type Stage as LiveStage,
   type TerminalStage,
-} from "@fleet/contract";
+} from "./wire.js";
 import { fleetRecord, readLedger } from "./ledger.js";
 // Aliased: this module already has a `Stage` — the drawer timeline's row.
 
@@ -62,7 +62,7 @@ interface Verdict {
 /**
  * This report's presentation for each status — a badge label and a colour from
  * the dark palette above, nothing more. The domain facts (`kind`, the gate a
- * kill died at) are *not* restated here: they come from `@fleet/contract`'s
+ * kill died at) are *not* restated here: they come from `wire.ts`'s
  * RUN_FACTS. `satisfies Record<RunStatus, …>` makes a new or renamed status a
  * compile error until this table gives it a look.
  */

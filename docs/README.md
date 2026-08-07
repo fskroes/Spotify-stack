@@ -33,7 +33,6 @@ One line per unit: **what it owns**, not how it works. Open the source for how.
 | [`packages/runner`](../packages/runner) | The run loop and **everything with side effects**: workspace, engine spawn, scope gate, verify gate, git, PR, ledger, artifacts, evidence, the live ledger server. See [ADR-0003](adr/0003-the-runner-owns-git.md). |
 | [`packages/mcp-verify`](../packages/mcp-verify) | Verifier **detection** and execution — what checks a repo offers and whether they pass. Task-blind by construction; the runner folds in [mandated gates](../CONTEXT.md#mandated-gate). Plain JS, no build step. |
 | [`packages/intake`](../packages/intake) | The front door: drafts a task file from an intent (`fleet draft`) — a drafter, never a runner — and the correction log's three-valued drafted-vs-approved rule. No I/O, no side effects. |
-| [`packages/contract`](../packages/contract) | The [wire contract](../CONTEXT.md#wire-contract) — schemas and tolerant parsers for everything the runner writes down. The only place a wire shape is declared. See [ADR-0001](adr/0001-tolerant-reader-wire-contract.md). |
 | [`packages/knowledge`](../packages/knowledge) | Structural maps, compiled [knowledge prose](../CONTEXT.md#knowledge-prose), [grounding](../CONTEXT.md#grounding-ratio) and [drift](../CONTEXT.md#drift) checks, and the `ask` seam. See [ADR-0006](adr/0006-pre-compiled-knowledge-layer.md). |
 | [`agent-config/`](../agent-config) | The agent's cage: permission allowlist, MCP config, Stop hook. Injected into each workspace as `.claude/`. |
 | [`tasks/`](../tasks) | Task prompts. Authored only by `fleet draft` (into git-ignored `tasks/drafts/`); `examples/` and `onramp/` are fixtures, run by explicit path. Frontmatter fields are documented on the `Task` type in [`packages/runner/src/task.ts`](../packages/runner/src/task.ts). |
@@ -47,9 +46,11 @@ and you break an invariant that has an ADR behind it.
 
 1. **Agent ↔ runner** — the agent proposes file edits; the runner does
    everything else. [ADR-0003](adr/0003-the-runner-owns-git.md)
-2. **Runner ↔ its own past** — `@fleet/contract`, read tolerantly. The ledger
-   is append-only, so every reader must parse rows older than itself.
-   [ADR-0001](adr/0001-tolerant-reader-wire-contract.md)
+2. **Runner ↔ its own past** — `packages/runner/src/wire.ts`, the one
+   declaration of every shape the fleet writes down. The ledger is append-only,
+   so a reader parses rows older than itself; a field it does not find is *not
+   recorded*, never a zero.
+   [ADR-0027](adr/0027-the-wire-contract-package-is-deleted.md)
 3. **Verification ↔ run** — verification says what the repo offers and whether
    it passed; the run composes that with mandated gates into a state.
    [ADR-0004](adr/0004-verification-tri-state-and-mandated-gates.md)
@@ -90,6 +91,7 @@ measurements, not its current accuracy.
 | [`2026-08-05-step-2-the-delete-step-over-nine-adrs.md`](2026-08-05-step-2-the-delete-step-over-nine-adrs.md) | Step 1's nine QUESTION ADRs run through the delete step. **Nine of nine keep**, each on one named alternative a reasonable engineer would propose again, listed so any single row can be shot down. Finds the audit's five wrong calls share one shape — a factual claim about the document that the document falsifies — because they were judged from the index table, which cannot show whether a loser was recorded. Fixes the one real gap it found (`workspace` was undefined in `CONTEXT.md`) and records the padding it could not remove, since the lever is at authoring time. |
 | [`2026-08-05-gate-1-computed.md`](2026-08-05-gate-1-computed.md) | Gate 1's metric computed rather than estimated: the median PR-open to co-signed-merge wall clock over eight merges to the two private targets. Fourteen minutes, not hours — so nothing upstream of the PR is worth optimising, and the gate closes on a number instead of an impression. |
 | [`experiments/2026-08-04-the-gate-input-convention-against-history.md`](experiments/2026-08-04-the-gate-input-convention-against-history.md) | [ADR-0020](adr/0020-the-gate-input-set-is-a-convention.md)'s constant run over 147 commits of live-target history, `git log` only. No false positive in either target, so an approximate list is as cheap as the record claimed; nine of seventeen globs idle, and none of them should go. Two findings the ADR does not carry: on the Xcode target an `amends:` is the rule rather than the exception, and the convention is built from `detect()` while the check set is `detect()` plus every registered verifier — measurably, a Cargo manifest on 23.7% of one target's commits. |
+| [`experiments/2026-08-07-strict-parse-of-the-archived-ledger.md`](experiments/2026-08-07-strict-parse-of-the-archived-ledger.md) | All 50 archived ledger rows parsed through a strict schema, to test the premise [ADR-0026](adr/0026-the-desktop-operator-is-deleted.md) rescued `@fleet/contract` on. Tolerance toward this repo's own records buys **0 of 50** rows on both of its mechanisms; 7 rows need a plain optional field, and they are the oldest 7. The evidence [ADR-0027](adr/0027-the-wire-contract-package-is-deleted.md) deletes the package on — and the rule it leaves behind: a forgiving reader needs a named producer this repo does not control. |
 | [`rust-gpui-port-research.md`](rust-gpui-port-research.md) | Whether the fleet could be ported to Rust + GPUI, and what it would bring. Verdict: port nothing — Node survives as a subprocess dependency either way, so the headline benefit is not on offer, and the operator's hard part is already Rust. Carries what would have to become true to flip either half. |
 | [`agents/issue-tracker.md`](agents/issue-tracker.md) | How issues, PRDs, and wayfinder maps are operated with `gh`. |
 

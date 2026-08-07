@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { sanitizeCliEnvelopeUsage } from "@fleet/contract";
+import { sanitizeCliEnvelopeUsage } from "./cli-envelope.js";
 import { AGENT_TIMEOUT_MS } from "./timeouts.js";
 import { unavailableProducerUsage, type ProducerUsage } from "./model-usage.js";
 import { git } from "./workspace.js";
@@ -56,7 +56,7 @@ export interface ExecFailure {
 
 /**
  * Extract only content-free usage facts from a final Claude CLI result envelope.
- * Delegates to the one shared sanitizer in `@fleet/contract` so the agent engine
+ * Delegates to the one shared sanitizer in `cli-envelope.ts` so the agent engine
  * and the CLI judge can never drift apart (#77).
  */
 export function extractCliUsage(envelope: Record<string, unknown>): ProducerUsage {

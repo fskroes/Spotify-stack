@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import picomatch from "picomatch";
-import { type RunStatus, type VerifyState } from "@fleet/contract";
+import { type RunStatus, type VerifyState } from "./wire.js";
 import { runVerify } from "@fleet/mcp-verify";
 import { defaultArtifactsRoot, prepareRunArtifactsDir, REVIEW_ARTIFACTS } from "./artifacts.js";
 import { killRetentionLog, retainKill } from "./kill-retention.js";
@@ -29,7 +29,7 @@ interface VerifyResult {
   summary: string;
 }
 
-/** The seven ways a run can end — owned by `@fleet/contract` (RUN_STATUSES),
+/** The seven ways a run can end — owned by `wire.ts` (RUN_STATUSES),
  *  re-exported here so the runner's existing importers keep their entry point. */
 export type { RunStatus };
 

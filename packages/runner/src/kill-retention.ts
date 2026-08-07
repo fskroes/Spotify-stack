@@ -20,7 +20,7 @@
  */
 import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
-import { runFacts, type TerminalStage } from "@fleet/contract";
+import { runFacts, type TerminalStage } from "./wire.js";
 import { runEvidenceDir } from "./evidence.js";
 
 /** The blinded view: the change a killed run proposed, and nothing about why. */

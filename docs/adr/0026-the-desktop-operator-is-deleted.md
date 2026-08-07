@@ -3,9 +3,9 @@
 **Date of decision: 2026-08-07.** Supersedes
 [ADR-0005](0005-operator-drives-the-cli-over-ssh.md) **in part** — its transport
 decision only. ADR-0005's co-sign gate, and the deliberate absence of
-`fleet cosign --force`, are untouched and remain recorded there. Narrows the
-premise of [ADR-0001](0001-tolerant-reader-wire-contract.md) without superseding
-it.
+`fleet cosign --force`, are untouched and remain recorded there. Its treatment
+of [ADR-0001](0001-tolerant-reader-wire-contract.md) is corrected below by
+[ADR-0027](0027-the-wire-contract-package-is-deleted.md).
 
 ## The decision
 
@@ -69,13 +69,13 @@ green ([ADR-0004](0004-verification-tri-state-and-mandated-gates.md)).
 
 ## What stays, and why
 
-`@fleet/contract` stays. Its stated premise was version skew between two
-machines at different commits, and that premise is now dead — but the tolerant
-reader is not. The ledger is append-only and 50 rows deep, so today's reader
-must still parse rows written by every past runner, including fields nothing
-produces any more. That is ADR-0001 applied to time, the same ground ADR-0025
-kept the judge's wire types on. ADR-0001 is not superseded; its reason narrowed
-from two machines to two dates.
+`@fleet/contract` was kept here on a replacement premise — that the tolerant
+reader spans time rather than machines — and **that premise was not tested when
+this was written.** It has been since, and it failed:
+[ADR-0027](0027-the-wire-contract-package-is-deleted.md) deletes the package on
+a strict parse of all 50 archived rows. The shapes live in
+`packages/runner/src/wire.ts`. This paragraph stands as written to record the
+move it made: repairing a requirement in order to save a part.
 
 `fleet report --serve` stays. It renders HTML for a browser and never needed the
 API — the served page reads the local ledger directly.
