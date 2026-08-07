@@ -33,6 +33,8 @@ record shows what was considered instead and why it lost.
 | [0025](0025-the-judge-is-deleted-and-verify-is-the-last-gate.md) | The judge is deleted, and green verify is the last gate | judge |
 | [0026](0026-the-desktop-operator-is-deleted.md) | The desktop operator is deleted, and the CLI is the only surface | operator |
 | [0027](0027-the-wire-contract-package-is-deleted.md) | The wire-contract package is deleted; tolerance needs a named external producer | contract |
+| [0028](0028-the-browser-dashboard-is-deleted.md) | The browser dashboard is deleted, and the terminal is the report | operator |
+
 **0003–0008 were written retroactively** (2026-07-26), reconstructing the
 reasoning behind decisions already in the code. They are sound arguments, not
 contemporaneous minutes — do not read their option lists as a record of what was

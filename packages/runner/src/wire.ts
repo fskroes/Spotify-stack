@@ -321,8 +321,7 @@ export const LedgerEntrySchema = z.object({
 
   /** Ties this line to the run's in-flight record (`fleet/inflight/<pid>.json`).
    *  A run's line is appended *before* its live record is unlinked, so a reader
-   *  scanning both drops any live row whose runId already reached the ledger —
-   *  otherwise a run finishing mid-read renders twice. (See dedupeInflight.) */
+   *  scanning both drops any live row whose runId already reached the ledger. */
   runId: z.string().optional(),
   /** Human-readable task title, so ledger views need not resolve the task file. */
   title: z.string().optional(),
@@ -381,7 +380,7 @@ export const InflightRecordSchema = z.object({
    *  record is a different shape, and failing loudly here is the upgrade signal. */
   v: z.literal(1),
   /** Reconcile key: also written to the run's ledger line, so a reader can drop
-   *  a live row the ledger has already superseded. (See dedupeInflight.) */
+   *  a live row the ledger has already superseded. */
   runId: z.string(),
   /** Liveness probe for the staleness sweep — `process.kill(pid, 0)`. */
   pid: z.number(),
@@ -402,21 +401,6 @@ export const InflightRecordSchema = z.object({
   stageSince: z.string(),
 });
 export type InflightRecord = z.infer<typeof InflightRecordSchema>;
-
-/**
- * The dedupe-by-runId invariant, in one place.
- *
- * A run's ledger line is appended *before* its in-flight record is unlinked,
- * so for a moment a run is both live and decided. `runId` is on both sides
- * precisely so a reader scanning both can drop the live row instead of
- * drawing the run twice. Match against the whole ledger, not a windowed
- * slice: a run finishing right now is always inside any window anyway, and a
- * narrow window must not resurrect a ghost.
- */
-export function dedupeInflight(entries: LedgerEntry[], inflight: InflightRecord[]): InflightRecord[] {
-  const decided = new Set(entries.flatMap((entry) => (entry.runId ? [entry.runId] : [])));
-  return inflight.filter((record) => !decided.has(record.runId));
-}
 
 // --- Reading the ledger back off disk ---
 
@@ -518,16 +502,4 @@ export interface CosignResult {
   mergedAt?: string;
   /** Why the gate refused — empty on success. */
   refusals: CosignRefusal[];
-}
-
-/**
- * The human co-sign state of a shipped PR, fetched live from GitHub at render
- * time (the ledger itself never records it — the merge happens after the run).
- * Known `state` values: "open", "merged", "closed".
- */
-export interface PrLiveState {
-  state: string;
-  mergedBy?: string;
-  /** ISO-8601 merge timestamp. */
-  mergedAt?: string;
 }

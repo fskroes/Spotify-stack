@@ -30,7 +30,7 @@ One line per unit: **what it owns**, not how it works. Open the source for how.
 | Unit | Owns |
 |---|---|
 | [`packages/cli`](../packages/cli) | The `fleet` verbs: `run`, `status`, `report`, `cosign`, `draft`, `knowledge {map,compile,drift}`, `ask`. Argument parsing and nothing else — every verb delegates. |
-| [`packages/runner`](../packages/runner) | The run loop and **everything with side effects**: workspace, engine spawn, scope gate, verify gate, git, PR, ledger, artifacts, evidence, the live ledger server. See [ADR-0003](adr/0003-the-runner-owns-git.md). |
+| [`packages/runner`](../packages/runner) | The run loop and **everything with side effects**: workspace, engine spawn, scope gate, verify gate, git, PR, ledger, artifacts, evidence. See [ADR-0003](adr/0003-the-runner-owns-git.md). |
 | [`packages/mcp-verify`](../packages/mcp-verify) | Verifier **detection** and execution — what checks a repo offers and whether they pass. Task-blind by construction; the runner folds in [mandated gates](../CONTEXT.md#mandated-gate). Plain JS, no build step. |
 | [`packages/intake`](../packages/intake) | The front door: drafts a task file from an intent (`fleet draft`) — a drafter, never a runner — and the correction log's three-valued drafted-vs-approved rule. No I/O, no side effects. |
 | [`packages/knowledge`](../packages/knowledge) | Structural maps, compiled [knowledge prose](../CONTEXT.md#knowledge-prose), [grounding](../CONTEXT.md#grounding-ratio) and [drift](../CONTEXT.md#drift) checks, and the `ask` seam. See [ADR-0006](adr/0006-pre-compiled-knowledge-layer.md). |

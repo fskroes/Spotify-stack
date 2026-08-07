@@ -14,7 +14,7 @@
 
 [![Quickstart](https://img.shields.io/badge/Quickstart-60_seconds-1f9e7f?style=for-the-badge&logoColor=white)](#start-in-60-seconds)
 [![Docs](https://img.shields.io/badge/Docs-11181d?style=for-the-badge)](docs/README.md)
-[![Decisions](https://img.shields.io/badge/27_Decisions-11181d?style=for-the-badge)](docs/adr)
+[![Decisions](https://img.shields.io/badge/28_Decisions-11181d?style=for-the-badge)](docs/adr)
 
 <sub>Runs anywhere Node ≥ 20 does &nbsp;·&nbsp; one repo per run &nbsp;·&nbsp; dry-run by default &nbsp;·&nbsp; MIT</sub>
 
@@ -43,7 +43,15 @@
 
 </div>
 
-[![The Fleet Ledger — every run shipped or killed, with the reason on record](docs/fleet-ledger.png)](docs/fleet-ledger.png)
+```console
+$ pnpm fleet report
+Last 30 days: 40 shipped · 5 killed before review (0 judge vetoes, 5 verify failures, 0 scope violations).
+(1 engine failure counted as infra, 4 no-change runs neutral.)
+
+Killed before anyone reviewed them:
+- 2026-08-04  003-null-guard on demo-ts-service [local] — verify-failed: npm run test failed: 2 failing
+- 2026-08-05  007-api-timeout on demo-api [local] — verify-failed: npm run lint failed: no-unused-vars
+```
 
 <div align="center">
 
@@ -191,7 +199,7 @@ Four boundaries carry the design weight.
 
 <div align="center">
 
-<sub><b>A new agent capability is a cage change, not a feature.</b> &nbsp;·&nbsp; <a href="docs/adr">All 27 decisions →</a></sub>
+<sub><b>A new agent capability is a cage change, not a feature.</b> &nbsp;·&nbsp; <a href="docs/adr">All 28 decisions →</a></sub>
 
 </div>
 
@@ -213,7 +221,7 @@ Four boundaries carry the design weight.
 </div>
 
 ```sh
-pnpm fleet report --serve --open                  # live dashboard, auto-reloads
+pnpm fleet report                                 # the tally, and the kill log
 pnpm fleet cosign <runId> --merge                 # squash-merge, delete branch
 pnpm fleet cosign <runId> --close --reason "why"  # the reason lands as a comment
 ```

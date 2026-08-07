@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  dedupeInflight,
   InflightRecordSchema,
   isKillStatus,
   knownVerifyState,
@@ -280,17 +279,5 @@ describe("parseLedgerJsonl", () => {
     const { entries, skipped } = parseLedgerJsonl("garbage\nmore garbage");
     expect(entries).toEqual([]);
     expect(skipped).toHaveLength(2);
-  });
-});
-
-describe("dedupeInflight", () => {
-  it("drops a live row whose runId already reached the ledger", () => {
-    const decided = [entry({ runId: "run-done" })];
-    const live = [inflight({ runId: "run-done" }), inflight({ runId: "run-live" })];
-    expect(dedupeInflight(decided, live).map((r) => r.runId)).toEqual(["run-live"]);
-  });
-
-  it("keeps live rows when ledger lines predate runId", () => {
-    expect(dedupeInflight([entry()], [inflight()])).toHaveLength(1);
   });
 });

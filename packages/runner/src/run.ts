@@ -13,7 +13,6 @@ import { decideGateInputs, gateInputNote, noGateInputs, type GateInputDecision }
 import { findRepo, type FleetRepo } from "./fleet.js";
 import { beginInflight, sweepInflight, type InflightHandle } from "./inflight.js";
 import { appendLedger, defaultLedgerPath, fleetRecord, readLedger } from "./ledger.js";
-import { defaultLedgerHtmlPath, writeLedgerHtml } from "./ledger-html.js";
 import { buildPrBody, type VerifyCheck } from "./pr.js";
 import { buildRunPreamble } from "@fleet/knowledge";
 import { loadTask, type Task } from "./task.js";
@@ -707,17 +706,6 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         retainKill({ evidenceRoot, runId, status: full.status, artifactsDir }),
       );
       if (retentionLine) log(retentionLine);
-      // Keep the rendered report current: re-render from the whole ledger after
-      // every run so artifacts/ledger.html never lags the data. Only for the real
-      // committed ledger — a caller pointing at a custom ledger (tests) opts out,
-      // keeping runs hermetic. A render hiccup must never fail an otherwise-good run.
-      if (!opts.ledgerPath) {
-        try {
-          writeLedgerHtml(ledgerPath, defaultLedgerHtmlPath(opts.controlRepo));
-        } catch (err) {
-          log(`⚠ ledger report not regenerated: ${(err as Error).message}`);
-        }
-      }
       log(`■ ${full.status}${full.prUrl ? ` → ${full.prUrl}` : ""}`);
       return full;
     };

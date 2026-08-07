@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Command } from "commander";
@@ -22,7 +22,6 @@ import { loadTask } from "@fleet/runner/task";
 import { resolveOwner, targetRepos } from "@fleet/runner/fleet";
 import { knowledgeArtifactPath, resolveKnowledgeRepo } from "@fleet/runner/knowledge";
 import { extractCliEnvelope, sanitizeCliEnvelopeUsage } from "@fleet/runner/cli-envelope";
-import type { LedgerEntry, PrLiveState } from "@fleet/runner/wire";
 import { invokeClaudeCli } from "./knowledge-cli.js";
 import { resolveTaskPath } from "./resolve-task.js";
 import {
@@ -36,8 +35,6 @@ import {
 } from "@fleet/intake";
 import { defaultLedgerPath, fleetRecord, formatRecordLine, readLedger } from "@fleet/runner/ledger";
 import { readUnionLedger } from "@fleet/runner/ledger-union";
-import { writeLedgerHtml } from "@fleet/runner/ledger-html";
-import { serveLedger } from "@fleet/runner/ledger-serve";
 import { cosign, formatCosignResult } from "@fleet/runner/cosign";
 import { compileKnowledgeProse } from "./knowledge-compile.js";
 
@@ -475,100 +472,13 @@ program
     process.exitCode = result.ok ? 0 : 1;
   });
 
-/**
- * Live co-sign state for every shipped PR in the ledger, via gh. The ledger
- * can't know what a human did with a PR after the run, so this is fetched at
- * report time and only when asked (--cosign) — the auto-regenerated report
- * after each run stays offline. A PR gh can't resolve is simply omitted.
- */
-function fetchCosigns(entries: LedgerEntry[]): Record<string, PrLiveState> {
-  const urls = [...new Set(entries.filter((e) => e.status === "approved" && e.prUrl).map((e) => e.prUrl as string))];
-  const cosigns: Record<string, PrLiveState> = {};
-  for (const url of urls) {
-    try {
-      const pr = JSON.parse(gh(["pr", "view", url, "--json", "state,mergedAt,mergedBy"])) as {
-        state: string;
-        mergedAt: string | null;
-        mergedBy: { login: string } | null;
-      };
-      cosigns[url] = {
-        state: pr.state === "MERGED" ? "merged" : pr.state === "OPEN" ? "open" : "closed",
-        mergedBy: pr.mergedBy?.login,
-        mergedAt: pr.mergedAt ?? undefined,
-      };
-    } catch {
-      console.error(`(co-sign state unavailable for ${url} — skipped)`);
-    }
-  }
-  return cosigns;
-}
-
-/** The OS command that opens a URL in the default browser, per platform. */
-function browserOpenCommand(platform: NodeJS.Platform, url: string): { cmd: string; args: string[] } {
-  if (platform === "darwin") return { cmd: "open", args: [url] };
-  if (platform === "win32") return { cmd: "cmd", args: ["/c", "start", "", url] };
-  return { cmd: "xdg-open", args: [url] };
-}
-
-/**
- * Open a URL in the default browser, fire-and-forget. Detached + unref'd so it
- * never blocks or holds the server's event loop, and any failure (headless box,
- * missing opener) is swallowed — the live server must run regardless.
- */
-function openBrowser(url: string): void {
-  const { cmd, args } = browserOpenCommand(process.platform, url);
-  try {
-    const child = spawn(cmd, args, { stdio: "ignore", detached: true });
-    child.on("error", () => {});
-    child.unref();
-  } catch {
-    // best-effort — the URL is printed anyway.
-  }
-}
-
 program
   .command("report")
   .description("The fleet record: shipped vs. killed before review, kills with reasons")
   .option("--days <n>", "window in days", "30")
-  .option("--html", "render the Fleet Ledger as a self-contained HTML page instead of text", false)
-  .option("--cosign", "with --html/--serve: fetch live PR merge state from GitHub (needs gh)", false)
-  .option("--out <path>", "output file for --html", "artifacts/ledger.html")
-  .option("--serve", "serve the Fleet Ledger live, auto-reloading as runs land", false)
-  .option("--port <n>", "port for --serve", "4173")
-  .option("--open", "with --serve: open the live ledger in your browser", false)
-  .action(async (options: { days: string; html: boolean; cosign: boolean; out: string; serve: boolean; port: string; open: boolean }) => {
+  .action((options: { days: string }) => {
     const days = Number.parseInt(options.days, 10);
-    const ledgerPath = defaultLedgerPath(controlRepo);
-    const entries = readLedger(ledgerPath);
-
-    if (options.serve) {
-      const { url } = await serveLedger({
-        ledgerPath,
-        controlRepo,
-        port: Number.parseInt(options.port, 10),
-        renderOpts: { days },
-        // Re-read the ledger each poll so newly shipped PRs are picked up.
-        fetchCosigns: options.cosign ? () => fetchCosigns(readLedger(ledgerPath)) : undefined,
-      });
-      console.log(`Fleet Ledger live at ${url}`);
-      console.log(
-        options.cosign
-          ? "Co-sign polling on — fetching live PR merge state from GitHub every 60s."
-          : "Co-sign polling off (offline). Add --cosign to poll GitHub merge state.",
-      );
-      console.log("Cloud runs sync from origin/main; their evidence downloads on demand when reviewed.");
-      console.log("watching fleet/ledger.jsonl — Ctrl-C to stop");
-      if (options.open) openBrowser(url);
-      return;
-    }
-
-    if (options.html) {
-      const outPath = path.resolve(controlRepo, options.out);
-      const cosigns = options.cosign ? fetchCosigns(entries) : undefined;
-      const n = writeLedgerHtml(defaultLedgerPath(controlRepo), outPath, { days, cosigns });
-      console.log(`Fleet Ledger written to ${path.relative(controlRepo, outPath)} (${n} run${n === 1 ? "" : "s"} in the ledger, ${days}-day window${cosigns ? `, co-sign state for ${Object.keys(cosigns).length} PR${Object.keys(cosigns).length === 1 ? "" : "s"}` : ""}).`);
-      return;
-    }
+    const entries = readLedger(defaultLedgerPath(controlRepo));
 
     if (entries.length === 0) {
       console.log("No fleet runs recorded yet (fleet/ledger.jsonl is empty).");
