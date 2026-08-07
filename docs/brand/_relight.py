@@ -5,7 +5,7 @@ The two heroes are the same drawing on different grounds, so only one is
 authored by hand. Edit hero-dark.svg, then run this. It fails loudly if any
 mapping stops matching, which is what stops the pair drifting apart.
 
-    python3 prototype-readme/assets/_relight.py
+    python3 docs/brand/_relight.py
 """
 import pathlib
 import sys

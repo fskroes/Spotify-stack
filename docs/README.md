@@ -29,7 +29,7 @@ One line per unit: **what it owns**, not how it works. Open the source for how.
 
 | Unit | Owns |
 |---|---|
-| [`packages/cli`](../packages/cli) | The `fleet` verbs: `run`, `dispatch`, `status`, `report`, `cosign`, `knowledge {map,compile,drift}`, `ask`. Argument parsing and nothing else — every verb delegates. |
+| [`packages/cli`](../packages/cli) | The `fleet` verbs: `run`, `status`, `report`, `cosign`, `draft`, `knowledge {map,compile,drift}`, `ask`. Argument parsing and nothing else — every verb delegates. |
 | [`packages/runner`](../packages/runner) | The run loop and **everything with side effects**: workspace, engine spawn, scope gate, verify gate, git, PR, ledger, artifacts, evidence, the operator HTTP API. See [ADR-0003](adr/0003-the-runner-owns-git.md). |
 | [`packages/mcp-verify`](../packages/mcp-verify) | Verifier **detection** and execution — what checks a repo offers and whether they pass. Task-blind by construction; the runner folds in [mandated gates](../CONTEXT.md#mandated-gate). Plain JS, no build step. |
 | [`packages/intake`](../packages/intake) | The front door: drafts a task file from an intent (`fleet draft`) — a drafter, never a runner — and the correction log's three-valued drafted-vs-approved rule. No I/O, no side effects. |
@@ -39,7 +39,7 @@ One line per unit: **what it owns**, not how it works. Open the source for how.
 | [`agent-config/`](../agent-config) | The agent's cage: permission allowlist, MCP config, Stop hook. Injected into each workspace as `.claude/`. |
 | [`tasks/`](../tasks) | Task prompts. Authored only by `fleet draft` (into git-ignored `tasks/drafts/`); `examples/` and `onramp/` are fixtures, run by explicit path. Frontmatter fields are documented on the `Task` type in [`packages/runner/src/task.ts`](../packages/runner/src/task.ts). |
 | [`fleet/`](../fleet) | `repos.yaml` (target registry), `ledger.jsonl` (every run, shipped or killed), `evidence/` (the canonical per-run record: model-usage documents, and the [retained kill](../CONTEXT.md#retained-kill) a killed run leaves behind). |
-| [`.github/workflows/`](../.github/workflows) | Thin wrappers around the same CLI — cloud is a dispatch mechanism, not a second implementation. |
+| [`.github/workflows/`](../.github/workflows) | CI only — scrub, typecheck, tests, and the desktop build. The cloud dispatch entry point was deleted; see [ADR-0024](adr/0024-the-machine-is-frozen-and-the-triggers-thaw-it.md). |
 
 ### The seams worth knowing
 
@@ -79,7 +79,6 @@ measurements, not its current accuracy.
 | [`codebase-knowledge-prior-art-research.md`](codebase-knowledge-prior-art-research.md) | Six existing forms of pre-compiled codebase understanding, surveyed against this fleet's two consumers. Notes that Honk itself declines the bet. |
 | [`2026-07-31-honk-provenance-research.md`](2026-07-31-honk-provenance-research.md) | What Honk actually is, from first-party sources only: an internal Spotify codename, not a product, with its cage, verify loop and judge documented in prose and no source published. Includes a claim audit that marks five circulating capability claims supported, overstated, or `UNVERIFIED`. |
 | [`knowledge-layer-prototype-comparison.md`](knowledge-layer-prototype-comparison.md) | The throwaway prototype that measured primed vs. cold answering: 4.2× cheaper on tokens, a modest quality win. |
-| [`knowledge-layer-spec.md`](knowledge-layer-spec.md) | The spec the built knowledge layer was handed off from. Written before the build; read it for intent, not for current shape. |
 | [`experiments/knowledge-payback-discrimination.md`](experiments/knowledge-payback-discrimination.md) | The run-time half, measured for real — and the result that **weakened** the payback bet. The counter-evidence is kept on purpose. |
 | [`experiments/knowledge-payback-regime-map.md`](experiments/knowledge-payback-regime-map.md) | After four ties, the step back: for which class of fact could run-time priming pay back *at all*. Characterizes the regime space and recommends what to keep open. |
 | [`experiments/knowledge-ask-usage-pass.md`](experiments/knowledge-ask-usage-pass.md) | The design pass for the ideation half — the [`ask`](../CONTEXT.md#ask) seam — which is the half showing a positive signal. Method, metrics, and tiers; target-neutral by construction. |
@@ -92,7 +91,6 @@ measurements, not its current accuracy.
 | [`2026-08-05-gate-1-computed.md`](2026-08-05-gate-1-computed.md) | Gate 1's metric computed rather than estimated: the median PR-open to co-signed-merge wall clock over eight merges to the two private targets. Fourteen minutes, not hours — so nothing upstream of the PR is worth optimising, and the gate closes on a number instead of an impression. |
 | [`experiments/2026-08-04-the-gate-input-convention-against-history.md`](experiments/2026-08-04-the-gate-input-convention-against-history.md) | [ADR-0020](adr/0020-the-gate-input-set-is-a-convention.md)'s constant run over 147 commits of live-target history, `git log` only. No false positive in either target, so an approximate list is as cheap as the record claimed; nine of seventeen globs idle, and none of them should go. Two findings the ADR does not carry: on the Xcode target an `amends:` is the rule rather than the exception, and the convention is built from `detect()` while the check set is `detect()` plus every registered verifier — measurably, a Cargo manifest on 23.7% of one target's commits. |
 | [`rust-gpui-port-research.md`](rust-gpui-port-research.md) | Whether the fleet could be ported to Rust + GPUI, and what it would bring. Verdict: port nothing — Node survives as a subprocess dependency either way, so the headline benefit is not on offer, and the operator's hard part is already Rust. Carries what would have to become true to flip either half. |
-| [`conductor-ui-ux-research.md`](conductor-ui-ux-research.md) | Conductor's interaction model, recorded as design input for the operator. Explicitly not a requirements document. |
 | [`agents/issue-tracker.md`](agents/issue-tracker.md) | How issues, PRDs, and wayfinder maps are operated with `gh`. |
 
 ## The rule for adding docs here
