@@ -13,6 +13,9 @@
  * bytes as a join separator, and its 2287 lines went unscanned — grep matched
  * nothing in that file, for any pattern, on any platform. It was found by a
  * failing typecheck during an unrelated rename, which is luck, not a control.
+ * (That file was deleted with the operator,
+ * [ADR-0026](../docs/adr/0026-the-desktop-operator-is-deleted.md); the incident
+ * is why this test exists, and git holds the file it happened in.)
  *
  * So: the binary files are the allowlist, and every other tracked file must be
  * reachable. A new binary format fails this test, which is the intent — being

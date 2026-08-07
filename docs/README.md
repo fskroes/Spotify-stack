@@ -30,16 +30,15 @@ One line per unit: **what it owns**, not how it works. Open the source for how.
 | Unit | Owns |
 |---|---|
 | [`packages/cli`](../packages/cli) | The `fleet` verbs: `run`, `status`, `report`, `cosign`, `draft`, `knowledge {map,compile,drift}`, `ask`. Argument parsing and nothing else — every verb delegates. |
-| [`packages/runner`](../packages/runner) | The run loop and **everything with side effects**: workspace, engine spawn, scope gate, verify gate, git, PR, ledger, artifacts, evidence, the operator HTTP API. See [ADR-0003](adr/0003-the-runner-owns-git.md). |
+| [`packages/runner`](../packages/runner) | The run loop and **everything with side effects**: workspace, engine spawn, scope gate, verify gate, git, PR, ledger, artifacts, evidence, the live ledger server. See [ADR-0003](adr/0003-the-runner-owns-git.md). |
 | [`packages/mcp-verify`](../packages/mcp-verify) | Verifier **detection** and execution — what checks a repo offers and whether they pass. Task-blind by construction; the runner folds in [mandated gates](../CONTEXT.md#mandated-gate). Plain JS, no build step. |
 | [`packages/intake`](../packages/intake) | The front door: drafts a task file from an intent (`fleet draft`) — a drafter, never a runner — and the correction log's three-valued drafted-vs-approved rule. No I/O, no side effects. |
-| [`packages/contract`](../packages/contract) | The [wire contract](../CONTEXT.md#wire-contract) — schemas and tolerant parsers for everything the runner tells the operator. The only place a wire shape is declared. See [ADR-0001](adr/0001-tolerant-reader-wire-contract.md). |
+| [`packages/contract`](../packages/contract) | The [wire contract](../CONTEXT.md#wire-contract) — schemas and tolerant parsers for everything the runner writes down. The only place a wire shape is declared. See [ADR-0001](adr/0001-tolerant-reader-wire-contract.md). |
 | [`packages/knowledge`](../packages/knowledge) | Structural maps, compiled [knowledge prose](../CONTEXT.md#knowledge-prose), [grounding](../CONTEXT.md#grounding-ratio) and [drift](../CONTEXT.md#drift) checks, and the `ask` seam. See [ADR-0006](adr/0006-pre-compiled-knowledge-layer.md). |
-| [`apps/operator-desktop`](../apps/operator-desktop) | The Tauri workbench. Reads the contract, drives the CLI over SSH, and owns **no** fleet logic of its own. See [ADR-0005](adr/0005-operator-drives-the-cli-over-ssh.md). |
 | [`agent-config/`](../agent-config) | The agent's cage: permission allowlist, MCP config, Stop hook. Injected into each workspace as `.claude/`. |
 | [`tasks/`](../tasks) | Task prompts. Authored only by `fleet draft` (into git-ignored `tasks/drafts/`); `examples/` and `onramp/` are fixtures, run by explicit path. Frontmatter fields are documented on the `Task` type in [`packages/runner/src/task.ts`](../packages/runner/src/task.ts). |
 | [`fleet/`](../fleet) | `repos.yaml` (target registry), `ledger.jsonl` (every run, shipped or killed), `evidence/` (the canonical per-run record: model-usage documents, and the [retained kill](../CONTEXT.md#retained-kill) a killed run leaves behind). |
-| [`.github/workflows/`](../.github/workflows) | CI only — scrub, typecheck, tests, and the desktop build. The cloud dispatch entry point was deleted; see [ADR-0024](adr/0024-the-machine-is-frozen-and-the-triggers-thaw-it.md). |
+| [`.github/workflows/`](../.github/workflows) | CI only — scrub, typecheck, and tests. The cloud dispatch entry point was deleted; see [ADR-0024](adr/0024-the-machine-is-frozen-and-the-triggers-thaw-it.md). |
 
 ### The seams worth knowing
 
@@ -48,7 +47,8 @@ and you break an invariant that has an ADR behind it.
 
 1. **Agent ↔ runner** — the agent proposes file edits; the runner does
    everything else. [ADR-0003](adr/0003-the-runner-owns-git.md)
-2. **Runner ↔ operator** — `@fleet/contract`, read tolerantly.
+2. **Runner ↔ its own past** — `@fleet/contract`, read tolerantly. The ledger
+   is append-only, so every reader must parse rows older than itself.
    [ADR-0001](adr/0001-tolerant-reader-wire-contract.md)
 3. **Verification ↔ run** — verification says what the repo offers and whether
    it passed; the run composes that with mandated gates into a state.

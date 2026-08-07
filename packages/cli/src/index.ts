@@ -52,25 +52,6 @@ function git(args: string[]): string {
   return execFileSync("git", ["-C", controlRepo, ...args], { encoding: "utf8" });
 }
 
-/**
- * Async `gh` for `gh run download` — spawn-based so a slow artifact pull never
- * blocks the serve event loop. Rejects with stderr so the sync layer can tell a
- * gone artifact from a transient failure.
- */
-function ghAsync(args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("gh", args, { cwd: controlRepo });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => (stdout += chunk));
-    child.stderr.on("data", (chunk: Buffer) => (stderr += chunk));
-    child.on("error", reject);
-    child.on("close", (code) =>
-      code === 0 ? resolve(stdout) : reject(new Error(stderr.trim() || `gh exited with code ${code}`)),
-    );
-  });
-}
-
 function formatKnowledgeDrift(target: string, report: ReturnType<typeof checkKnowledgeDrift>): string {
   const shortCurrent = shortSha(report.currentSha);
   const revision = report.dirty ? `${shortCurrent} + working tree changes` : shortCurrent;
@@ -567,10 +548,6 @@ program
         renderOpts: { days },
         // Re-read the ledger each poll so newly shipped PRs are picked up.
         fetchCosigns: options.cosign ? () => fetchCosigns(readLedger(ledgerPath)) : undefined,
-        // Cloud review: fold origin/main's committed ledger into every view, and
-        // pull a cloud run's Actions artifact on demand when it is opened.
-        git,
-        downloadGh: ghAsync,
       });
       console.log(`Fleet Ledger live at ${url}`);
       console.log(

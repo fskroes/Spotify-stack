@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   dedupeInflight,
-  Endpoints,
   extractCliEnvelope,
   InflightRecordSchema,
   isKillStatus,
@@ -9,7 +8,6 @@ import {
   KILL_STATUSES,
   knownJudgeCapability,
   LedgerEntrySchema,
-  LedgerResponseSchema,
   ModelUsageEvidenceSchema,
   knownBillingSource,
   knownUsageAvailability,
@@ -21,7 +19,6 @@ import {
   RUN_KINDS,
   RUN_STATUSES,
   runFacts,
-  RunDetailResponseSchema,
   safeParseWire,
   VERIFY_STATES,
   VerdictEvidenceSchema,
@@ -74,20 +71,15 @@ describe("tolerant reading", () => {
   });
 
   it("fails loudly, naming the field path, on a missing required field", () => {
-    const result = safeParseWire(LedgerResponseSchema, {
-      generatedAt: "now",
-      entries: [entry(), { ...entry(), ts: undefined }],
-    });
+    const result = safeParseWire(LedgerEntrySchema, { ...entry(), ts: undefined });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toBeInstanceOf(WireParseError);
-      expect(result.error.issues[0].path).toBe("entries[1].ts");
+      expect(result.error.issues[0].path).toBe("ts");
     }
   });
 
-  it("keeps structural discriminants strict — an unknown run-detail state is a loud failure", () => {
-    const bad = safeParseWire(RunDetailResponseSchema, { state: "queued", run: entry(), artifacts: [] });
-    expect(bad.ok).toBe(false);
+  it("keeps structural discriminants strict — an unknown in-flight version is a loud failure", () => {
     const v2 = InflightRecordSchema.safeParse({ ...inflight(), v: 2 });
     expect(v2.success).toBe(false);
   });
@@ -411,35 +403,5 @@ describe("dedupeInflight", () => {
 
   it("keeps live rows when ledger lines predate runId", () => {
     expect(dedupeInflight([entry()], [inflight()])).toHaveLength(1);
-  });
-});
-
-describe("Endpoints", () => {
-  it("binds each route to its schema and URI-encodes path arguments", () => {
-    expect(Endpoints.ledger.path).toBe("/api/ledger");
-    expect(Endpoints.run.path("run/1")).toBe("/api/runs/run%2F1");
-    expect(Endpoints.artifacts.path("007-api", "demo-api")).toBe("/api/artifacts/007-api/demo-api");
-  });
-
-  it("stamps the endpoint name onto parse failures, banner-ready", () => {
-    const result = Endpoints.inflight.safeParse({ runs: [] });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.endpoint).toBe("GET /api/inflight");
-      expect(result.error.message).toContain("GET /api/inflight");
-      expect(result.error.message).toContain("generatedAt");
-    }
-  });
-
-  it("load fetches through the injected transport and parses", async () => {
-    const body = { generatedAt: "now", runs: [inflight()] };
-    const paths: string[] = [];
-    const got = await Endpoints.inflight.load(async (p) => {
-      paths.push(p);
-      return body;
-    });
-    expect(paths).toEqual(["/api/inflight"]);
-    expect(got.runs[0].runId).toBe("run-live");
-    await expect(Endpoints.ledger.load(async () => ({}))).rejects.toThrow(WireParseError);
   });
 });

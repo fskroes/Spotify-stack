@@ -1,21 +1,23 @@
 /**
- * @fleet/contract — the wire contract: everything the runner tells the
- * operator, on any transport (the ledger server's HTTP responses, and the
- * co-sign result emitted as a JSON line over SSH stdout).
+ * @fleet/contract — the wire contract: the shapes the fleet writes down and
+ * reads back (the append-only ledger, the in-flight store, and the co-sign
+ * result emitted as a JSON line).
  *
  * One source of truth: the zod schemas here are the only declaration of these
- * shapes; the runner imports its types from this package and the operator
- * parses every response through it. Pure and browser-safe — no I/O, no Node
- * imports, no dependency but zod.
+ * shapes; every reader parses through them. Pure — no I/O, no Node imports, no
+ * dependency but zod.
  *
- * Primary surface: `Endpoints`, the inferred types, `parseLedgerJsonl`,
- * `parseCosignStdout`, `dedupeInflight`, and the known-value narrowing
- * helpers. The raw schemas are exported as a secondary surface for
- * composition and round-trip tests.
+ * The tolerant reader ([ADR-0001](../../../docs/adr/0001-tolerant-reader-wire-contract.md))
+ * no longer spans two machines at different commits — it spans time. The ledger
+ * is append-only, so today's reader must still parse rows written by every past
+ * version of the runner, including fields nothing produces any more.
+ *
+ * Primary surface: the inferred types, `parseLedgerJsonl`, `parseCosignStdout`,
+ * `dedupeInflight`, and the known-value narrowing helpers. The raw schemas are
+ * exported as a secondary surface for composition and round-trip tests.
  */
 export * from "./schemas.js";
 export * from "./parse.js";
 export * from "./dedupe.js";
-export * from "./endpoints.js";
 export * from "./producer-usage.js";
 export * from "./cli-envelope.js";

@@ -19,7 +19,7 @@
  *    [`CONTEXT.md`](../CONTEXT.md#verification-state) says.
  *
  * Nothing enforced the second fact. It held by hand-written early returns — two
- * in `renderTimeline`, three pairs in the operator — and reading the `diedAt`
+ * in `renderTimeline` — and reading the `diedAt`
  * gate without reading the six lines above it yields a table in which a
  * successful `no-changes` run reports itself as a gap. That table was wrong, but
  * it was wrong on the strength of the same evidence a careful reader has.
@@ -29,12 +29,9 @@
  * rather than a thing you re-derive by reading — the same choice
  * `docs-drift.test.ts` makes for prose and `check-scrub.sh` makes for secrets.
  *
- * It covers the runner's report only. The operator's surfaces are guarded the
- * same way, but `main.ts` queries the DOM at module scope, so they cannot be
- * rendered from a test until they are extracted. Until then they are pinned by
- * [`operator-verify-guards.test.ts`](./operator-verify-guards.test.ts), which
- * scans the source for the guards instead of exercising them — a weaker oracle,
- * and the reason this file's assertions stop at the report.
+ * It covers the runner's report, which since the desktop operator was deleted
+ * ([ADR-0026](../docs/adr/0026-the-desktop-operator-is-deleted.md)) is the only
+ * surface that renders the field.
  *
  * ## On the wording
  *

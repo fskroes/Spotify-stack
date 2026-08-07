@@ -82,13 +82,19 @@ describe("docs map layout table", () => {
    * table is now the only prose that claims to list every unit. Same list, same
    * failure mode, so the lock follows it rather than dying with the fence.
    */
-  it("lists every workspace under packages/ and apps/", () => {
+  it("lists every workspace the monorepo declares", () => {
     const section = sectionUnderHeading(
       read("docs/README.md"),
       "## Where the code lives, and what each part owns",
       "docs/README.md",
     );
-    const workspaces = ["packages", "apps"].flatMap((group) =>
+    // Read the groups from pnpm-workspace.yaml rather than naming them here:
+    // a hardcoded `["packages", "apps"]` outlived `apps/` when the desktop
+    // operator was deleted (ADR-0026), and a lock that names its own inputs
+    // drifts exactly like the prose it guards.
+    const groups = [...read("pnpm-workspace.yaml").matchAll(/^\s*-\s*(\S+)\/\*\s*$/gm)].map((m) => m[1]);
+    expect(groups.length, "no workspace globs found in pnpm-workspace.yaml").toBeGreaterThan(0);
+    const workspaces = groups.flatMap((group) =>
       readdirSync(path.join(repoRoot, group), { withFileTypes: true })
         .filter((e) => e.isDirectory())
         .map((e) => `${group}/${e.name}`),
