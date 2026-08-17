@@ -301,6 +301,60 @@ export async function injectKnowledge(opts: {
 }
 
 /**
+ * Drop a finished run's workspace and the verification tree beside it.
+ *
+ * Retention exists so a verdict you might re-open is re-runnable on the tree
+ * that produced it (constructVerificationTree). Two kinds of run have nothing to
+ * re-open, and both used to be kept forever anyway — 1157 trees, 77 GB, none
+ * ever read back:
+ *
+ *  - **A green run.** The tree is a pure function of `(base commit, diff)`, and
+ *    the run keeps both: the diff in its artifacts, the base in `result.json`.
+ *    That makes a green tree a cache and not a record — rebuilding from those two
+ *    inputs reproduces the state and every check status, which is measured rather
+ *    than assumed. Nothing in this repo reads a tree back after the run.
+ *  - **A hermetic test run**, which a caller-supplied `ledgerPath` names — the
+ *    same seam that keeps test evidence out of `fleet/evidence/`. Its red cases
+ *    assert their own redness, so the assertion already says what the tree would,
+ *    and the suite deposited ~0.9 GB per execution to say it twice.
+ *
+ * Every other verdict is kept: red, inconclusive, and died-before-verify alike.
+ * That asymmetry is ADR-0004's tri-state, not a shortcut — only an affirmative
+ * green is disposable, and an absent verdict is never treated as one.
+ *
+ * Returns whether it released, so the caller can name a kept tree in the log.
+ *
+ * Best-effort by contract, like the kill retention it runs beside: the verdict is
+ * already durable by the time this is called, so a file that will not unlink may
+ * not change what the run reported.
+ */
+export function releaseWorkspace(opts: {
+  workspace: string;
+  /** The run's *composed* verify state. `undefined` means the run never got one. */
+  verifyState: "passed" | "failed" | "inconclusive" | undefined;
+  /** This run is a hermetic test, so nothing will re-open either directory. */
+  test: boolean;
+}): boolean {
+  if (!opts.test && opts.verifyState !== "passed") return false;
+  // The tree first: it is a registered worktree of the workspace, so removing
+  // its parent's git dir out from under it would leave the registration behind
+  // in a directory that is itself about to go. Deleting in this order keeps each
+  // step meaningful on its own if the second one throws.
+  //
+  // `rmSync` unlinks a symlink rather than descending through it, which is the
+  // property this depends on: a `--local` workspace holds a `node_modules`
+  // symlink into the target's own checkout (see prepareWorkspace), and following
+  // it would delete the source's installed dependencies.
+  try {
+    rmSync(`${opts.workspace}.verify`, { recursive: true, force: true });
+    rmSync(opts.workspace, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Stage everything and return the staged diff against the baseline.
  * `.claude/` and `.fleet-knowledge.md` are excluded: both are injected by the
  * harness (injectAgentConfig, injectKnowledge), and the .gitignore .claude

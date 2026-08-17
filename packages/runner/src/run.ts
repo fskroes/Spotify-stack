@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import picomatch from "picomatch";
 import { type RunStatus, type VerifyState } from "./wire.js";
@@ -17,7 +17,7 @@ import { buildRunPreamble } from "@fleet/knowledge";
 import { loadTask, type Task } from "./task.js";
 import { constructVerificationTree, TreeConstructionError, type VerificationTree } from "./verification-tree.js";
 import { eligibleVerifiers, type VerifierCheck } from "./verifiers.js";
-import { git, injectAgentConfig, injectKnowledge, pathsInBase, prepareWorkspace, RUN_KNOWLEDGE_FILE, stagedDiff, stagedFiles, stagedPaths } from "./workspace.js";
+import { git, injectAgentConfig, injectKnowledge, pathsInBase, prepareWorkspace, releaseWorkspace, RUN_KNOWLEDGE_FILE, stagedDiff, stagedFiles, stagedPaths } from "./workspace.js";
 
 interface VerifyResult {
   /** Tri-state: `inconclusive` means no verifier ran, which is not a pass.
@@ -53,6 +53,13 @@ export interface RunOptions {
    *  the per-run archive's keep-20 prune then evicts real runs' evidence in
    *  mtime order — measured on 2026-08-04 to have removed every one of them. */
   artifactsRoot?: string;
+  /** Keep the workspace and its verification tree that releaseWorkspace would
+   *  otherwise drop. For the three tests that assert on the post-run workspace
+   *  itself — the injected cage, the knowledge file, the applied patch — and for
+   *  nothing else. Off by default *including* for test runs, so a test written
+   *  later cannot leak a workspace by saying nothing: 1157 kept trees, 77 GB,
+   *  arrived exactly that way. `RunResult.workspace` has no production reader. */
+  keepWorkspace?: boolean;
   log?: (line: string) => void;
 }
 
@@ -674,6 +681,24 @@ export async function run(opts: RunOptions): Promise<RunResult> {
       retainKill({ evidenceRoot, runId, status: full.status, artifactsDir }),
     );
     if (retentionLine) log(retentionLine);
+    // After the evidence copy above and after the PR, which pushes from this
+    // workspace: this is the last point at which either directory is anything
+    // but disk. Silent when it releases — the common path has nothing to say —
+    // and it names the tree when it keeps one, because that path is the whole
+    // point of keeping it.
+    const released =
+      !opts.keepWorkspace &&
+      releaseWorkspace({
+        workspace,
+        verifyState: composedVerifyState(full),
+        test: Boolean(opts.ledgerPath),
+      });
+    // Only when there is one to name. A run that died before verify — an engine
+    // failure, a scope kill — keeps its workspace and never built a tree, and
+    // pointing at a path that does not exist is worse than saying nothing.
+    if (!released && existsSync(`${workspace}.verify`)) {
+      log(`· kept the verification tree: ${workspace}.verify`);
+    }
     log(`■ ${full.status}${full.prUrl ? ` → ${full.prUrl}` : ""}`);
     return full;
   };
