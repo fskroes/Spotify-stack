@@ -9,6 +9,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -17,7 +18,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { FleetRepo } from "../src/fleet.js";
 import { resolveLocalPath } from "../src/fleet.js";
-import { git, prepareWorkspace, stagedDiff } from "../src/workspace.js";
+import { git, prepareWorkspace, releaseWorkspace, stagedDiff } from "../src/workspace.js";
 
 const CONTROL_REPO = mkdtempSync(path.join(os.tmpdir(), "fleet-control-"));
 
@@ -419,5 +420,76 @@ describe("prepareWorkspace for a run that will open a PR", () => {
     // install that would settle it because node_modules is already present.
     // Verification would then run against dependencies the base does not have.
     expect(existsSync(path.join(workspace, "node_modules"))).toBe(false);
+  });
+});
+
+describe("releaseWorkspace", () => {
+  /** A workspace and the verification tree beside it, both non-empty. */
+  const pair = (): { workspace: string; tree: string } => {
+    const workspace = path.join(mkdtempSync(path.join(os.tmpdir(), "fleet-release-")), "run");
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(path.join(workspace, "src.ts"), "export const a = 1;\n");
+    const tree = `${workspace}.verify`;
+    mkdirSync(path.join(tree, "node_modules", "dep"), { recursive: true });
+    return { workspace, tree };
+  };
+
+  it("releases both directories on a green verdict", () => {
+    const { workspace, tree } = pair();
+    expect(releaseWorkspace({ workspace, verifyState: "passed", test: false })).toBe(true);
+    expect(existsSync(workspace)).toBe(false);
+    expect(existsSync(tree)).toBe(false);
+  });
+
+  // The stated purpose of retention: a red verify is re-runnable on the tree
+  // that produced it, so that is the one verdict that may not be released.
+  it.each(["failed", "inconclusive"] as const)("keeps both on %s", (verifyState) => {
+    const { workspace, tree } = pair();
+    expect(releaseWorkspace({ workspace, verifyState, test: false })).toBe(false);
+    expect(existsSync(workspace)).toBe(true);
+    expect(existsSync(tree)).toBe(true);
+  });
+
+  // ADR-0004: an absent verdict is not a green one. A run that died before
+  // verify knows nothing, and nothing is not a licence to delete.
+  it("keeps both when the run never reached a verdict", () => {
+    const { workspace, tree } = pair();
+    expect(releaseWorkspace({ workspace, verifyState: undefined, test: false })).toBe(false);
+    expect(existsSync(workspace)).toBe(true);
+    expect(existsSync(tree)).toBe(true);
+  });
+
+  // A hermetic test's red cases assert their own redness; the tree adds nothing.
+  it.each(["failed", "inconclusive", undefined] as const)(
+    "releases a test run on %s",
+    (verifyState) => {
+      const { workspace, tree } = pair();
+      expect(releaseWorkspace({ workspace, verifyState, test: true })).toBe(true);
+      expect(existsSync(workspace)).toBe(false);
+      expect(existsSync(tree)).toBe(false);
+    },
+  );
+
+  // The destructive edge this function lives closest to. A `--local` workspace
+  // holds a node_modules *symlink* into the target's own checkout, so a delete
+  // that descended through it would take out the source's installed
+  // dependencies — every other local run's, not just this one's.
+  it("unlinks the node_modules symlink without touching the source", () => {
+    const { workspace } = pair();
+    const source = mkdtempSync(path.join(os.tmpdir(), "fleet-release-src-"));
+    const sourceModules = path.join(source, "node_modules");
+    mkdirSync(path.join(sourceModules, "left-alone"), { recursive: true });
+    writeFileSync(path.join(sourceModules, "left-alone", "index.js"), "module.exports = 1;\n");
+    symlinkSync(sourceModules, path.join(workspace, "node_modules"), "dir");
+
+    expect(releaseWorkspace({ workspace, verifyState: "passed", test: false })).toBe(true);
+    expect(existsSync(workspace)).toBe(false);
+    expect(existsSync(path.join(sourceModules, "left-alone", "index.js"))).toBe(true);
+  });
+
+  it("is idempotent, so a second call on a released run is not an error", () => {
+    const { workspace } = pair();
+    expect(releaseWorkspace({ workspace, verifyState: "passed", test: false })).toBe(true);
+    expect(releaseWorkspace({ workspace, verifyState: "passed", test: false })).toBe(true);
   });
 });

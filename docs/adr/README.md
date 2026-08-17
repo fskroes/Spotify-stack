@@ -18,7 +18,7 @@ record shows what was considered instead and why it lost.
 | [0010](0010-the-scrub-denylist-is-the-leak.md) | The scrub check asserts that a scrub ran; it does not carry the private list | scrub |
 | [0011](0011-the-runner-owns-the-judges-reads.md) | The judge reads the source through a tool the runner roots at the workspace | judge |
 | [0012](0012-a-pass-reports-only-what-it-observed.md) | A pass reports only what it observed | run loop |
-| [0013](0013-verification-runs-on-the-shipped-artefact.md) | Verification runs on the shipped artefact, not the workspace | verify↔run |
+| [0013](0013-verification-runs-on-the-shipped-artefact.md) | Verification runs on the shipped artefact, not the workspace — the retention it introduced bounded by [0031](0031-run-scratch-is-released-on-green.md) | verify↔run |
 | [0014](0014-gate-inputs-are-carried-only-under-an-amendment.md) | Gate inputs are carried into verification only under an amendment | verify↔run |
 | [0015](0015-a-kill-is-retained-forever-and-blinded.md) | A kill is retained forever, blinded, with a slot for its verdict | evidence |
 | [0016](0016-the-tree-blocks-and-an-install-is-not-a-check.md) | The reconstituted tree blocks, and an install is not a check | verify↔run |
@@ -36,6 +36,7 @@ record shows what was considered instead and why it lost.
 | [0028](0028-the-browser-dashboard-is-deleted.md) | The browser dashboard is deleted, and the terminal is the report | operator |
 | [0029](0029-the-in-flight-store-is-deleted.md) | The in-flight store is deleted; a run is visible in its own terminal | run loop |
 | [0030](0030-the-vetoed-status-leaves-the-vocabulary.md) | The `vetoed` status leaves the vocabulary, and an unclassified row is counted | contract |
+| [0031](0031-run-scratch-is-released-on-green.md) | Run scratch is released on green and kept on red — the verification tree is a measured cache of `(base, diff)`, not a record | run loop |
 
 **0003–0008 were written retroactively** (2026-07-26), reconstructing the
 reasoning behind decisions already in the code. They are sound arguments, not

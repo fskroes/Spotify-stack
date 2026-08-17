@@ -13,6 +13,7 @@ import { retainedKillDir } from "../src/kill-retention.js";
 import { readLedger } from "../src/ledger.js";
 import { unavailableProducerUsage } from "../src/model-usage.js";
 import { run } from "../src/run.js";
+import { releaseWorkspace } from "../src/workspace.js";
 
 const CONTROL_REPO = path.resolve(__dirname, "..", "..", "..");
 const TASK_001 = path.join(CONTROL_REPO, "tasks", "examples", "001-ts-migrate-http-client.md");
@@ -61,9 +62,22 @@ beforeAll(() => {
   }
 });
 
+/**
+ * Workspaces a test below deliberately kept with `keepWorkspace: true` so it
+ * could assert on the post-run directory. Released here rather than at the end
+ * of each test, so an assertion that throws part-way still leaves nothing on
+ * disk: this suite used to deposit ~0.9 GB per execution into `.tmp/runs` and
+ * remove none of it.
+ */
+const kept: string[] = [];
+
 // Some tests stub GITHUB_ACTIONS to pin the recorded run mode; never leak it.
 afterEach(() => {
   vi.unstubAllEnvs();
+  let workspace: string | undefined;
+  while ((workspace = kept.pop())) {
+    releaseWorkspace({ workspace, verifyState: undefined, test: true });
+  }
 });
 
 describe("runner e2e (mock engine, hermetic)", () => {
@@ -83,9 +97,13 @@ describe("runner e2e (mock engine, hermetic)", () => {
       mockPatch: GOOD_PATCH,
       ledgerPath,
       artifactsRoot,
+      // Asserts on the post-run workspace below: the applied patch and the
+      // injected cage. A green run releases both directories without this.
+      keepWorkspace: true,
       log: quiet,
     });
 
+    kept.push(result.workspace);
     expect(result.status).toBe("approved");
     expect(result.prUrl).toBeUndefined();
 
@@ -184,9 +202,12 @@ describe("runner e2e (mock engine, hermetic)", () => {
         mockPatch: GOOD_PATCH,
         ledgerPath: tmpLedger(),
         artifactsRoot,
+        // Reads the injected knowledge file back out of the workspace below.
+        keepWorkspace: true,
         log: quiet,
       });
 
+      kept.push(result.workspace);
       expect(result.status).toBe("approved");
 
       // The compiled artifact was injected into the workspace as a root dotfile...
@@ -596,8 +617,12 @@ describe("stop hook (unit-level, real verify)", () => {
       mockPatch: GOOD_PATCH,
       ledgerPath: tmpLedger(),
       artifactsRoot: tmpArtifacts(),
+      // The hook under test lives in this workspace and re-verifies it in
+      // place, so the run must not release it (releaseWorkspace).
+      keepWorkspace: true,
       log: quiet,
     });
+    kept.push(result.workspace);
     const hookPath = path.join(result.workspace, ".claude/hooks/stop-verify.mjs");
 
     // Green workspace → hook allows the stop.

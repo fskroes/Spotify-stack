@@ -117,9 +117,12 @@ export function constructVerificationTree(opts: {
   hold?: string[];
 }): VerificationTree {
   // Beside the workspace it belongs to, and kept after the run for the same
-  // reason the workspace is: it is the tree the verdict was actually produced
-  // on, and a red verify is re-runnable there. It does not accumulate within a
-  // run — every pass rebuilds this one path.
+  // reason the workspace is — but only when the verdict is one somebody might
+  // re-open: it is the tree the verdict was actually produced on, and a red
+  // verify is re-runnable there. A green one is released with its workspace
+  // (releaseWorkspace), because this function is a pure function of
+  // `(base, diff)` and a green run keeps both, which makes its tree a cache. It
+  // does not accumulate within a run either — every pass rebuilds this one path.
   const treePath = `${opts.workspace}.verify`;
   const base = git(opts.workspace, ["rev-parse", "HEAD"]).trim();
 
